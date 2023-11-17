@@ -1,11 +1,14 @@
 
 import { formatResponse, repository, generatePassword, Request, Response, uploadFile, fs } from '../_module/module';
 
+
+
+
 export const signup = async (req: Request, res: Response) => {
 
     var upload = uploadFile({
         route: "/uploads/images/user/profil",
-        file: "file",
+        file: "image_profil",
         maxFiles: 1,
         is_img: true,
     });
@@ -23,7 +26,7 @@ export const signup = async (req: Request, res: Response) => {
 
             try {
                 //Elimina el archivo despues de cargarlo, porque el usuario existe
-                fs.unlink(file.file[0].path, (err: any) => {
+                fs.unlink(file.image_profil[0].path, (err: any) => {
                     if (err) {
                         console.error(err);
                     }
@@ -36,8 +39,8 @@ export const signup = async (req: Request, res: Response) => {
 
         try {
             //Si existe el archivo, lo agrego al body
-            if (file && file.file) {
-                req.body.imageProfil = file.file[0].path.replace("src\\public\\", "\\")
+            if (file && file.image_profil) {
+                req.body.imageProfil = file.image_profil[0].path.replace("src\\public\\", "\\")
 
             }
             const userTemp: any = await repository.add(req.body);
@@ -50,7 +53,7 @@ export const signup = async (req: Request, res: Response) => {
         } catch (error) {
             console.error(err);
             //Elimina el archivo despues de cargarlo, porque el ha habido uin error
-            fs.unlink(file.file[0].path, (err: any) => {
+            fs.unlink(file.image_profil[0].path, (err: any) => {
                 if (err) {
                     console.error(err);
                 }
