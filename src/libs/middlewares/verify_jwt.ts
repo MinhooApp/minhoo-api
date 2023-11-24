@@ -13,82 +13,87 @@ interface IPayload {
 
 export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
     return async (req: Request, res: Response, next: NextFunction) => {
-        let token: string | undefined = req.header("Authorization");
-        const urlToken = req.query.urlToken
-            ? String(req.query.urlToken)
-            : undefined;
-
-        if (!token || !token.startsWith("Bearer ")) {
-            if (urlToken) {
-                token = urlToken;
-            } else {
-                return res.status(401).json({
-                    header: {
-                        success: false,
-                        authenticated: false,
-                    },
-                    messages: ["Access denied, invalid token format"],
-                });
-            }
-        } else {
-            token = token.split(" ")[1];
-        }
-
         try {
-            const { uid, roles } = jwt.verify(
-                token,
-                process.env.SECRETORPRIVATEKEY || "tokenTest",
-            ) as IPayload;
+            let token: string | undefined = req.header("Authorization");
+            const urlToken = req.query.urlToken
+                ? String(req.query.urlToken)
+                : undefined;
 
-            req.userId = uid;
-
-            if (allowedRoles && !roles.some((r) => allowedRoles.includes(r))) {
-                return res.status(403).json({
-                    header: {
-                        success: false,
-                        authenticated: true,
-                    },
-                    messages: ["Access denied, role not allowed"],
-                });
+            if (!token || !token.startsWith("Bearer ")) {
+                if (urlToken) {
+                    token = urlToken;
+                } else {
+                    return res.status(401).json({
+                        header: {
+                            success: false,
+                            authenticated: false,
+                        },
+                        messages: ["Access denied, invalid token format"],
+                    });
+                }
+            } else {
+                token = token.split(" ")[1];
             }
 
-            const user = await User.findOne({
-                where: {
-                    id: uid,
-                },
-            });
+            try {
+                const { id, roles } = jwt.verify(
+                    token,
+                    process.env.SECRETORPRIVATEKEY || "tokenTest",
+                ) as IPayload;
 
-            if (!user) {
+                req.userId = id;
+
+                if (allowedRoles && !roles.some((r) => allowedRoles.includes(r))) {
+                    return res.status(403).json({
+                        header: {
+                            success: false,
+                            authenticated: true,
+                        },
+                        messages: ["Access denied, role not allowed"],
+                    });
+                }
+
+                const user = await User.findOne({
+                    where: {
+                        id: id,
+                    },
+                });
+
+                if (!user) {
+                    return res.status(401).json({
+                        header: {
+                            success: false,
+                            authenticated: false,
+                        },
+                        messages: ["Access denied, User not found"],
+                    });
+                }
+
+                if (!user.is_available) {
+                    return res.status(401).json({
+                        header: {
+                            success: false,
+                            authenticated: false,
+                        },
+                        messages: ["Access denied, User not available"],
+                    });
+                }
+
+                next();
+            } catch (error) {
                 return res.status(401).json({
                     header: {
                         success: false,
                         authenticated: false,
                     },
-                    messages: ["Access denied, User not found"],
+                    messages: ["Access denied, invalid token"],
                 });
             }
 
-            if (!user.is_available) {
-                return res.status(401).json({
-                    header: {
-                        success: false,
-                        authenticated: false,
-                    },
-                    messages: ["Access denied, User not available"],
-                });
-            }
-
-            next();
         } catch (error) {
-            return res.status(401).json({
-                header: {
-                    success: false,
-                    authenticated: false,
-                },
-                messages: ["Access denied, invalid token"],
-            });
+            console.log(error);
         }
-    };
+    }
 };
 
 export default TokenValidation;

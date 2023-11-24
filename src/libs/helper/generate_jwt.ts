@@ -1,7 +1,7 @@
 import jsonwebtoken from "jsonwebtoken";
 const generarJWT = ({
     id = "",
-    uid = "",
+
     name = "",
     username = "",
     roles = [] as number[],
@@ -9,7 +9,6 @@ const generarJWT = ({
     return new Promise((resolve, reject) => {
         const payload = {
             id,
-            uid,
             name,
             username,
             roles,

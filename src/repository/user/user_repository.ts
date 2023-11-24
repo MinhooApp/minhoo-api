@@ -1,6 +1,7 @@
 import User from '../../_models/user/user';
 import Role from '../../_models/role/role';
 import generarJWT from '../../libs/helper/generate_jwt';
+import Plan from '../../_models/plan/plan';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 export const add = async (body: any) => {
     const user = await User.create(body);
@@ -13,6 +14,11 @@ export const add = async (body: any) => {
                 as: "roles",
                 attributes: { exclude: excludeKeys },
                 through: { attributes: [] },
+            },
+            {
+                model: Plan,
+                as: "plan",
+                attributes: { exclude: excludeKeys },
             },
         ],
     })
@@ -29,6 +35,11 @@ export const gets = async () => {
                 attributes: { exclude: excludeKeys },
                 through: { attributes: [] },
             },
+            {
+                model: Plan,
+                as: "plan",
+                attributes: { exclude: excludeKeys },
+            },
         ],
     });
     return user;
@@ -43,6 +54,11 @@ export const get = async (id: any) => {
                 attributes: { exclude: excludeKeys },
                 through: { attributes: [] },
             },
+            {
+                model: Plan,
+                as: "plan",
+                attributes: { exclude: excludeKeys },
+            },
         ],
     });
     return user;
@@ -55,22 +71,20 @@ export const update = async (id: any, body: any) => {
             as: "roles",
             attributes: { exclude: excludeKeys },
             through: { attributes: [] },
-        },]
+        },
+        {
+            model: Plan,
+            as: "plan",
+            attributes: { exclude: excludeKeys },
+        },
+        ]
     });
     const user = await userTemp?.update(body);
     return [user];
 
 }
 
-export const deleteuser = async () => {
 
-
-    const user = await User.update({
-
-    }, { where: { 'is_available': 1 } });
-    return user;
-
-}
 export const findByEmail = async (email: String) => {
     const user = await User.findOne({
         where: { email: email }, include: [
@@ -80,6 +94,11 @@ export const findByEmail = async (email: String) => {
                 as: "roles",
                 attributes: { exclude: excludeKeys },
                 through: { attributes: [] },
+            },
+            {
+                model: Plan,
+                as: "plan",
+                attributes: { exclude: excludeKeys },
             },
         ],
     });
@@ -101,7 +120,17 @@ export const saveToken = async (id: any, roles: number[]) => {
             as: "roles",
             attributes: { exclude: excludeKeys },
             through: { attributes: [] },
-        },],
+        },
+        {
+            model: Plan,
+            as: "plan",
+            attributes: { exclude: excludeKeys },
+        },
+
+
+
+
+        ],
     });
     await userTemp?.update(body);
 
@@ -115,6 +144,12 @@ export const saveToken = async (id: any, roles: number[]) => {
                 attributes: { exclude: excludeKeys },
                 through: { attributes: [] },
             },
+            {
+                model: Plan,
+                as: "plan",
+                attributes: { exclude: excludeKeys },
+
+            },
         ],
         attributes: {
             exclude: excludeKeys,
@@ -122,3 +157,12 @@ export const saveToken = async (id: any, roles: number[]) => {
     });
     return user;
 };
+export const deleteuser = async () => {
+
+
+    const user = await User.update({
+
+    }, { where: { 'is_available': 1 } });
+    return user;
+
+}

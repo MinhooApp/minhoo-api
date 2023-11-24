@@ -9,7 +9,34 @@ class User extends Model {
 }
 User.init(
     {
+        countryId: {
+            type: DataTypes.STRING,
+            allowNull: true,
 
+        },
+        cityId: {
+            type: DataTypes.STRING,
+            allowNull: true,
+
+        },
+        planId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            defaultValue: 1,
+            validate: {
+                notNull: {
+                    msg: "The field 'planId' can't be null",
+                },
+                notEmpty: {
+                    msg: "The field 'planId' can't be empty",
+                },
+            },
+        },
+        dni: {
+            type: DataTypes.STRING,
+            allowNull: true,
+
+        },
         name: {
             type: DataTypes.STRING,
             allowNull: false,
@@ -27,10 +54,10 @@ User.init(
             allowNull: false,
             validate: {
                 notNull: {
-                    msg: "The field 'last_name' can't be null",
+                    msg: "The field 'lastName' can't be null",
                 },
                 notEmpty: {
-                    msg: "The field 'last_name' can't be empty",
+                    msg: "The field 'lastName' can't be empty",
                 },
             },
         },
@@ -47,32 +74,58 @@ User.init(
                 },
             },
         },
-
-        password: {
-            type: DataTypes.STRING,
-            allowNull: false,
-            validate: {
-                notNull: {
-                    msg: "The field 'password' can't be null",
-                },
-                notEmpty: {
-                    msg: "The field 'password' can't be empty",
-                },
-            },
-        },
-        temp_password: {
+        dialing_code: {
             type: DataTypes.STRING,
             allowNull: true,
+
         },
+        iso_code: {
+            type: DataTypes.STRING,
+            allowNull: true
+        },
+        phone: {
+            type: DataTypes.STRING,
+            unique: true,
+            allowNull: true
+        },
+        language: {
+            type: DataTypes.STRING,
+            allowNull: true,
+
+        },
+        uuid: {
+            type: DataTypes.STRING,
+            allowNull: true,
+
+        },
+
         auth_token: {
             type: DataTypes.TEXT,
             allowNull: true,
 
         },
-        imageProfil: {
+        image_profil: {
             type: DataTypes.STRING,
             allowNull: true,
 
+        },
+        last_longitude: {
+            type: DataTypes.DECIMAL,
+            allowNull: true,
+
+        },
+        last_latitude: {
+            type: DataTypes.DECIMAL,
+            allowNull: true,
+
+        },
+        password: {
+            type: DataTypes.STRING,
+            allowNull: true,
+        },
+        temp_password: {
+            type: DataTypes.STRING,
+            allowNull: true,
         },
         is_available: {
             type: DataTypes.BOOLEAN,

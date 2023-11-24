@@ -40,7 +40,7 @@ export const signup = async (req: Request, res: Response) => {
         try {
             //Si existe el archivo, lo agrego al body
             if (file && file.image_profil) {
-                req.body.imageProfil = file.image_profil[0].path.replace("src\\public\\", "\\")
+                req.body.image_profil = file.image_profil[0].path.replace("src\\public\\", "\\")
 
             }
             const userTemp: any = await repository.add(req.body);
@@ -48,16 +48,18 @@ export const signup = async (req: Request, res: Response) => {
                 roles.push(u.id);
             });
 
-            const user = await repository.saveToken(userTemp?.get("id"), roles);
-            return formatResponse({ res: res, success: true, body: user });
-        } catch (error) {
-            console.error(err);
-            //Elimina el archivo despues de cargarlo, porque el ha habido uin error
-            fs.unlink(file.image_profil[0].path, (err: any) => {
-                if (err) {
-                    console.error(err);
-                }
-            });
+            //const user = await repository.saveToken(userTemp?.get("id"), roles);
+            return formatResponse({ res: res, success: true, body: userTemp });
+        } catch (error: any) {
+            if (file.image_profil) {
+                const filePath = file.image_profil[0].path;
+                fs.unlink(filePath, (err: any) => {
+                    if (err) {
+                        console.error(err);
+                    }
+                });
+            }
+            return formatResponse({ res: res, success: false, message: error.errors[0].message });
         }
 
 

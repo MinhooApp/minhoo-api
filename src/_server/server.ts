@@ -3,6 +3,7 @@ import sequelize from '../_db/connection';
 import * as t from "../_models/association";
 import express, { Application } from 'express';
 import auth_routes from "../_routes/estandar/auth/auth_routes";
+import post_routes from "../_routes/estandar/post/post_routes";
 console.log(t);
 
 class Server {
@@ -12,7 +13,10 @@ class Server {
     private port: string;
     //private host: string;
     private apiPaths = {
-        auth: "/api/v1/auth"
+        auth: "/api/v1/auth",
+        post: "/api/v1/post"
+
+
 
 
     }
@@ -79,6 +83,7 @@ class Server {
 
 
         this.app.use(this.apiPaths.auth, auth_routes);
+        this.app.use(this.apiPaths.post, post_routes);
 
     }
 
