@@ -3,11 +3,11 @@ import {
 } from 'sequelize';
 import sequelize from '../../_db/connection';
 
-class Post extends Model {
+class Comment extends Model {
     [x: string
     ]: any;
 }
-Post.init(
+Comment.init(
     {
         userId: {
             type: DataTypes.INTEGER,
@@ -21,31 +21,35 @@ Post.init(
                 },
             },
         },
-        categoryId: {
+        postId: {
             type: DataTypes.INTEGER,
             allowNull: false,
             validate: {
                 notNull: {
-                    msg: "The field 'categoryId' can't be null",
+                    msg: "The field 'postId' can't be null",
                 },
                 notEmpty: {
-                    msg: "The field 'categoryId' can't be empty",
+                    msg: "The field 'postId' can't be empty",
                 },
             },
         },
-        post: {
-            type: DataTypes.TEXT,
+        comment: {
+            type: DataTypes.STRING,
             allowNull: false,
             validate: {
                 notNull: {
-                    msg: "The field 'post' can't be null",
+                    msg: "The field 'comment' can't be null",
                 },
                 notEmpty: {
-                    msg: "The field 'post' can't be empty",
+                    msg: "The field 'comment' can't be empty",
                 },
             },
         },
+        media_url: {
+            type: DataTypes.STRING,
+            allowNull: true,
 
+        },
         is_delete: {
             type: DataTypes.BOOLEAN,
             allowNull: false,
@@ -74,11 +78,10 @@ Post.init(
         deleted_date: {
             type: DataTypes.DATE,
             allowNull: true,
-
         },
     },
     {
-        sequelize, modelName: 'post'
+        sequelize, modelName: 'comment'
     }
 );
-export default Post;
+export default Comment;

@@ -69,7 +69,7 @@ export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
                     });
                 }
 
-                if (!user.is_available) {
+                if (!user.available) {
                     return res.status(401).json({
                         header: {
                             success: false,

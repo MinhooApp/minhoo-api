@@ -1,13 +1,9 @@
 import Router from 'express';
-import { add, get, gets } from '../../../useCases/post/_controller/controller';
+import { add } from '../../../useCases/comment/_controller/controller';
 import { TokenValidation } from '../../../libs/middlewares/verify_jwt';
 const router = Router();
 router.post('/', TokenValidation(), add);
-router.get('/', gets);
-router.get('/:id', get);
-
 
 
 
 export default router
-

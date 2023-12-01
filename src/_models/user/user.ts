@@ -61,6 +61,11 @@ User.init(
                 },
             },
         },
+        birthday: {
+            type: DataTypes.DATE,
+            allowNull: true,
+
+        },
         email: {
             type: DataTypes.STRING,
             allowNull: false,
@@ -106,7 +111,16 @@ User.init(
         },
         image_profil: {
             type: DataTypes.STRING,
-            allowNull: true,
+            allowNull: false,
+            defaultValue: "\\uploads\\images\\user\\profil\\profil.png",
+            validate: {
+                notNull: {
+                    msg: "The field 'image_profil' can't be null",
+                },
+                notEmpty: {
+                    msg: "The field 'image_profil' can't be empty",
+                },
+            },
 
         },
         last_longitude: {
@@ -127,7 +141,12 @@ User.init(
             type: DataTypes.STRING,
             allowNull: true,
         },
-        is_available: {
+        verified: {
+            type: DataTypes.BOOLEAN,
+            allowNull: false,
+            defaultValue: false
+        },
+        available: {
             type: DataTypes.BOOLEAN,
             allowNull: false,
             defaultValue: true

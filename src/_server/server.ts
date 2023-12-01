@@ -4,6 +4,7 @@ import * as t from "../_models/association";
 import express, { Application } from 'express';
 import auth_routes from "../_routes/estandar/auth/auth_routes";
 import post_routes from "../_routes/estandar/post/post_routes";
+import comment_routes from "../_routes/estandar/comment/comment_routes";
 console.log(t);
 
 class Server {
@@ -14,7 +15,8 @@ class Server {
     //private host: string;
     private apiPaths = {
         auth: "/api/v1/auth",
-        post: "/api/v1/post"
+        post: "/api/v1/post",
+        comment: "/api/v1/comment"
 
 
 
@@ -56,23 +58,11 @@ class Server {
     middlewares() {
         //Cors
         this.app.use(cors())
-        //this.app.use(bodyParser.text({ type: '/', }));// support encoded bodies
         //Body Read
         this.app.use(express.json())
 
         //Public Folder
         this.app.use(express.static('src/public'))
-
-        //File Uploads///
-
-        // Fileupload - Carga de archivos
-        /* this.app.use(fileUpload({
-             useTempFiles: true,
-             tempFileDir: '/tmp/',
-             createParentPath: true,
- 
- 
-         }));*/
 
 
 
@@ -84,6 +74,7 @@ class Server {
 
         this.app.use(this.apiPaths.auth, auth_routes);
         this.app.use(this.apiPaths.post, post_routes);
+        this.app.use(this.apiPaths.comment, comment_routes);
 
     }
 

@@ -43,7 +43,11 @@ export const signup = async (req: Request, res: Response) => {
                 req.body.image_profil = file.image_profil[0].path.replace("src\\public\\", "\\")
 
             }
+
+            const categories: [] = req.body.categories.split(',');
+            req.body.categories = categories;
             const userTemp: any = await repository.add(req.body);
+
             userTemp?.roles.forEach((u: any) => {
                 roles.push(u.id);
             });

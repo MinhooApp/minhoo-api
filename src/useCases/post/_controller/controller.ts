@@ -1,3 +1,3 @@
 import { add } from '../add/add';
-
-export { add }
+import { get, gets } from '../get/get';
+export { add, get, gets }
