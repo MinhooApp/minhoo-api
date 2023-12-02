@@ -4,6 +4,7 @@ import * as t from "../_models/association";
 import express, { Application } from 'express';
 import auth_routes from "../_routes/estandar/auth/auth_routes";
 import post_routes from "../_routes/estandar/post/post_routes";
+import worker_routes from '../_routes/estandar/worker/worker_routes';
 import comment_routes from "../_routes/estandar/comment/comment_routes";
 console.log(t);
 
@@ -16,7 +17,8 @@ class Server {
     private apiPaths = {
         auth: "/api/v1/auth",
         post: "/api/v1/post",
-        comment: "/api/v1/comment"
+        worker: "/api/v1/worker",
+        comment: "/api/v1/comment",
 
 
 
@@ -74,6 +76,7 @@ class Server {
 
         this.app.use(this.apiPaths.auth, auth_routes);
         this.app.use(this.apiPaths.post, post_routes);
+        this.app.use(this.apiPaths.worker, worker_routes);
         this.app.use(this.apiPaths.comment, comment_routes);
 
     }

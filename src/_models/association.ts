@@ -3,6 +3,7 @@ import Post from "./post/post";
 import Role from "./role/role";
 import User from "./user/user";
 import Like from "./like/like";
+import Worker from "./worker/worker";
 import Comment from "./comment/comment";
 import Category from "./category/category";
 import MediaPost from "./post/media_post";
@@ -53,5 +54,18 @@ Like.belongsTo(Comment, { as: "comment", foreignKey: "commentId" });
 User.belongsToMany(Category, { through: "user_category" });
 Category.belongsToMany(User, { through: "user_category" });
 
+
+
+//Association Worker with User
+User.hasOne(Worker, { as: "worker", foreignKey: "userId" });
+Worker.belongsTo(User, { as: "personal_data", foreignKey: "userId" });
+//Association Worker with Plan
+Plan.hasMany(Worker, { as: "workers", foreignKey: "planId" });
+Worker.belongsTo(Plan, { as: "plan", foreignKey: "planId" });
+
+
+//Association Worker with Category
+Worker.belongsToMany(Category, { through: "worker_category" });
+Category.belongsToMany(Worker, { through: "worker_category" });
 
 
