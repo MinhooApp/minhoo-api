@@ -39,27 +39,13 @@ User.init(
         },
         name: {
             type: DataTypes.STRING,
-            allowNull: false,
-            validate: {
-                notNull: {
-                    msg: "The field 'name' can't be null",
-                },
-                notEmpty: {
-                    msg: "The field 'name' can't be empty",
-                },
-            },
+            allowNull: true,
+
         },
         last_name: {
             type: DataTypes.STRING,
-            allowNull: false,
-            validate: {
-                notNull: {
-                    msg: "The field 'lastName' can't be null",
-                },
-                notEmpty: {
-                    msg: "The field 'lastName' can't be empty",
-                },
-            },
+            allowNull: true,
+
         },
         birthday: {
             type: DataTypes.DATE,
@@ -121,6 +107,11 @@ User.init(
                     msg: "The field 'image_profil' can't be empty",
                 },
             },
+
+        },
+        about: {
+            type: DataTypes.TEXT,
+            allowNull: true,
 
         },
         last_longitude: {

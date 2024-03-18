@@ -51,3 +51,20 @@ export const workers = async (page: any, size: any) => {
     );
     return workers;
 }
+
+
+
+export const worker = async (id: any) => {
+
+    const worker = await Worker.findOne(
+        {
+            where: { userId: id, available: 1 },
+
+            include: userIncludes,
+            attributes: { exclude: excludeKeys },
+
+        }
+
+    );
+    return worker;
+}

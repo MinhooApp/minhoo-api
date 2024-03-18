@@ -1,7 +1,9 @@
 import Router from 'express';
-import { signup, login } from '../../../useCases/auth/_controller/controller';
+import { validateEmail, verifyEmailCode, signUp, login } from '../../../useCases/auth/_controller/controller';
 const router = Router();
-router.post('/', signup);
+router.post('/validate/email', validateEmail);
+router.post('/verify/email', verifyEmailCode);
+router.post('/', signUp);
 router.post('/login', login);
 
 export default router

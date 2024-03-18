@@ -21,6 +21,7 @@ export function formatResponse({ res, success, body, message = "no incidents", i
             return res.status(code ? code : 409).json({
                 header: {
                     success: success,
+                    authenticated: false,
                     messages: islogin ? [
 
                         message,
