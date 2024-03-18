@@ -19,3 +19,23 @@ export const workers = async (req: Request, res: Response) => {
     }
 
 }
+
+
+export const worker = async (req: Request, res: Response) => {
+    const { id } = req.params;
+
+    try {
+
+        const worker: any = await repository.worker(id ?? req.userId);
+        return formatResponse({
+            res: res, success: true, body: {
+
+                "worker": worker
+            }
+        });
+    } catch (error) {
+        console.log(error)
+        return formatResponse({ res: res, success: false, message: error });
+    }
+
+}

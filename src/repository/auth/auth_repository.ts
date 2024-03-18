@@ -1,15 +1,30 @@
 import User from '../../_models/user/user';
 import Role from '../../_models/role/role';
 import Plan from '../../_models/plan/plan';
+import Worker from '../../_models/worker/worker';
 import Category from '../../_models/category/category';
 import generarJWT from '../../libs/helper/generate_jwt';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
+import Verification from '../../_models/verification/verification';
 
 const userIncludes = [{
     model: Role,
     as: "roles",
     attributes: { exclude: excludeKeys },
     through: { attributes: [] },
+},
+{
+    model: Worker,
+    as: "worker",
+    attributes: { exclude: excludeKeys },
+    include: [{
+        model: Category,
+        as: "categories",
+        attributes: {
+            exclude: excludeKeys,
+        },
+        through: { attributes: [] },
+    }]
 },
 {
     model: Category,
@@ -37,7 +52,7 @@ export const findByEmail = async (email: String) => {
     });
     return user;
 }
-
+//
 export const saveToken = async (id: any, roles: number[]) => {
     ///Genero el token
     const token = await generarJWT({ id: id, roles: roles });
@@ -59,5 +74,17 @@ export const saveToken = async (id: any, roles: number[]) => {
             exclude: excludeKeys,
         },
     });
+
     return user;
 };
+export const registerCode = async (body: any) => {
+    const code = await Verification.create(body);
+    return code;
+}
+
+export const verifyEmailCode = async (email: any, code: any) => {
+
+    const response = await Verification.findOne({ where: { email: email, code: code }, order: [['id', 'DESC']] });
+    await response?.update({ "verified": true });
+    return response;
+}

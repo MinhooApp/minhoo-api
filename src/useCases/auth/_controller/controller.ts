@@ -1,3 +1,3 @@
 import { login } from '../login/login';
-import { signup } from '../signUp/signUp';
-export { signup, login }
+import { validateEmail, signUp, verifyEmailCode } from '../signUp/signUp';
+export { validateEmail, verifyEmailCode, signUp, login }

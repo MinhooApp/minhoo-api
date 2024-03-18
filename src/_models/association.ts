@@ -7,6 +7,10 @@ import Worker from "./worker/worker";
 import Comment from "./comment/comment";
 import Category from "./category/category";
 import MediaPost from "./post/media_post";
+import Verification from "./verification/verification";
+import Service from "./service/service";
+const ver = Verification;
+console.log(ver.toString());
 //Association User with Roles
 User.belongsToMany(Role, { through: "user_role" });
 Role.belongsToMany(User, { through: "user_role" });
@@ -68,4 +72,12 @@ Worker.belongsTo(Plan, { as: "plan", foreignKey: "planId" });
 Worker.belongsToMany(Category, { through: "worker_category" });
 Category.belongsToMany(Worker, { through: "worker_category" });
 
+
+//Association Service with User
+User.hasMany(Service, { as: "services", foreignKey: "userId" });
+Service.belongsTo(User, { as: "user", foreignKey: "userId" });
+
+//Association Service with Category
+Category.hasMany(Service, { as: "services", foreignKey: "categoryId" });
+Service.belongsTo(Category, { as: "category", foreignKey: "categoryId" });
 
