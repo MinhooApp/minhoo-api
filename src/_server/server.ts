@@ -5,10 +5,11 @@ import express, { Application } from 'express';
 import user_routes from "../_routes/estandar/user/user_routes";
 import auth_routes from "../_routes/estandar/auth/auth_routes";
 import post_routes from "../_routes/estandar/post/post_routes";
+import offers_routes from "../_routes/estandar/offer/offer_routes";
 import worker_routes from '../_routes/estandar/worker/worker_routes';
 import comment_routes from "../_routes/estandar/comment/comment_routes";
-import category_routes from "../_routes/estandar/category/category_routes";
 import service_routes from "../_routes/estandar/service/service_routes";
+import category_routes from "../_routes/estandar/category/category_routes";
 console.log(t);
 
 class Server {
@@ -21,6 +22,7 @@ class Server {
         auth: "/api/v1/auth",
         post: "/api/v1/post",
         user: "/api/v1/user",
+        offer: "/api/v1/offer",
         worker: "/api/v1/worker",
         service: "/api/v1/service",
         comment: "/api/v1/comment",
@@ -83,6 +85,7 @@ class Server {
         this.app.use(this.apiPaths.auth, auth_routes);
         this.app.use(this.apiPaths.post, post_routes);
         this.app.use(this.apiPaths.user, user_routes);
+        this.app.use(this.apiPaths.offer, offers_routes);
         this.app.use(this.apiPaths.worker, worker_routes);
         this.app.use(this.apiPaths.service, service_routes);
         this.app.use(this.apiPaths.comment, comment_routes);

@@ -3,21 +3,21 @@ import {
 } from 'sequelize';
 import sequelize from '../../_db/connection';
 
-class MediaPost extends Model {
+class MediaWorker extends Model {
     [x: string
     ]: any;
 }
-MediaPost.init(
+MediaWorker.init(
     {
-        postId: {
+        workerId: {
             type: DataTypes.INTEGER,
             allowNull: false,
             validate: {
                 notNull: {
-                    msg: "The field 'postId' can't be null",
+                    msg: "The field 'workerId' can't be null",
                 },
                 notEmpty: {
-                    msg: "The field 'postId' can't be empty",
+                    msg: "The field 'workerId' can't be empty",
                 },
             },
         },
@@ -36,12 +36,13 @@ MediaPost.init(
         is_img: {
             type: DataTypes.BOOLEAN,
             allowNull: true,
+            defaultValue: true
 
         },
     },
     {
-        sequelize, modelName: 'mediaPost',
-        tableName: 'mediapost'
+        sequelize, modelName: 'mediaWorker',
+        tableName: "mediaworker"
     }
 );
-export default MediaPost;
+export default MediaWorker;

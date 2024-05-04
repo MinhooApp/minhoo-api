@@ -3,9 +3,9 @@ import { Request, Response, formatResponse, repository, fs, uploadFile } from '.
 export const add = async (req: Request, res: Response) => {
 
     var upload = uploadFile({
-        route: "/uploads/post",
+        route: "/uploads/images/post",
         file: "image_post",
-        maxFiles: 5, // Cambiar según la cantidad máxima de archivos que quieres permitir
+        maxFiles: 10000, // Cambiar según la cantidad máxima de archivos que quieres permitir
         is_img: true,
     });
 

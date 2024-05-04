@@ -35,7 +35,7 @@ export const signUpWithImage = async (req: Request, res: Response) => {
             } catch (error) {
                 console.error(err);
             }
-            sendEmail
+            // sendEmail
             return formatResponse({ res: res, success: false, code: 401, message: "The user already exists", islogin: true });
         }
 
@@ -116,14 +116,13 @@ export const validateEmail = async (req: Request, res: Response) => {
             return formatResponse({ res: res, success: false, code: 401, message: "The email already exists" });
         } else {
 
-            const send: any = await sendEmail("cto@minhoo.app", "./src/public/html/email/emailCode.html", 8088);
+            const send = true;//: any = await sendEmail("cto@minhoo.app", "./src/public/html/email/emailCode.html", 8088);
             if (send == true) {
 
                 const body = {
                     "code": 8088,
                     "email": email,
                     "created": now
-
 
                 };
                 const code = await repository.registerCode(body);

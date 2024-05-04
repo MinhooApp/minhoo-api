@@ -3,12 +3,14 @@ import Post from "./post/post";
 import Role from "./role/role";
 import User from "./user/user";
 import Like from "./like/like";
+import Offer from "./offer/offer";
 import Worker from "./worker/worker";
-import Comment from "./comment/comment";
-import Category from "./category/category";
-import MediaPost from "./post/media_post";
-import Verification from "./verification/verification";
 import Service from "./service/service";
+import Comment from "./comment/comment";
+import MediaPost from "./post/media_post";
+import Category from "./category/category";
+import MediaWorker from "./worker/media_worker";
+import Verification from "./verification/verification";
 const ver = Verification;
 console.log(ver.toString());
 //Association User with Roles
@@ -45,8 +47,8 @@ Like.belongsTo(Post, { as: "post", foreignKey: "postId" });
 
 Category.hasMany(Post, { as: "posts", foreignKey: "categoryId" });
 Post.belongsTo(Category, { as: "categry", foreignKey: "categoryId" });
-//Association Post with MediaPost
 
+//Association Post with MediaPost
 Post.hasMany(MediaPost, { as: "post_media", foreignKey: "postId" });
 MediaPost.belongsTo(Post, { as: "post", foreignKey: "postId" });
 
@@ -75,9 +77,21 @@ Category.belongsToMany(Worker, { through: "worker_category" });
 
 //Association Service with User
 User.hasMany(Service, { as: "services", foreignKey: "userId" });
-Service.belongsTo(User, { as: "user", foreignKey: "userId" });
+Service.belongsTo(User, { as: "client", foreignKey: "userId" });
 
 //Association Service with Category
 Category.hasMany(Service, { as: "services", foreignKey: "categoryId" });
 Service.belongsTo(Category, { as: "category", foreignKey: "categoryId" });
+//Association Offer with Service 
+Service.hasMany(Offer, { as: "offers", foreignKey: "serviceId" });
+Offer.belongsTo(Service, { as: "service", foreignKey: "serviceId" });
+
+//Association Offer with User 
+User.hasMany(Offer, { as: "offers", foreignKey: "userId" });
+Offer.belongsTo(User, { as: "offerer", foreignKey: "userId" });
+
+
+//Association Worker with MediaWorkwe
+Worker.hasMany(MediaWorker, { as: "worker_media", foreignKey: "workerId" });
+MediaWorker.belongsTo(Worker, { as: "worker", foreignKey: "workerId" });
 

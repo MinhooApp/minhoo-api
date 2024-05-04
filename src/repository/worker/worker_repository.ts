@@ -1,16 +1,21 @@
+
+import { Includeable } from 'sequelize';
 import User from '../../_models/user/user';
 import Role from '../../_models/role/role';
 import Plan from '../../_models/plan/plan';
-import Category from '../../_models/category/category';
 import Worker from '../../_models/worker/worker';
-import generarJWT from '../../libs/helper/generate_jwt';
+import Category from '../../_models/category/category';
+import MediaWorker from '../../_models/worker/media_worker';
+
+
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
-const userIncludes = [
+const includes: Includeable[] = [
     {
         model: User,
         as: "personal_data",
         attributes: { exclude: excludeKeys },
+
 
     },
 
@@ -24,14 +29,23 @@ const userIncludes = [
         model: Plan,
         as: "plan",
         attributes: { exclude: excludeKeys },
-    },]
+    },
+    {
+        model: MediaWorker,
+        as: "worker_media",
+        attributes: { exclude: excludeKeys },
+    }
+]
 
-
+export const add = async (body: any) => {
+    const worker = await Worker.create(body);
+    return worker;
+}
 export const gets = async () => {
-    const user = await Worker.findAll({
-        where: { available: true }, include: userIncludes,
+    const worker = await Worker.findAll({
+        where: { available: true }, include: includes,
     });
-    return user;
+    return worker;
 }
 
 export const workers = async (page: any, size: any) => {
@@ -43,7 +57,7 @@ export const workers = async (page: any, size: any) => {
         {
             where: { available: 1 },
             ...option,
-            include: userIncludes,
+            include: includes,
             attributes: { exclude: excludeKeys },
 
         }
@@ -52,7 +66,22 @@ export const workers = async (page: any, size: any) => {
     return workers;
 }
 
+export const update = async (id: any, body: any) => {
+    const workerTemp = await Worker.findOne({
+        where: { id: id }, include: includes
+    });
 
+
+    const worker = await workerTemp?.update(body);
+    // Obtener las categorías actuales del trabajador
+    const currentCategories = await worker?.getCategories();
+    // Eliminar las categorías actuales del trabajador
+    await worker?.removeCategories(currentCategories);
+    // Asociar las nuevas categorías al trabajador
+    await worker?.addCategories(body.categories);
+    return worker;
+
+}
 
 export const worker = async (id: any) => {
 
@@ -60,7 +89,7 @@ export const worker = async (id: any) => {
         {
             where: { userId: id, available: 1 },
 
-            include: userIncludes,
+            include: includes,
             attributes: { exclude: excludeKeys },
 
         }

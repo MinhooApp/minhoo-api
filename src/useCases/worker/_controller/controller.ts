@@ -1,3 +1,4 @@
 
 import { workers, worker } from '../get/get';
-export { workers, worker }
+import { update } from '../update/update';
+export { workers, worker, update }
