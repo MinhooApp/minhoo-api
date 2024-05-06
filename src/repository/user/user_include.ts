@@ -4,7 +4,9 @@ import Plan from "../../_models/plan/plan";
 import Worker from "../../_models/worker/worker";
 import Category from "../../_models/category/category";
 import MediaWorker from '../../_models/worker/media_worker';
-
+import sequelize from "../../_db/connection";
+import User from "../../_models/user/user";
+import { followIncludes } from "../follower/follower_include";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 export const userIncludes: Includeable[] = [
@@ -50,5 +52,5 @@ export const userIncludes: Includeable[] = [
         through: { attributes: [] },
 
     },
-
+    ...followIncludes
 ]

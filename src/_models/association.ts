@@ -11,6 +11,7 @@ import MediaPost from "./post/media_post";
 import Category from "./category/category";
 import MediaWorker from "./worker/media_worker";
 import Verification from "./verification/verification";
+import Follower from "./follower/follower";
 const ver = Verification;
 console.log(ver.toString());
 //Association User with Roles
@@ -95,3 +96,8 @@ Offer.belongsTo(User, { as: "offerer", foreignKey: "userId" });
 Worker.hasMany(MediaWorker, { as: "worker_media", foreignKey: "workerId" });
 MediaWorker.belongsTo(Worker, { as: "worker", foreignKey: "workerId" });
 
+//Association User with Fallower
+User.hasMany(Follower, { as: "followers", foreignKey: "userId" });
+Follower.belongsTo(User, { as: "follower", foreignKey: "userId" });
+User.hasMany(Follower, { as: "followings", foreignKey: "followerId" });
+Follower.belongsTo(User, { as: "following", foreignKey: "followerId" });

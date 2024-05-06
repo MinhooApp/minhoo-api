@@ -2,6 +2,7 @@ import User from '../../_models/user/user';
 import Comment from '../../_models/comment/comment';
 import MediaPost from '../../_models/post/media_post'
 import Category from '../../_models/category/category';
+import { followIncludes } from "../follower/follower_include";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 const galeryInclude = [{
     model: Category,
@@ -12,19 +13,28 @@ const galeryInclude = [{
 const userInclude = {
     model: User,
     as: "user",
-    include: galeryInclude,
-    attributes: ["name",
+    include: [
+        ...followIncludes,
+        ...galeryInclude],
+    attributes: [
+        "id",
+        "name",
         "last_name",
         "email",
         "image_profil",
         "verified",
         "available",],
 
+
+    //
+
 };
 const userCommentInclude = {
     model: User,
     as: "user",
-    attributes: ["name",
+    attributes: [
+        "id",
+        "name",
         "last_name",
         "email",
         "image_profil",
@@ -34,12 +44,6 @@ const userCommentInclude = {
 export const postInclude = [
     userInclude,
     {
-        model: Comment,
-        as: "comments",
-        include: [userCommentInclude],
-
-
-    }, {
         model: MediaPost,
         as: "post_media",
         attributes: ["url", "is_img"

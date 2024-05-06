@@ -41,41 +41,22 @@ export const gets = async (page: any = 0, size: any = 10) => {
             where: { is_delete: false },
             ...option,
             include: postInclude,
-            order: [["created_date", "DESC"]]
+
+            order: [["created_date", "DESC"]],
 
         }
 
     );
+
     return post;
 }
 
 export const getOne = async (id: any) => {
     const comment = await Post.findOne({
-        where: { id: id }, include: [
-            {
-                model: User,
-                as: "user",
-                attributes: ["name",
-                    "last_name",
-                    "email",
-                    "image_profil",
-                    "available",]
-            },
-            {
-                model: Comment,
-                as: "comments",
-                include: [{
-                    model: User,
-                    as: "user",
-                    attributes: ["name",
-                        "last_name",
-                        "email",
-                        "image_profil",
-                        "available",]
-                },]
+        where: { id: id },
+        include: postInclude,
 
-            }
-        ]
+
     });
     return comment;
 }

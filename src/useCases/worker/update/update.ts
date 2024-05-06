@@ -23,11 +23,11 @@ export const update = async (req: Request, res: Response) => {
                 filePath = files.image_profile[0].path.replace("src\\public\\", "\\");
                 mediaUrls.push(filePath);
                 trash = PROFILE_IMAGE_FOLDER + req.body.delete;
-                fs.unlink(trash, (err: any) => {
+                /*fs.unlink(trash, (err: any) => {
                     if (err) {
                         console.error(err);
                     }
-                });
+                });*/
             }
             /////Body to update user data/////////////
             const bodyUser = {
@@ -35,14 +35,14 @@ export const update = async (req: Request, res: Response) => {
                 "last_name": req.body.last_name,
                 "dialing_code": "+" + req.body.dialing_code.replace("+", ""),
                 "phone": req.body.phone,
-                "image_profil": filePath
+                "image_profil": filePath != "" ? filePath : undefined
             }
 
             /////Body to update worker data/////////////
             var bodyWorker = {
                 "planId": worker?.planId,
                 "about": req.body.about,
-                "categories": req.body.skills.split(',').map(Number),
+                "categories": req.body.skills,
                 "userId": req.userId
             }
             //update user//
@@ -75,6 +75,7 @@ export const update = async (req: Request, res: Response) => {
                     });
                 }
             }
+            console.log(error);
             return formatResponse({ res: res, success: false, message: error });
         }
         /*try {
