@@ -12,6 +12,9 @@ import Category from "./category/category";
 import MediaWorker from "./worker/media_worker";
 import Verification from "./verification/verification";
 import Follower from "./follower/follower";
+import Message from "./chat/message";
+import Chat from "./chat/chat";
+import Chat_User from "./chat/chat_user";
 const ver = Verification;
 console.log(ver.toString());
 //Association User with Roles
@@ -101,3 +104,27 @@ User.hasMany(Follower, { as: "followers", foreignKey: "userId" });
 Follower.belongsTo(User, { as: "follower", foreignKey: "userId" });
 User.hasMany(Follower, { as: "followings", foreignKey: "followerId" });
 Follower.belongsTo(User, { as: "following", foreignKey: "followerId" });
+
+
+
+
+//Association User with chats
+User.belongsToMany(Chat, { through: Chat_User, foreignKey: "userId" });
+Chat.belongsToMany(User, { through: Chat_User, foreignKey: "chatId" });
+
+
+
+
+
+//Association Message with Chat
+Chat.hasMany(Message, { as: "messages", foreignKey: 'chatId' },);
+Message.belongsTo(Chat, { as: "chat", foreignKey: 'chatId' });
+//Association Message with User
+User.hasMany(Message, { as: "messages", foreignKey: 'senderId' })
+Message.belongsTo(User, { as: 'sender', foreignKey: 'senderId' });
+
+
+
+
+///User.belongsToMany(Role, { through: User_Role, as: "roles", foreignKey: "user_id", });
+//Role.belongsToMany(User, { through: User_Role, as: "users", foreignKey: "role_id", });

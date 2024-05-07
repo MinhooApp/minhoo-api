@@ -10,6 +10,7 @@ import worker_routes from '../_routes/estandar/worker/worker_routes';
 import comment_routes from "../_routes/estandar/comment/comment_routes";
 import service_routes from "../_routes/estandar/service/service_routes";
 import category_routes from "../_routes/estandar/category/category_routes";
+import chat_routes from "../_routes/estandar/chat/chat_routes";
 console.log(t);
 
 class Server {
@@ -22,6 +23,7 @@ class Server {
         auth: "/api/v1/auth",
         post: "/api/v1/post",
         user: "/api/v1/user",
+        chat: "/api/v1/chat",
         offer: "/api/v1/offer",
         worker: "/api/v1/worker",
         service: "/api/v1/service",
@@ -84,6 +86,7 @@ class Server {
 
         this.app.use(this.apiPaths.auth, auth_routes);
         this.app.use(this.apiPaths.post, post_routes);
+        this.app.use(this.apiPaths.chat, chat_routes);
         this.app.use(this.apiPaths.user, user_routes);
         this.app.use(this.apiPaths.offer, offers_routes);
         this.app.use(this.apiPaths.worker, worker_routes);
