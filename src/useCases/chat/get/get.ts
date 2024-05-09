@@ -14,7 +14,11 @@ export const messages = async (req: Request, res: Response) => {
     const { id } = req.params
     try {
         const messages = await repository.getChatByUser(req.userId, id);
-        return formatResponse({ res: res, success: true, body: { messages } });
+        const payload = {
+            chatId: messages.length > 0 ? messages[0].chatId : null,
+            messages
+        }
+        return formatResponse({ res: res, success: true, body: payload });
     } catch (error) {
         console.log(error);
         return formatResponse({ res: res, success: false, message: error });

@@ -33,11 +33,11 @@ export const socketController = (socket: Socket) => {
     });
 
     ////////////////////////////Chat///////////////
-    socket.on("message", (chat: any) => {
+    socket.on("chat", (message: any) => {
         //socket.emit(`message/${chat.id}`, chat)//emit all user// interval emit
-        socket.emit(`message/${chat.id}`, { "Usuario": socket.id })//emit genere action
-        socket.broadcast.emit(`message/${chat.id}`, chat)//emit all user
-        console.log(chat);
+        socket.emit(`chat/${message.chatId}`, message)//emit genere action
+        socket.broadcast.emit(`chat/${message.chatId}`, message)//emit all user
+        console.log({ "emit": message });
     });
 
 
