@@ -1,7 +1,10 @@
-import { Request, Response, formatResponse, repository, bcryptjs } from '../_module/module';
+import { Request, Response, formatResponse, repository, bcryptjs, socket } from '../_module/module';
 
 export const login = async (req: Request, res: Response) => {
     try {
+        socket.on("test", (data) => {
+            console.log(data)
+        });
         const roles: any = [];
         const { email, password } = req.body;
         //Validar Existencia de Usuario
@@ -21,7 +24,10 @@ export const login = async (req: Request, res: Response) => {
             userTemp?.roles.forEach((u: any) => {
                 roles.push(u.id);
             });
+
             const user = await repository.saveToken(userTemp?.get("id"), roles);
+            socket.emit('test', "login");
+
             return formatResponse({ res: res, success: true, body: { user } });
         }
 

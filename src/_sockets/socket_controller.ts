@@ -1,13 +1,12 @@
-
-export const socketController = (socket: any) => {
+import { Socket } from 'socket.io';
+import { test } from './test';
+export const socketController = (socket: Socket) => {
     console.log(`Cliente conectado ${socket.id}`);
     socket.on('disconnect', () => {
         console.log(`Cliente desconectado ${socket.id}`);
 
     });
-    socket.on("test", (msg: any) => {
-        console.log(msg)
-    });
+
     socket.on("message", (msg: any) => {
         /* setInterval(() => {
              socket.broadcast.emit("message", { "Usuario": "asas" })
@@ -40,4 +39,19 @@ export const socketController = (socket: any) => {
         socket.broadcast.emit(`message/${chat.id}`, chat)//emit all user
         console.log(chat);
     });
+
+
+    socket.on("test", (data: any) => {
+        //  test(socket,data);
+
+        socket.emit("test",
+            `Emitiendo: ${data}`//
+        );
+
+        socket.broadcast.emit("test",
+            `Emitiendo: ${data}`//
+        );
+
+    })
+
 }
