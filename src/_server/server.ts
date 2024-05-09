@@ -1,7 +1,10 @@
 import cors from 'cors';
 import sequelize from '../_db/connection';
+import { Server as HttpServer } from 'http';
 import * as t from "../_models/association";
+import { Server as SocketIOServer } from 'socket.io';
 import express, { Router, Application } from 'express';
+import { socketController } from '../_sockets/socket_controller';
 
 console.log(t);
 
@@ -12,6 +15,8 @@ interface Options {
 class Server {
 
     public readonly app = express();
+    private server: HttpServer;
+    private io: SocketIOServer;
     private readonly port: number;
     private readonly publicPath: string;
 
@@ -22,12 +27,14 @@ class Server {
         const { port, public_path = 'public' } = options;
         this.port = port;
         this.publicPath = public_path;
-
+        this.server = new HttpServer(this.app);
+        this.io = new SocketIOServer(this.server, { /* opciones */ });
         this.middlewares();
         this.dbConnection();
         this.configure();
 
-
+        /////////Sockets/////////////socketController
+        this.sockets();
     }
 
 
@@ -75,10 +82,14 @@ class Server {
 
     }
 
+    sockets() {
+        this.io.on('connection', socketController);
 
+
+    }
     /////////////////////////////////
     listen() {
-        this.app.listen(this.port, () => {
+        this.server.listen(this.port, () => {
             console.log('Servidor corriendo en puerto', this.port);
         });
     }

@@ -30,7 +30,6 @@ export class AppRoutes {
             comment: "/api/v1/comment",
             category: "/api/v1/category",
 
-
         }
         const router = Router();
 
