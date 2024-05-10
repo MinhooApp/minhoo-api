@@ -27,7 +27,8 @@ export const get = async (req: Request, res: Response) => {
         const user = await repository.get(id ?? req.userId);
         return formatResponse({ res: res, success: true, body: { user: user } });
     } catch (error) {
-        console.log(error);
+            console.log(error)
+
         return formatResponse({ res: res, success: false, message: error });
     }
 
