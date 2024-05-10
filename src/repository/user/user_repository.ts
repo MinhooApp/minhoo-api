@@ -8,45 +8,7 @@ import { userIncludes } from './user_include';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 
-<<<<<<< HEAD
-const userIncludes = [{
-    model: Role,
-    as: "roles",
-    attributes: { exclude: excludeKeys },
-    through: { attributes: [] },
-},
-{
-    model: Worker,
-    as: "worker",
-    attributes: { exclude: excludeKeys },
-    include: [{
-        model: Category,
-        as: "categories",
-        attributes: {
-            exclude: excludeKeys,
-        },
-        through: { attributes: [] },
-    }]
-},
-{
-    model: Category,
-    as: "categories",
-    attributes: {
-        exclude: excludeKeys,
-    },
-    through: { attributes: [] },
-
-},
-{
-    model: Plan,
-    as: "plan",
-    attributes: { exclude: excludeKeys },
-},
-
-]
-=======
 const includes = userIncludes
->>>>>>> b6c8ab0afc7b62635081ca5efd541cd60cb25b9a
 
 
 
