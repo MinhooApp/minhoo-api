@@ -4,9 +4,11 @@ import Plan from '../../_models/plan/plan';
 import Category from '../../_models/category/category';
 import Worker from '../../_models/worker/worker';
 import generarJWT from '../../libs/helper/generate_jwt';
+import { userIncludes } from './user_include';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 
+<<<<<<< HEAD
 const userIncludes = [{
     model: Role,
     as: "roles",
@@ -42,12 +44,15 @@ const userIncludes = [{
 },
 
 ]
+=======
+const includes = userIncludes
+>>>>>>> b6c8ab0afc7b62635081ca5efd541cd60cb25b9a
 
 
 
 export const gets = async () => {
     const user = await User.findAll({
-        where: { available: true }, include: userIncludes,
+        where: { available: true }, include: includes,
     });
     return user;
 }
@@ -61,7 +66,7 @@ export const users = async (page: any = 0, size: any = 10) => {
         {
             where: { available: 1 },
             ...option,
-            include: userIncludes
+            include: includes
 
         }
 
@@ -71,14 +76,14 @@ export const users = async (page: any = 0, size: any = 10) => {
 
 export const get = async (id: any) => {
     const user = await User.findOne({
-        where: { id: id }, include: userIncludes,
+        where: { id: id }, include: includes,
     });
     return user;
 }
 
 export const update = async (id: any, body: any) => {
     const userTemp = await User.findOne({
-        where: { id: id }, include: userIncludes
+        where: { id: id }, include: includes
     });
     const user = await userTemp?.update(body);
     return [user];

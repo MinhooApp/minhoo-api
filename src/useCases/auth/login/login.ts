@@ -2,7 +2,8 @@ import { Request, Response, formatResponse, repository, bcryptjs } from '../_mod
 
 export const login = async (req: Request, res: Response) => {
     try {
-        const roles: any = [];
+
+        const roles: any = [];//
         const { email, password } = req.body;
         //Validar Existencia de Usuario
         const userTemp = await repository.findByEmail(email);
@@ -21,7 +22,10 @@ export const login = async (req: Request, res: Response) => {
             userTemp?.roles.forEach((u: any) => {
                 roles.push(u.id);
             });
+
             const user = await repository.saveToken(userTemp?.get("id"), roles);
+
+
             return formatResponse({ res: res, success: true, body: { user } });
         }
 

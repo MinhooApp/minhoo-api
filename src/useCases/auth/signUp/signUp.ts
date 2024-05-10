@@ -5,7 +5,7 @@ import { formatResponse, repository, generatePassword, Request, Response, upload
 const now: any = new Date(new Date().toUTCString())
 
 
-/*export const signUpWithImage = async (req: Request, res: Response) => {
+export const signUpWithImage = async (req: Request, res: Response) => {
 
     var upload = uploadFile({
         route: "/uploads/images/user/profil",
@@ -35,7 +35,7 @@ const now: any = new Date(new Date().toUTCString())
             } catch (error) {
                 console.error(err);
             }
-            sendEmail
+            // sendEmail
             return formatResponse({ res: res, success: false, code: 401, message: "The user already exists", islogin: true });
         }
 
@@ -74,7 +74,7 @@ const now: any = new Date(new Date().toUTCString())
 
 
 
-};*/
+};
 export const signUp = async (req: Request, res: Response) => {
 
     const roles: any = [];
@@ -116,14 +116,13 @@ export const validateEmail = async (req: Request, res: Response) => {
             return formatResponse({ res: res, success: false, code: 401, message: "The email already exists" });
         } else {
 
-            const send: any = await sendEmail("cto@minhoo.app", "./src/public/html/email/emailCode.html", 8088);
+            const send = true;//: any = await sendEmail("cto@minhoo.app", "./src/public/html/email/emailCode.html", 8088);
             if (send == true) {
 
                 const body = {
                     "code": 8088,
                     "email": email,
                     "created": now
-
 
                 };
                 const code = await repository.registerCode(body);

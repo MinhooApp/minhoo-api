@@ -40,7 +40,8 @@ MediaPost.init(
         },
     },
     {
-        sequelize, modelName: 'mediaPost'
+        sequelize, modelName: 'mediaPost',
+        tableName: 'mediapost'
     }
 );
 export default MediaPost;

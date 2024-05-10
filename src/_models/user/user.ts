@@ -114,6 +114,19 @@ User.init(
             allowNull: true,
 
         },
+        rate: {
+            type: DataTypes.DOUBLE,
+            allowNull: false,
+            defaultValue: 0,
+            validate: {
+                notNull: {
+                    msg: "The field 'rate' can't be null",
+                },
+                notEmpty: {
+                    msg: "The field 'rate' can't be empty",
+                },
+            },
+        },
         last_longitude: {
             type: DataTypes.DECIMAL,
             allowNull: true,

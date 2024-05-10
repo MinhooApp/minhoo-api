@@ -3,12 +3,18 @@ import Post from "./post/post";
 import Role from "./role/role";
 import User from "./user/user";
 import Like from "./like/like";
+import Offer from "./offer/offer";
 import Worker from "./worker/worker";
-import Comment from "./comment/comment";
-import Category from "./category/category";
-import MediaPost from "./post/media_post";
-import Verification from "./verification/verification";
 import Service from "./service/service";
+import Comment from "./comment/comment";
+import MediaPost from "./post/media_post";
+import Category from "./category/category";
+import MediaWorker from "./worker/media_worker";
+import Verification from "./verification/verification";
+import Follower from "./follower/follower";
+import Message from "./chat/message";
+import Chat from "./chat/chat";
+import Chat_User from "./chat/chat_user";
 const ver = Verification;
 console.log(ver.toString());
 //Association User with Roles
@@ -45,8 +51,8 @@ Like.belongsTo(Post, { as: "post", foreignKey: "postId" });
 
 Category.hasMany(Post, { as: "posts", foreignKey: "categoryId" });
 Post.belongsTo(Category, { as: "categry", foreignKey: "categoryId" });
-//Association Post with MediaPost
 
+//Association Post with MediaPost
 Post.hasMany(MediaPost, { as: "post_media", foreignKey: "postId" });
 MediaPost.belongsTo(Post, { as: "post", foreignKey: "postId" });
 
@@ -75,9 +81,50 @@ Category.belongsToMany(Worker, { through: "worker_category" });
 
 //Association Service with User
 User.hasMany(Service, { as: "services", foreignKey: "userId" });
-Service.belongsTo(User, { as: "user", foreignKey: "userId" });
+Service.belongsTo(User, { as: "client", foreignKey: "userId" });
 
 //Association Service with Category
 Category.hasMany(Service, { as: "services", foreignKey: "categoryId" });
 Service.belongsTo(Category, { as: "category", foreignKey: "categoryId" });
+//Association Offer with Service 
+Service.hasMany(Offer, { as: "offers", foreignKey: "serviceId" });
+Offer.belongsTo(Service, { as: "service", foreignKey: "serviceId" });
 
+//Association Offer with User 
+User.hasMany(Offer, { as: "offers", foreignKey: "userId" });
+Offer.belongsTo(User, { as: "offerer", foreignKey: "userId" });
+
+
+//Association Worker with MediaWorkwe
+Worker.hasMany(MediaWorker, { as: "worker_media", foreignKey: "workerId" });
+MediaWorker.belongsTo(Worker, { as: "worker", foreignKey: "workerId" });
+
+//Association User with Fallower
+User.hasMany(Follower, { as: "followers", foreignKey: "userId" });
+Follower.belongsTo(User, { as: "follower", foreignKey: "userId" });
+User.hasMany(Follower, { as: "followings", foreignKey: "followerId" });
+Follower.belongsTo(User, { as: "following", foreignKey: "followerId" });
+
+
+
+
+//Association User with chats
+User.belongsToMany(Chat, { through: Chat_User, foreignKey: "userId" });
+Chat.belongsToMany(User, { through: Chat_User, foreignKey: "chatId" });
+
+
+
+
+
+//Association Message with Chat
+Chat.hasMany(Message, { as: "messages", foreignKey: 'chatId' },);
+Message.belongsTo(Chat, { as: "chat", foreignKey: 'chatId' });
+//Association Message with User
+User.hasMany(Message, { as: "messages", foreignKey: 'senderId' })
+Message.belongsTo(User, { as: 'sender', foreignKey: 'senderId' });
+
+
+
+
+///User.belongsToMany(Role, { through: User_Role, as: "roles", foreignKey: "user_id", });
+//Role.belongsToMany(User, { through: User_Role, as: "users", foreignKey: "role_id", });

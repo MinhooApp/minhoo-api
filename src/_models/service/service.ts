@@ -37,7 +37,7 @@ Service.init(
 
 
         description: {
-            type: DataTypes.STRING,
+            type: DataTypes.TEXT,
             allowNull: false,
             validate: {
                 notNull: {
@@ -74,27 +74,32 @@ Service.init(
         },
         longitude: {
             type: DataTypes.DOUBLE,
-            allowNull: false,
-            validate: {
-                notNull: {
-                    msg: "The field 'longitude' can't be null",
-                },
-                notEmpty: {
-                    msg: "The field 'longitude' can't be empty",
-                },
-            },
+            allowNull: true,
+
         },
         latitude: {
             type: DataTypes.DOUBLE,
+            allowNull: true,
+
+        },
+        address: {
+            type: DataTypes.TEXT,
+            allowNull: true,
+
+        },
+        net_pay: {
+            type: DataTypes.BOOLEAN,
             allowNull: false,
             validate: {
                 notNull: {
-                    msg: "The field 'latitude' can't be null",
+                    msg: "The field 'net_ay' can't be null",
                 },
                 notEmpty: {
-                    msg: "The field 'latitude' can't be empty",
+                    msg: "The field 'net_ay' can't be empty",
                 },
+
             },
+            defaultValue: true
         },
         is_available: {
             type: DataTypes.BOOLEAN,

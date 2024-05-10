@@ -53,13 +53,16 @@ Category.init(
 );
 Category.afterSync(async () => {
     await Category.findOrCreate({
-        where: { id: 1, name: "Branding", es_name: "Branding" },
+        where: { id: 1, name: "All", es_name: "Todas" },
     });
     await Category.findOrCreate({
         where: { id: 2, name: "Design", es_name: "Diseño" },
     });
     await Category.findOrCreate({
         where: { id: 3, name: "Creative", es_name: "Creativo" },
+    });
+    await Category.findOrCreate({
+        where: { id: 5, name: "Branding", es_name: "Branding" },
     });
 });
 export default Category;
