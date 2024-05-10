@@ -37,7 +37,7 @@ export const socketController = (socket: Socket) => {
         //socket.emit(`message/${chat.id}`, chat)//emit all user// interval emit
         socket.emit(`chat/${message.chatId}`, message)//emit genere action
         socket.broadcast.emit(`chat/${message.chatId}`, message)//emit all user
-        console.log({ "emit": message });
+        // console.log({ "emit": message });
     });
 
 
