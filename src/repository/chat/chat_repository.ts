@@ -107,11 +107,13 @@ export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
             order: [["date", "ASC"]],
             where: {
                 chatId: existingChat[0].chatId,
-                [Op.or]: [
-                    { deletedBy: 0 }, // Mensajes no eliminados por ninguno de los usuarios
-                    { deletedBy: currentUserId }, // Mensajes eliminados por el usuario actual
-                    { deletedBy: -1 }, // Mensajes eliminados por ambos usuarios
-                ],
+                [Op.and]: [
+                    {
+                        deletedBy: {
+                            [Op.not]: [-1, currentUserId] // Excluir -1 y currentUserId
+                        }
+                    }
+                ]
             },
 
 
