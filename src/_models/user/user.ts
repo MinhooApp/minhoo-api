@@ -150,6 +150,7 @@ User.init(
             allowNull: false,
             defaultValue: false
         },
+
         available: {
             type: DataTypes.BOOLEAN,
             allowNull: false,

@@ -16,7 +16,7 @@ export const add = async (body: any) => {
 }
 export const gets = async () => {
     const worker = await Worker.findAll({
-        where: { available: true }, include: workerIncludes,
+        where: { available: true, visible: true }, include: workerIncludes,
     });
     return worker;
 }
@@ -28,7 +28,7 @@ export const workers = async (page: any, size: any) => {
     }
     const workers = await Worker.findAndCountAll(
         {
-            where: { available: 1 },
+            where: { available: true, visible: true },
             ...option,
             include: workerIncludes,
             attributes: { exclude: excludeKeys },
@@ -55,7 +55,13 @@ export const update = async (id: any, body: any) => {
     return worker;
 
 }
-
+export const visibleProfile = async (id: any, body: any) => {
+    const workerTemp = await Worker.findOne({
+        where: { userId: id }, include: workerIncludes
+    });
+    const ressponse = await workerTemp?.update(body);
+    return ressponse
+}
 export const worker = async (id: any) => {
 
     const worker = await Worker.findOne(

@@ -1,10 +1,7 @@
 import User from '../../_models/user/user';
-import Role from '../../_models/role/role';
-import Plan from '../../_models/plan/plan';
-import Category from '../../_models/category/category';
-import Worker from '../../_models/worker/worker';
-import generarJWT from '../../libs/helper/generate_jwt';
+import Post from '../../_models/post/post';
 import { userIncludes } from './user_include';
+import MediaPost from '../../_models/post/media_post';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 
@@ -38,7 +35,20 @@ export const users = async (page: any = 0, size: any = 10) => {
 
 export const get = async (id: any) => {
     const user = await User.findOne({
-        where: { id: id }, include: includes,
+        where: { id: id }, include: [...includes, {
+            model: Post,
+            as: "posts",
+            include: [
+
+                {
+                    model: MediaPost,
+                    as: "post_media",
+                    attributes: ["url", "is_img"
+
+                    ]
+                }
+            ]
+        }],
     });
     return user;
 }
