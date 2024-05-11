@@ -1,41 +1,14 @@
 
-import { Includeable } from 'sequelize';
-import User from '../../_models/user/user';
-import Role from '../../_models/role/role';
-import Plan from '../../_models/plan/plan';
+
+
 import Worker from '../../_models/worker/worker';
-import Category from '../../_models/category/category';
-import MediaWorker from '../../_models/worker/media_worker';
-
-
+import { workerIncludes } from './worker_includes';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
-const includes: Includeable[] = [
-    {
-        model: User,
-        as: "personal_data",
-        attributes: { exclude: excludeKeys },
 
 
-    },
 
-    {
-        model: Category,
-        as: "categories",
-        attributes: { exclude: excludeKeys },
-        through: { attributes: [] },
-    },
-    {
-        model: Plan,
-        as: "plan",
-        attributes: { exclude: excludeKeys },
-    },
-    {
-        model: MediaWorker,
-        as: "worker_media",
-        attributes: { exclude: excludeKeys },
-    }
-]
+
 
 export const add = async (body: any) => {
     const worker = await Worker.create(body);
@@ -43,7 +16,7 @@ export const add = async (body: any) => {
 }
 export const gets = async () => {
     const worker = await Worker.findAll({
-        where: { available: true }, include: includes,
+        where: { available: true }, include: workerIncludes,
     });
     return worker;
 }
@@ -57,7 +30,7 @@ export const workers = async (page: any, size: any) => {
         {
             where: { available: 1 },
             ...option,
-            include: includes,
+            include: workerIncludes,
             attributes: { exclude: excludeKeys },
 
         }
@@ -68,7 +41,7 @@ export const workers = async (page: any, size: any) => {
 
 export const update = async (id: any, body: any) => {
     const workerTemp = await Worker.findOne({
-        where: { id: id }, include: includes
+        where: { id: id }, include: workerIncludes
     });
 
 
@@ -89,7 +62,7 @@ export const worker = async (id: any) => {
         {
             where: { userId: id, available: 1 },
 
-            include: includes,
+            include: workerIncludes,
             attributes: { exclude: excludeKeys },
 
         }

@@ -1,4 +1,4 @@
-import { Request, Response, formatResponse, repository, fb } from '../_module/module';
+import { Request, Response, formatResponse, repository, socket } from '../_module/module';
 
 export const add = async (req: Request, res: Response) => {
 
@@ -11,10 +11,8 @@ export const add = async (req: Request, res: Response) => {
         const service: any = await repository.add(req.body)
 
 
-
-        await fb().collection("services").doc(service.id.toString()).set({
-            "service": service!.toJSON()
-        });
+        ////////Emit the service/////
+        socket.emit("services", service)
 
         return formatResponse({ res: res, success: true, body: service })
     } catch (error) {

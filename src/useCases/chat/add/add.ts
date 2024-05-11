@@ -6,6 +6,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     try {
         const response: any = await repository.initNewChat(req.userId, userId, message);
         const newMessage = response.messages[response.messages.length - 1];
+        ////////Emit the chat/////
         socket.emit('chat', newMessage);
         return formatResponse({ res: res, success: true, body: response });
     } catch (error) {

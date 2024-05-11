@@ -22,12 +22,14 @@ export const update = async (req: Request, res: Response) => {
             if (files && files.image_profile != null && files.image_profile.length > 0) {
                 filePath = files.image_profile[0].path.replace("src\\public\\", "\\");
                 mediaUrls.push(filePath);
-                trash = PROFILE_IMAGE_FOLDER + req.body.delete;
-                /*fs.unlink(trash, (err: any) => {
-                    if (err) {
-                        console.error(err);
-                    }
-                });*/
+                if (req.body.delete != "profile.png") {
+                    trash = PROFILE_IMAGE_FOLDER + req.body.delete;
+                    fs.unlink(trash, (err: any) => {
+                        if (err) {
+                            console.error(err);
+                        }
+                    });
+                }
             }
             /////Body to update user data/////////////
             const bodyUser = {

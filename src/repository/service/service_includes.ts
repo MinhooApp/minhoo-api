@@ -2,9 +2,11 @@
 import { Includeable } from 'sequelize';
 import User from '../../_models/user/user';
 import Role from "../../_models/role/role";
-import { offerInclude } from "../../repository/offer/offer_includes";
+import Worker from "../../_models/worker/worker";
 import Category from '../../_models/category/category';
 import Offer from '../../_models/offer/offer';
+import StatusService from '../../_models/status/statusService';
+import { workerIncludes } from '../../repository/worker/worker_includes';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 export const serviceInclude: Includeable[] = [
     {
@@ -19,6 +21,10 @@ export const serviceInclude: Includeable[] = [
                 through: { attributes: [] },
             },
         ]
+    }, {
+        model: StatusService,
+        as: "status",
+        attributes: { exclude: excludeKeys },
     },
     {
 
@@ -29,6 +35,7 @@ export const serviceInclude: Includeable[] = [
 
 
     },
+
     {
 
         model: Offer,
@@ -45,6 +52,13 @@ export const serviceInclude: Includeable[] = [
 
 
 
+    },
+    {
+        model: Worker,
+        as: "workers",
+        include: workerIncludes,
+        attributes: { exclude: excludeKeys },
+        through: { attributes: ["removed"] },
     }
 
 

@@ -98,7 +98,7 @@ User.init(
         image_profil: {
             type: DataTypes.STRING,
             allowNull: false,
-            defaultValue: "\\uploads\\images\\user\\profil\\profil.png",
+            defaultValue: "\\uploads\\images\\user\\profile\\profile.png",
             validate: {
                 notNull: {
                     msg: "The field 'image_profil' can't be null",

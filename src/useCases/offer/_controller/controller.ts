@@ -1,3 +1,3 @@
 import { add } from '../add/add';
-import { get, gets, } from '../get/get';
-export { add, get, gets, }
+import { get, gets, getsByService } from '../get/get';
+export { add, get, gets, getsByService }
