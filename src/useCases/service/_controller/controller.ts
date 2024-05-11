@@ -1,5 +1,5 @@
 import { add } from '../add/add';
-import { get, gets, onGoing } from '../get/get';
-import { update } from '../update/update';
-import { deleteService } from '../delete/delete';
-export { add, get, gets, onGoing, update, deleteService }
+import { myHistory, history, get, gets, myonGoing, onGoing } from '../get/get';
+import { update, acceptWorker } from '../update/update';
+import { deleteService, removeWorker } from '../delete/delete';
+export { add, myHistory, history, get, gets, myonGoing, onGoing, update, acceptWorker, deleteService, removeWorker }

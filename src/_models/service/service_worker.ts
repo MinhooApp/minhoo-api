@@ -3,11 +3,11 @@ import {
 } from 'sequelize';
 import sequelize from '../../_db/connection';
 
-class Offer extends Model {
+class Service_Worker extends Model {
     [x: string
     ]: any;
 }
-Offer.init(
+Service_Worker.init(
     {
         serviceId: {
             type: DataTypes.INTEGER,
@@ -21,51 +21,34 @@ Offer.init(
                 },
             },
         },
-        userId: {
+        workerId: {
             type: DataTypes.INTEGER,
             allowNull: false,
             validate: {
                 notNull: {
-                    msg: "The field 'userId' can't be null",
+                    msg: "The field 'workerId' can't be null",
                 },
                 notEmpty: {
-                    msg: "The field 'userId' can't be empty",
+                    msg: "The field 'workerId' can't be empty",
                 },
             },
         },
-        offer: {
-            type: DataTypes.DOUBLE,
-            allowNull: false,
-            validate: {
-                notNull: {
-                    msg: "The field 'offer' can't be null",
-                },
-                notEmpty: {
-                    msg: "The field 'offer' can't be empty",
-                },
-            },
-        },
-        accepted: {
+        removed: {
             type: DataTypes.BOOLEAN,
             allowNull: false,
             defaultValue: false,
-
-        },
-        offer_date: {
-            type: DataTypes.DATE,
-            allowNull: false,
             validate: {
                 notNull: {
-                    msg: "The field 'offer_date' can't be null",
+                    msg: "The field 'removed' can't be null",
                 },
                 notEmpty: {
-                    msg: "The field 'offer_date' can't be empty",
+                    msg: "The field 'removed' can't be empty",
                 },
             },
         },
     },
     {
-        sequelize, modelName: 'offer'
+        sequelize, modelName: 'service_worker'
     }
 );
-export default Offer;
+export default Service_Worker;

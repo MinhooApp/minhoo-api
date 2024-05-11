@@ -3,20 +3,23 @@ import Post from "./post/post";
 import Role from "./role/role";
 import User from "./user/user";
 import Like from "./like/like";
+import Chat from "./chat/chat";
 import Offer from "./offer/offer";
+import Message from "./chat/message";
 import Worker from "./worker/worker";
 import Service from "./service/service";
 import Comment from "./comment/comment";
+import Chat_User from "./chat/chat_user";
 import MediaPost from "./post/media_post";
 import Category from "./category/category";
-import MediaWorker from "./worker/media_worker";
-import Verification from "./verification/verification";
 import Follower from "./follower/follower";
-import Message from "./chat/message";
-import Chat from "./chat/chat";
-import Chat_User from "./chat/chat_user";
+import MediaWorker from "./worker/media_worker";
+import Service_Worker from "./service/service_worker";
+import Verification from "./verification/verification";
+import StatusService from "./status/statusService";
 const ver = Verification;
 console.log(ver.toString());
+
 //Association User with Roles
 User.belongsToMany(Role, { through: "user_role" });
 Role.belongsToMany(User, { through: "user_role" });
@@ -125,6 +128,12 @@ Message.belongsTo(User, { as: 'sender', foreignKey: 'senderId' });
 
 
 
+//Association Worker with Service
+Worker.belongsToMany(Service, { through: Service_Worker, as: "services", foreignKey: "workerId" });
+Service.belongsToMany(Worker, { through: Service_Worker, as: "workers", foreignKey: "serviceId" });
 
+//Association Service with statusService//
+StatusService.hasMany(Service, { as: "services", foreignKey: 'statusId' },);
+Service.belongsTo(StatusService, { as: "status", foreignKey: 'statusId' });
 ///User.belongsToMany(Role, { through: User_Role, as: "roles", foreignKey: "user_id", });
 //Role.belongsToMany(User, { through: User_Role, as: "users", foreignKey: "role_id", });

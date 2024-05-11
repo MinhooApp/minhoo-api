@@ -9,11 +9,15 @@ export const add = async (body: any) => {
 }
 
 export const gets = async () => {
-    const offer = await Offer.findAll({ where: {}, include: offerInclude, attributes: { exclude: excludeKeys }, });
+    const offer = await Offer.findAll({ where: {}, include: offerInclude, attributes: { exclude: excludeKeys }, order: [["offer_date", "DESC"]] });
+    return offer;
+}
+export const getsByService = async (serviceId: any) => {
+    const offer = await Offer.findAll({ where: { serviceId: serviceId }, include: offerInclude, attributes: { exclude: excludeKeys }, order: [["offer_date", "DESC"]] });
     return offer;
 }
 export const get = async (id: any) => {
-    const offer = await Offer.findOne({ where: { id: id }, include: offerInclude, attributes: { exclude: excludeKeys }, });
+    const offer = await Offer.findOne({ where: { id: id }, include: offerInclude, attributes: { exclude: excludeKeys }, order: [["offer_date", "DESC"]] });
     return offer;
 }
 

@@ -9,6 +9,19 @@ class Service extends Model {
 }
 Service.init(
     {
+        statusId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            validate: {
+                notNull: {
+                    msg: "The field 'statusId' can't be null",
+                },
+                notEmpty: {
+                    msg: "The field 'statusId' can't be empty",
+                },
+            },
+            defaultValue: 1
+        },
         userId: {
             type: DataTypes.INTEGER,
             allowNull: false,
@@ -100,6 +113,19 @@ Service.init(
 
             },
             defaultValue: true
+        },
+        places: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            validate: {
+                notNull: {
+                    msg: "The field 'places' can't be null",
+                },
+                notEmpty: {
+                    msg: "The field 'places' can't be empty",
+                },
+            },
+            defaultValue: 1
         },
         is_available: {
             type: DataTypes.BOOLEAN,
