@@ -40,7 +40,8 @@ export const userIncludes: Includeable[] = [
                 model: MediaWorker,
                 as: "worker_media",
                 attributes: { exclude: excludeKeys },
-            }
+            },
+
         ]
     },
     {
