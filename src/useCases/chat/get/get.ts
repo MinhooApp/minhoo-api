@@ -3,7 +3,7 @@ export const myChats = async (req: Request, res: Response) => {
 
     try {
         const chats = await repository.getUserChats(req.userId);
-        return formatResponse({ res: res, success: true, body: { chats } });
+        return formatResponse({ res: res, success: true, body: { chatsByUser: chats } });
     } catch (error) {
         console.log(error);
         return formatResponse({ res: res, success: false, message: error });

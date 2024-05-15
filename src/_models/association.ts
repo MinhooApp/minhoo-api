@@ -137,3 +137,12 @@ StatusService.hasMany(Service, { as: "services", foreignKey: 'statusId' },);
 Service.belongsTo(StatusService, { as: "status", foreignKey: 'statusId' });
 ///User.belongsToMany(Role, { through: User_Role, as: "roles", foreignKey: "user_id", });
 //Role.belongsToMany(User, { through: User_Role, as: "users", foreignKey: "role_id", });
+
+
+// En el modelo Chat_User
+Chat_User.belongsTo(User, { foreignKey: 'userId' });
+Chat_User.belongsTo(Chat, { foreignKey: 'chatId' });
+// En el modelo Chat
+Chat.belongsToMany(User, { through: Chat_User, foreignKey: 'chatId', as: 'user_chat' });
+// En el modelo User
+User.belongsToMany(Chat, { through: Chat_User, foreignKey: 'userId', as: 'user_chat' });
