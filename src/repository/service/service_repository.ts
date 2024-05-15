@@ -58,7 +58,18 @@ export const history = async (userId?: String) => {
 }
 export const onGoing = async (userId?: String) => {
     if (userId) {
-        const service = await Service.findAll({ where: { is_available: true, userId: userId, statusId: 1 }, include: serviceInclude, order: [['service_date', 'DESC']] });
+        const service = await Service.findAll({
+            where: {
+
+                is_available: true,
+                statusId: 1,
+                userId: userId
+
+            },
+
+
+            include: serviceInclude, order: [['service_date', 'DESC']]
+        });
         return service;
     } else {
         const service = await Service.findAll({ where: { is_available: true, statusId: 1 }, include: serviceInclude, order: [['service_date', 'DESC']] });

@@ -25,7 +25,7 @@ export const myonGoing = async (req: Request, res: Response) => {
 
 export const onGoing = async (req: Request, res: Response) => {
     try {
-        const services = await repository.onGoing();
+        const services = await repository.onGoing(req.userId);
         return formatResponse({ res: res, success: true, body: { services } })
     } catch (error: any) {
         console.log(error.toString());

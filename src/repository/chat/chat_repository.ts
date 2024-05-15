@@ -2,6 +2,7 @@ import { Op } from 'sequelize';
 import Chat from '../../_models/chat/chat';
 import User from '../../_models/user/user';
 import sequelize from '../../_db/connection';
+import Worker from '../../_models/worker/worker';
 import Message from '../../_models/chat/message';
 import Chat_User from '../../_models/chat/chat_user';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
@@ -167,13 +168,22 @@ export const getUserChats = async (currentUserId: any) => {
                             },
                         ],
                     },
+
+
                     attributes: { exclude: excludeKeys },
+
+                },
+                {
+                    model: User,
+                    where: {
+                        id: { [Op.ne]: currentUserId }
+                    }
 
                 },
 
             ],
             attributes: { exclude: excludeKeys },
-            order: [[{ model: Message, as: "messages" }, 'date', 'ASC']], // Ordena por el campo 'date' de forma descendente
+            order: [[{ model: Message, as: "messages" }, 'date', 'DESC']], // Ordena por el campo 'date' de forma descendente
         });
     return chats;
 }

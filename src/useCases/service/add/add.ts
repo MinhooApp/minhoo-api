@@ -14,7 +14,7 @@ export const add = async (req: Request, res: Response) => {
         ////////Emit the service/////
         socket.emit("services", service)
 
-        return formatResponse({ res: res, success: true, body: service })
+        return formatResponse({ res: res, success: true, body: { service } })
     } catch (error) {
         console.log(error)
         return formatResponse({ res: res, success: false, message: error })
