@@ -1,4 +1,4 @@
-import { Request, Response, formatResponse, repository, fs, uploadFile } from '../_module/module';
+import { Request, Response, formatResponse, repository, postRepository, fs, uploadFile } from '../_module/module';
 export const add = async (req: Request, res: Response) => {
     try {
 
@@ -21,8 +21,9 @@ export const add = async (req: Request, res: Response) => {
 
                 }
                 req.body.userId = req.userId;
-                const post = await repository.add(req.body);
-                return formatResponse({ res: res, success: true, body: post });
+                await repository.add(req.body);
+                const post = await postRepository.get(req.body.postId);
+                return formatResponse({ res: res, success: true, body: { post } });
             } catch (error: any) {
                 if (file.media_url) {
                     //Si existe el archivo, lo elimino

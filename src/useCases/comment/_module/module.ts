@@ -5,6 +5,7 @@ import { Request, Response } from 'express';
 import { uploadFile } from '../../../useCases/_utils/common';
 import { formatResponse } from '../../_response/format_response';
 import * as repository from '../../../repository/comment/coment_repository';
+import * as postRepository from '../../../repository/post/post_repository';
 export {
-    Request, Response, formatResponse, repository, fs, path, multer, uploadFile
+    Request, Response, formatResponse, repository, postRepository, fs, path, multer, uploadFile
 }

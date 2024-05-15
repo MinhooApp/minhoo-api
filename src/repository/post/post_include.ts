@@ -1,16 +1,17 @@
 import User from '../../_models/user/user';
+import { Includeable } from 'sequelize';
 import Comment from '../../_models/comment/comment';
 import MediaPost from '../../_models/post/media_post'
 import Category from '../../_models/category/category';
 import { followIncludes } from "../follower/follower_include";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
-const galeryInclude = [{
+const galeryInclude: Includeable[] = [{
     model: Category,
     as: "categories",
     attributes: { exclude: excludeKeys },
     through: { attributes: [] },
 }];
-const userInclude = {
+const userInclude: Includeable = {
     model: User,
     as: "user",
     include: [
@@ -29,19 +30,9 @@ const userInclude = {
     //
 
 };
-const userCommentInclude = {
-    model: User,
-    as: "user",
-    attributes: [
-        "id",
-        "name",
-        "last_name",
-        "email",
-        "image_profil",
-        "verified",
-        "available",]
-}
-export const postInclude = [
+
+export const postInclude: Includeable[] = [
+
     userInclude,
     {
         model: MediaPost,
@@ -49,5 +40,20 @@ export const postInclude = [
         attributes: ["url", "is_img"
 
         ]
+    },
+
+    {
+        model: Comment,
+        as: "comments",
+        attributes: ["id", "userId", "comment", "media_url"],
+        include: [
+            {
+                model: User, as: "commentator",
+                attributes: ["id", "name", "last_name", "image_profil"]
+
+            }
+        ]
+
     }
+
 ];
