@@ -35,7 +35,7 @@ Post.belongsTo(User, { as: "user", foreignKey: "userId" });
 
 //Association Post with User
 User.hasMany(Comment, { as: "comments", foreignKey: "userId" });
-Comment.belongsTo(User, { as: "user", foreignKey: "userId" });
+Comment.belongsTo(User, { as: "commentator", foreignKey: "userId" });
 
 //Association Comment with Post
 Post.hasMany(Comment, { as: "comments", foreignKey: "postId" });
