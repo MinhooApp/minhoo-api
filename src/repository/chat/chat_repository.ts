@@ -132,7 +132,7 @@ export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
 
 // Función para obtener chats que no han sido eliminados por ambos usuarios
 export const getUserChats = async (currentUserId: any) => {
-    const chats =
+    /*const chats =
 
 
         await Chat.findAll({
@@ -184,7 +184,44 @@ export const getUserChats = async (currentUserId: any) => {
             ],
             attributes: { exclude: excludeKeys },
             order: [[{ model: Message, as: "messages" }, 'date', 'DESC']], // Ordena por el campo 'date' de forma descendente
+        });*/
+
+    const chats = await Chat_User.findAll(
+
+        {
+
+            where: {
+                userId: currentUserId
+            },
+            include: [
+                {
+                    model: Chat,
+
+                    include: [
+                        {
+                            model: User,
+                            as: 'users',
+                            where: {
+                                id: {
+                                    [Op.ne]: currentUserId // Excluir al usuario actual
+                                }
+                            },
+                            through: {
+                                attributes: [] // No incluir atributos de la tabla intermedia
+                            }
+                        },
+                        {
+                            model: Message,
+                            as: 'messages',
+                            required: false, // LEFT JOIN para incluir chats sin mensajes
+                            order: [['date', 'DESC']],
+                            limit: 1
+                        }
+                    ]
+                }
+            ]
         });
+
     return chats;
 }
 
