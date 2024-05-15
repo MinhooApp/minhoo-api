@@ -4,7 +4,7 @@ const router = Router();
 import { get, gets, follow, } from '../../../useCases/user/_controller/controller';
 router.get('/', TokenValidation(), gets);
 router.post('/follow', TokenValidation(), follow);
-router.get('/one/:id?', TokenValidation(), get);
+router.get('/one/:id?', get);
 
 
 
