@@ -54,7 +54,7 @@ export const signUpWithImage = async (req: Request, res: Response) => {
                 roles.push(u.id);
             });
 
-            const user = await repository.saveToken(userTemp?.get("id"), roles);
+            const user = await repository.saveToken(userTemp?.get("id"), roles, 0);
             return formatResponse({ res: res, success: true, body: user });
         } catch (error: any) {
             if (file.image_profil) {
@@ -95,7 +95,7 @@ export const signUp = async (req: Request, res: Response) => {
         userTemp?.roles.forEach((u: any) => {
             roles.push(u.id);
         });
-        const user = await repository.saveToken(userTemp?.get("id"), roles);
+        const user = await repository.saveToken(userTemp?.get("id"), roles, 0);
         return formatResponse({ res: res, success: true, body: { user } });
     } catch (error) {
 

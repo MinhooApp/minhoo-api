@@ -4,6 +4,7 @@ import User from "../../_models/user/user";
 
 interface IPayload {
     id: string;
+    workerId: number,
     uid: string;
     name: string;
     username: string;
@@ -36,12 +37,13 @@ export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
             }
 
             try {
-                const { id, roles } = jwt.verify(
+                const { id, roles, workerId } = jwt.verify(
                     token,
                     process.env.SECRETORPRIVATEKEY || "tokenTest",
                 ) as IPayload;
 
                 req.userId = id;
+                req.workerId = workerId;
 
                 if (allowedRoles && !roles.some((r) => allowedRoles.includes(r))) {
                     return res.status(403).json({

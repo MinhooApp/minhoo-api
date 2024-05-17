@@ -53,9 +53,9 @@ export const findByEmail = async (email: String) => {
     return user;
 }
 //
-export const saveToken = async (id: any, roles: number[]) => {
+export const saveToken = async (id: any, roles: number[], workerId: number) => {
     ///Genero el token
-    const token = await generarJWT({ id: id, roles: roles });
+    const token = await generarJWT({ id: id, roles: roles, workerId: workerId });
 
     const body = { auth_token: token };
     const userTemp = await User.findOne({

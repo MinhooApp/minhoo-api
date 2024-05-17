@@ -1,16 +1,32 @@
 import { Includeable } from "sequelize";
-import User from '../../_models/user/user';
-import { userIncludes } from '../user/user_include';
+import Worker from '../../_models/worker/worker';
 import Service from '../../_models/service/service';
 import Category from "../../_models/category/category";
 import { serviceInclude } from "../../repository/service/service_includes";
+import { workerIncludes } from "../../repository/worker/worker_includes";
+import User from "../../_models/user/user";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 export const offerInclude: Includeable[] = [
     {
-        model: User,
+        model: Worker,
         as: "offerer",
-        include: userIncludes,
+        include: [
+            {
+                model: User,
+                as: "personal_data",
+                attributes: ["id", "name", "last_name", "image_profil"]
+
+            }
+            , {
+                model: Category,
+                as: "categories",
+                attributes: {
+                    exclude: excludeKeys,
+                },
+                through: { attributes: [] },
+            },
+        ],
         attributes: { exclude: ["auth_token", ...excludeKeys] },
     },
     {

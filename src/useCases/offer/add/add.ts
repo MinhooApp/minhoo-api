@@ -7,7 +7,7 @@ export const add = async (req: Request, res: Response) => {
 
     try {
         const body = req.body;
-        body.userId = req.userId
+        body.workerId = req.workerId
         const now = new Date(new Date().toUTCString())
         req.body.offer_date = now;
         const offer = await repository.add(body);

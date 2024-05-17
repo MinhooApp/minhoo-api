@@ -42,7 +42,7 @@ export const serviceInclude: Includeable[] = [
         as: "offers",
         include: [
             {
-                model: User, as: "offerer",
+                model: Worker, as: "offerer",
                 //include: userIncludes,
                 attributes: { exclude: ["auth_token", ...excludeKeys] },
             }
