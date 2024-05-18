@@ -57,8 +57,13 @@ export const update = async (req: Request, res: Response) => {
 
             } else {
                 bodyWorker.planId = 1;
+                var roles = [];
                 const workertTemp = await repository.add(bodyWorker);
-                await authRepository.saveToken(userTemp?.id, [1], workertTemp.id);
+                for (var i = 0; userTemp?.roles.lenght < i; i++) {
+                    roles.push(userTemp?.roles[i].d);
+                }
+
+                await authRepository.saveToken(userTemp?.id, roles, workertTemp.id);
             }
             const user = await uRepository.get(req.userId)
 

@@ -1,8 +1,9 @@
 import Router from 'express';
-import { add } from '../../../useCases/comment/_controller/controller';
+import { add, deleteComment } from '../../../useCases/comment/_controller/controller';
 import { TokenValidation } from '../../../libs/middlewares/verify_jwt';
 const router = Router();
 router.post('/', TokenValidation(), add);
+router.delete('/:id', TokenValidation(), deleteComment);
 
 
 
