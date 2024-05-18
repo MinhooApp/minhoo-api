@@ -4,6 +4,7 @@ import Comment from '../../_models/comment/comment';
 import MediaPost from '../../_models/post/media_post'
 import Category from '../../_models/category/category';
 import { followIncludes } from "../follower/follower_include";
+import { userIncludes } from '../user/user_include';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 const galeryInclude: Includeable[] = [{
     model: Category,
@@ -16,7 +17,10 @@ const userInclude: Includeable = {
     as: "user",
     include: [
         ...followIncludes,
-        ...galeryInclude],
+        ...galeryInclude,
+        ...userIncludes
+
+    ],
     attributes: [
         "id",
         "name",
@@ -54,6 +58,8 @@ export const postInclude: Includeable[] = [
             }
         ]
 
-    }
+    },
+
+
 
 ];
