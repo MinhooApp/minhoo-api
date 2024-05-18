@@ -28,12 +28,13 @@ export const update = async (id: any, body: any) => {
 
 }
 
-export const deletecomment = async () => {
+export const deletecomment = async (id: any) => {
 
 
     const comment = await Comment.update({
+        'is_delete': true
 
-    }, { where: { 'is_delete': 1 } });
+    }, { where: { id: id } });
     return comment;
 
 }
