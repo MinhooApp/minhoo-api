@@ -23,7 +23,7 @@ export const login = async (req: Request, res: Response) => {
                 roles.push(u.id);
             });
 
-            const user = await repository.saveToken(userTemp?.get("id"), roles);
+            const user = await repository.saveToken(userTemp?.get("id"), roles, userTemp?.get("worker") != null ? userTemp?.get("worker")["id"] : 0);
 
 
             return formatResponse({ res: res, success: true, body: { user } });

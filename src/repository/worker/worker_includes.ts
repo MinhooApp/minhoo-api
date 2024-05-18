@@ -10,9 +10,7 @@ export const workerIncludes: Includeable[] = [
     {
         model: User,
         as: "personal_data",
-        attributes: { exclude: excludeKeys },
-
-
+        attributes: ["id", "name", "last_name", "image_profil", "verified"],
     },
 
     {
@@ -26,10 +24,10 @@ export const workerIncludes: Includeable[] = [
         as: "plan",
         attributes: { exclude: excludeKeys },
     },
-    {
+    /*{
         model: MediaWorker,
         as: "worker_media",
 
         attributes: { exclude: excludeKeys },
-    }
+    }*/
 ]

@@ -93,11 +93,15 @@ Service.belongsTo(Category, { as: "category", foreignKey: "categoryId" });
 Service.hasMany(Offer, { as: "offers", foreignKey: "serviceId" });
 Offer.belongsTo(Service, { as: "service", foreignKey: "serviceId" });
 
-//Association Offer with User 
-User.hasMany(Offer, { as: "offers", foreignKey: "userId" });
-Offer.belongsTo(User, { as: "offerer", foreignKey: "userId" });
+//Association Offer with Worker 
+Worker.hasMany(Offer, { as: "offers", foreignKey: "workerId" });
+Offer.belongsTo(Worker, { as: "offerer", foreignKey: "workerId" });
 
+//Association Service with Service_Worker 
 
+// En el modelo Chat_User
+Service_Worker.belongsTo(Service, { foreignKey: 'serviceId' });
+Service_Worker.belongsTo(Worker, { foreignKey: 'workerId' });
 //Association Worker with MediaWorkwe
 Worker.hasMany(MediaWorker, { as: "worker_media", foreignKey: "workerId" });
 MediaWorker.belongsTo(Worker, { as: "worker", foreignKey: "workerId" });

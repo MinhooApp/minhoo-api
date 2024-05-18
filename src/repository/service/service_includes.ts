@@ -12,16 +12,9 @@ export const serviceInclude: Includeable[] = [
     {
         model: User,
         as: "client",
-        attributes: { exclude: ["auth_token", ...excludeKeys] },
-        include: [
-            {
-                model: Role,
-                as: "roles",
-                attributes: { exclude: excludeKeys },
-                through: { attributes: [] },
-            },
-        ]
-    }, {
+        attributes: ["id", "name", "last_name", "image_profil"]
+    },
+    {
         model: StatusService,
         as: "status",
         attributes: { exclude: excludeKeys },
@@ -31,9 +24,6 @@ export const serviceInclude: Includeable[] = [
         model: Category,
         as: "category",
         attributes: { exclude: excludeKeys },
-
-
-
     },
 
     {
@@ -42,9 +32,10 @@ export const serviceInclude: Includeable[] = [
         as: "offers",
         include: [
             {
-                model: User, as: "offerer",
-                //include: userIncludes,
+                model: Worker, as: "offerer",
+                include: workerIncludes,
                 attributes: { exclude: ["auth_token", ...excludeKeys] },
+                // where: { removed: false }
             }
         ],
         attributes: { exclude: excludeKeys },
@@ -56,9 +47,15 @@ export const serviceInclude: Includeable[] = [
     {
         model: Worker,
         as: "workers",
-        include: workerIncludes,
+        include: [
+            {
+                model: User,
+                as: "personal_data",
+                attributes: ["id", "name", "last_name", "image_profil"],
+            },
+        ],
         attributes: { exclude: excludeKeys },
-        through: { attributes: ["removed"] },
+        through: { attributes: ["removed"], where: { removed: false } },
     }
 
 

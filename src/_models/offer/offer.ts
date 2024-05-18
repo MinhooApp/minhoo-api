@@ -21,15 +21,15 @@ Offer.init(
                 },
             },
         },
-        userId: {
+        workerId: {
             type: DataTypes.INTEGER,
-            allowNull: false,
+            allowNull: false,//
             validate: {
                 notNull: {
-                    msg: "The field 'userId' can't be null",
+                    msg: "The field 'workerId' can't be null",
                 },
                 notEmpty: {
-                    msg: "The field 'userId' can't be empty",
+                    msg: "The field 'workerId' can't be empty",
                 },
             },
         },

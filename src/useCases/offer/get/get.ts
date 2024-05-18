@@ -17,12 +17,14 @@ export const getsByService = async (req: Request, res: Response) => {
 
     try {
         const offers = await repository.getsByService(serviceId);
+
         if (offers.length > 0 && offers[0].service.userId != req.userId) {
             return formatResponse({ res: res, success: true, body: { "offers": [] } });
         } else {
             return formatResponse({ res: res, success: true, body: { "offers": offers } });
         }
     } catch (error) {
+        console.log(error)
         return formatResponse({ res: res, success: false, message: error });
     }
 }

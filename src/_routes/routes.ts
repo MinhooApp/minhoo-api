@@ -1,12 +1,12 @@
 import user_routes from "./estandar/user/user_routes";
 import auth_routes from "./estandar/auth/auth_routes";
 import post_routes from "./estandar/post/post_routes";
+import chat_routes from "./estandar/chat/chat_routes";
 import offers_routes from "./estandar/offer/offer_routes";
 import worker_routes from './estandar/worker/worker_routes';
 import comment_routes from "./estandar/comment/comment_routes";
 import service_routes from "./estandar/service/service_routes";
 import category_routes from "./estandar/category/category_routes";
-import chat_routes from "./estandar/chat/chat_routes";
 
 
 

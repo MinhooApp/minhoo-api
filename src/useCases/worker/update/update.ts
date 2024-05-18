@@ -1,5 +1,4 @@
-import { add } from './../../../repository/auth/auth_repository';
-import { Request, Response, formatResponse, repository, uRepository, fs, uploadFile, path } from '../_module/module';
+import { Request, Response, formatResponse, repository, uRepository, fs, uploadFile, path, authRepository } from '../_module/module';
 const PUBLIC_FOLDER = path.join(__dirname, '../../../../src/public');
 const PROFILE_IMAGE_FOLDER = path.join(PUBLIC_FOLDER, 'uploads/images/user/profile/');
 export const update = async (req: Request, res: Response) => {
@@ -49,19 +48,22 @@ export const update = async (req: Request, res: Response) => {
             }
             //update user//
             await uRepository.update(req.userId, bodyUser)
-            const user = await uRepository.get(req.userId)
+            const userTemp = await uRepository.get(req.userId)
 
             //update worker
             if (worker != null) {
                 await repository.update(worker.id, bodyWorker);
-            } else {
-                bodyWorker.planId = 1,
-                    await repository.add(bodyWorker);
-            }
 
+
+            } else {
+                bodyWorker.planId = 1;
+                const workertTemp = await repository.add(bodyWorker);
+                await authRepository.saveToken(userTemp?.id, [1], workertTemp.id);
+            }
+            const user = await uRepository.get(req.userId)
 
             return formatResponse({
-                res: res, success: true, body: { user }
+                res: res, success: true, body: { user: user }
 
             });
         } catch (error) {
