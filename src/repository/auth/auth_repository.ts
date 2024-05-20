@@ -6,7 +6,14 @@ import Category from '../../_models/category/category';
 import generarJWT from '../../libs/helper/generate_jwt';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 import Verification from '../../_models/verification/verification';
+interface JWTOptions {
 
+    userId: number | null;
+    workerId?: number | null;
+    name?: string;
+    username?: string;
+    roles?: number[];
+}
 const userIncludes = [{
     model: Role,
     as: "roles",
@@ -53,14 +60,15 @@ export const findByEmail = async (email: String) => {
     return user;
 }
 //
-export const saveToken = async (id: any, roles: number[], workerId: number) => {
+export const saveToken = async ({ userId: userId, roles, workerId }: JWTOptions) => {
+
     ///Genero el token
-    const token = await generarJWT({ id: id, roles: roles, workerId: workerId });
+    const token = await generarJWT({ userId: userId, roles: roles, workerId: workerId });
 
     const body = { auth_token: token };
     const userTemp = await User.findOne({
         where: {
-            id: id,
+            id: userId,
             available: true,
         },
         include: userIncludes
@@ -68,7 +76,7 @@ export const saveToken = async (id: any, roles: number[], workerId: number) => {
     await userTemp?.update(body);
 
     const user = await User.findOne({
-        where: { id: id, available: true },
+        where: { id: userId, available: true },
         include: userIncludes,
         attributes: {
             exclude: excludeKeys,

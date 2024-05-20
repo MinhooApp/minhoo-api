@@ -23,7 +23,7 @@ export const gets = async () => {
 }
 
 
-export const history = async (userId?: String) => {
+export const history = async (userId?: number) => {
     if (userId != undefined) {
 
         const service = await Service.findAll({
@@ -56,7 +56,7 @@ export const history = async (userId?: String) => {
         return service;
     }
 }
-export const onGoing = async (userId?: String) => {
+export const onGoing = async (userId?: number) => {
     if (userId) {
         const service = await Service.findAll({
             where: {
