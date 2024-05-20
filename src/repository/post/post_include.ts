@@ -41,9 +41,11 @@ export const postInclude: Includeable[] = [
     {
         model: MediaPost,
         as: "post_media",
-        attributes: ["url", "is_img"
+        attributes: ["url", "is_img",
 
-        ]
+
+        ],
+        required: false
     },
 
     {
@@ -51,10 +53,13 @@ export const postInclude: Includeable[] = [
         as: "comments",
         attributes: ["id", "userId", "comment", "media_url"],
         where: { "is_delete": false },
+        required: false,
+
         include: [
             {
                 model: User, as: "commentator",
-                attributes: ["id", "name", "last_name", "image_profil"]
+                attributes: ["id", "name", "last_name", "image_profil"],
+                required: false
 
             }
         ]
