@@ -22,13 +22,39 @@ export const gets = async (req: Request, res: Response) => {
 }
 
 export const get = async (req: Request, res: Response) => {
+
     const { id } = req.params;
+
     try {
-        const user = await repository.get(id ?? req.userId);
+        const user = await repository.get(id);
         return formatResponse({ res: res, success: true, body: { user: user } });
     } catch (error) {
-            console.log(error)
+        console.log(req.userId)
+        return formatResponse({ res: res, success: false, message: error });
+    }
 
+
+}
+
+export const follows = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const follows = await repository.follows(id ?? req.userId);
+
+        return formatResponse({ res: res, success: true, body: { follows } });
+    } catch (error) {
+        console.log(error)
+        return formatResponse({ res: res, success: false, message: error });
+    }
+
+}
+export const followers = async (req: Request, res: Response) => {
+    try {
+        const { id } = req.params;
+        const followers = await repository.followers(id ?? req.userId);
+        return formatResponse({ res: res, success: true, body: { followers } });
+    } catch (error) {
+        console.log(error)
         return formatResponse({ res: res, success: false, message: error });
     }
 

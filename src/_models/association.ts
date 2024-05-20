@@ -108,9 +108,9 @@ MediaWorker.belongsTo(Worker, { as: "worker", foreignKey: "workerId" });
 
 //Association User with Fallower
 User.hasMany(Follower, { as: "followers", foreignKey: "userId" });
-Follower.belongsTo(User, { as: "follower", foreignKey: "userId" });
+Follower.belongsTo(User, { as: "follower_data", foreignKey: "userId" });
 User.hasMany(Follower, { as: "followings", foreignKey: "followerId" });
-Follower.belongsTo(User, { as: "following", foreignKey: "followerId" });
+Follower.belongsTo(User, { as: "following_data", foreignKey: "followerId" });
 
 
 

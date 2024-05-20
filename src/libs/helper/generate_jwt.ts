@@ -1,14 +1,24 @@
 import jsonwebtoken from "jsonwebtoken";
+interface JWTOptions {
+
+    userId: number | null;
+    workerId?: number | null;
+    name?: string;
+    username?: string;
+    roles?: number[];
+}
 const generarJWT = ({
-    id = "",
-    workerId = 0 as number,
+
+    userId,
+    workerId,
     name = "",
     username = "",
     roles = [] as number[],
-}) => {
+}: JWTOptions) => {
     return new Promise((resolve, reject) => {
         const payload = {
-            id,
+
+            userId,
             workerId,
             name,
             username,

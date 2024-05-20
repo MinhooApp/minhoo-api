@@ -3,7 +3,7 @@ import jwt from "jsonwebtoken";
 import User from "../../_models/user/user";
 
 interface IPayload {
-    id: string;
+    userId: number,
     workerId: number,
     uid: string;
     name: string;
@@ -37,12 +37,12 @@ export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
             }
 
             try {
-                const { id, roles, workerId } = jwt.verify(
+                const { userId, roles, workerId } = jwt.verify(
                     token,
                     process.env.SECRETORPRIVATEKEY || "tokenTest",
                 ) as IPayload;
 
-                req.userId = id;
+                req.userId = userId;
                 req.workerId = workerId;
 
                 if (allowedRoles && !roles.some((r) => allowedRoles.includes(r))) {
@@ -57,7 +57,7 @@ export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
 
                 const user = await User.findOne({
                     where: {
-                        id: id,
+                        id: userId,
                     },
                 });
 
