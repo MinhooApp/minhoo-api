@@ -12,7 +12,7 @@ export const serviceInclude: Includeable[] = [
     {
         model: User,
         as: "client",
-        attributes: ["id", "name", "last_name", "image_profil"]
+        attributes: ["id", "name", "last_name", "image_profil", "rate"]
     },
     {
         model: StatusService,

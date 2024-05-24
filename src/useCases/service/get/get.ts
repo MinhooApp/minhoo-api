@@ -32,6 +32,25 @@ export const onGoing = async (req: Request, res: Response) => {
         return formatResponse({ res: res, success: false, message: error })
     }
 }
+export const onGoingWorkers = async (req: Request, res: Response) => {
+    try {
+        const services = await repository.onGoingWorkers(req.workerId);
+        return formatResponse({ res: res, success: true, body: { services } })
+    } catch (error: any) {
+        console.log(error.toString());
+        return formatResponse({ res: res, success: false, message: error })
+    }
+}
+
+export const historyWorkers = async (req: Request, res: Response) => {
+    try {
+        const services = await repository.historyWorkers(req.workerId);
+        return formatResponse({ res: res, success: true, body: { services } })
+    } catch (error: any) {
+        console.log(error.toString());
+        return formatResponse({ res: res, success: false, message: error })
+    }
+}
 ////////////////////////Get a service//////////////////////
 export const get = async (req: Request, res: Response) => {
     const { id } = req.params;

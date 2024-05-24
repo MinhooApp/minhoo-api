@@ -38,9 +38,12 @@ export const users = async (page: any = 0, size: any = 10) => {
 
 export const get = async (id: any) => {
     const user = await User.findOne({
-        where: { id: id }, include: [...userIncludes, {
+        where: { id: id },
+
+        include: [...userIncludes, {
             model: Post,
             as: "posts",
+            where: { is_delete: false },
             include: [
 
                 {
@@ -50,7 +53,8 @@ export const get = async (id: any) => {
 
                     ]
                 }
-            ]
+            ],
+            required: false
         }],
     });
     return user;
@@ -84,7 +88,7 @@ export const follows = async (id: any) => {
             where: { followerId: id }, include: [{
                 model: User,
                 as: "following_data",
-                attributes: ["id", "name", "last_name", "image_profil",],
+                attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
                 include: [
                     {
                         model: Worker,
@@ -95,7 +99,13 @@ export const follows = async (id: any) => {
                             as: "categories",
                             attributes: ["id", "name", "es_name",],
                             through: { attributes: [] },
-                        }]
+                        },
+                        {
+                            model: User,
+                            as: "personal_data",
+                            attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+                        },
+                        ],
                     }
                 ],
 
@@ -113,7 +123,7 @@ export const followers = async (id: any) => {
             where: { userId: id }, include: [{
                 model: User,
                 as: "follower_data",
-                attributes: ["id", "name", "last_name", "image_profil"],
+                attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
                 include: [
                     {
                         model: Worker,
@@ -124,7 +134,14 @@ export const followers = async (id: any) => {
                             as: "categories",
                             attributes: ["id", "name", "es_name",],
                             through: { attributes: [] },
-                        }]
+                        },
+                        {
+                            model: User,
+                            as: "personal_data",
+                            attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+                        },
+
+                        ]
                     }
                 ],
             }]
