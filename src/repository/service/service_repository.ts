@@ -1,5 +1,6 @@
 
 import { Op } from 'sequelize';
+import Offer from '../../_models/offer/offer';
 import Service from '../../_models/service/service';
 import { serviceInclude } from './service_includes';
 import Service_Worker from '../../_models/service/service_worker';
@@ -76,7 +77,70 @@ export const onGoing = async (userId?: number) => {
         return service;
     }
 }
+export const onGoingWorkers = async (workerId: number) => {
 
+    const service = await Service.findAll({
+        where: {
+
+            is_available: true,
+            statusId: 1,
+
+
+        },
+
+
+        include: [
+            ...serviceInclude,
+            {
+                model: Offer,
+                as: "offers",
+                where: {
+                    workerId: workerId
+                },
+                required: true,
+
+            }
+        ], order: [['service_date', 'DESC']]
+    });
+    return service;
+
+}
+
+export const historyWorkers = async (workerId: number) => {
+
+    const service = await Service.findAll({
+        where: {
+
+            is_available: true,
+            [Op.not]: [
+                {
+                    statusId: 1
+                }
+            ]
+
+
+        },
+
+
+        include: [
+            ...serviceInclude,
+            {
+                model: Offer,
+                as: "offers",
+                where: {
+                    workerId: workerId,
+                    accepted: true,
+
+
+                },
+                required: true,
+
+            }
+        ], order: [['service_date', 'DESC']]
+    });
+    return service;
+
+}
 export const get = async (id: any) => {
     const service = await Service.findOne({ where: { id: id }, include: serviceInclude });
     return service;
