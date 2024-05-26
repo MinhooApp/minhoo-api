@@ -14,9 +14,9 @@ import MediaPost from "./post/media_post";
 import Category from "./category/category";
 import Follower from "./follower/follower";
 import MediaWorker from "./worker/media_worker";
+import StatusService from "./status/statusService";
 import Service_Worker from "./service/service_worker";
 import Verification from "./verification/verification";
-import StatusService from "./status/statusService";
 const ver = Verification;
 console.log(ver.toString());
 
@@ -150,3 +150,4 @@ Chat_User.belongsTo(Chat, { foreignKey: 'chatId' });
 Chat.belongsToMany(User, { through: Chat_User, foreignKey: 'chatId', as: 'user_chat' });
 // En el modelo User
 User.belongsToMany(Chat, { through: Chat_User, foreignKey: 'userId', as: 'user_chat' });
+
