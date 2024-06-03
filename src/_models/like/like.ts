@@ -23,27 +23,13 @@ Like.init(
         },
         postId: {
             type: DataTypes.INTEGER,
-            allowNull: false,
-            validate: {
-                notNull: {
-                    msg: "The field 'postId' can't be null",
-                },
-                notEmpty: {
-                    msg: "The field 'postId' can't be empty",
-                },
-            },
+            allowNull: true,
+
         },
         commentId: {
             type: DataTypes.INTEGER,
-            allowNull: false,
-            validate: {
-                notNull: {
-                    msg: "The field 'commentId' can't be null",
-                },
-                notEmpty: {
-                    msg: "The field 'commentId' can't be empty",
-                },
-            },
+            allowNull: true,
+
         },
 
     },
