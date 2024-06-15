@@ -191,12 +191,17 @@ export const getUserChats = async (currentUserId: any) => {
         {
 
             where: {
-                userId: currentUserId
+                userId: currentUserId,
+
             },
             include: [
                 {
                     model: Chat,
-
+                    where: [{
+                        deletedBy: {
+                            [Op.not]: [-1, currentUserId] // Excluir -1 y currentUserId
+                        }
+                    }],
                     include: [
                         {
                             model: User,
@@ -205,6 +210,7 @@ export const getUserChats = async (currentUserId: any) => {
                                 id: {
                                     [Op.ne]: currentUserId // Excluir al usuario actual
                                 }
+
                             },
                             through: {
                                 attributes: [] // No incluir atributos de la tabla intermedia
@@ -235,7 +241,13 @@ export const deleteChatByMessages = async (chatId: any, currentUserId: any) => {
         { where: { chatId } }
     );
 };
-
+export const deleteChat = async (chatId: any, currentUserId: any) => {
+    // Actualiza la entrada de Message para marcar los mensajes como eliminados por el usuario actual
+    await Chat.update(
+        { deletedBy: sequelize.literal(`CASE WHEN deletedBy = 0 THEN ${currentUserId} WHEN deletedBy <> ${currentUserId} THEN -1 ELSE deletedBy END`) },
+        { where: { id: chatId } }
+    );
+};
 async function chatExist(currentUserId: any, otherUserId: any) {
     const chat = await Chat_User.findAll({
         where: {
