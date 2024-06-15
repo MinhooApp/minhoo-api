@@ -106,7 +106,28 @@ export const follows = async (id: any) => {
                             attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
                         },
                         ],
-                    }
+
+                    },
+                    {
+                        model: Follower,
+                        as: "followers",
+                        //where: Sequelize.literal("`user->followers`.`userId`="),
+                        attributes: [
+
+                            "followerId" // Incluir el ID en la cláusula GROUP BY
+                        ],
+                        required: false
+
+                    },
+                    {
+                        model: Follower,
+                        as: "followings",
+                        // where: Sequelize.literal("`followings`.`followerId`= user.id"),
+                        attributes: [
+                            "userId" // Incluir el ID en la cláusula GROUP BY
+                        ],
+                        required: false
+                    },
                 ],
 
 
@@ -142,8 +163,31 @@ export const followers = async (id: any) => {
                         },
 
                         ]
-                    }
+                    },
+                    {
+                        model: Follower,
+                        as: "followers",
+                        //where: Sequelize.literal("`user->followers`.`userId`="),
+                        attributes: [
+
+                            "followerId" // Incluir el ID en la cláusula GROUP BY
+                        ],
+                        required: false
+
+                    },
+                    {
+                        model: Follower,
+                        as: "followings",
+                        // where: Sequelize.literal("`followings`.`followerId`= user.id"),
+                        attributes: [
+                            "userId" // Incluir el ID en la cláusula GROUP BY
+                        ],
+                        required: false
+                    },
                 ],
+
+
+
             }]
         }
     );
