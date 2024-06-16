@@ -52,10 +52,10 @@ export const initNewChat = async (currentUserId: any, otherUserId: any, mensajeI
 
     }
     else {
-        const ch = await Message.create({ text: mensajeInicial, senderId: currentUserId, chatId: chat[0].chatId, date: now });
+        await Message.create({ text: mensajeInicial, senderId: currentUserId, chatId: chat[0].chatId, date: now });
         //si existe el chat y fue eliminado, se reactiva
-        await ch.update({ deletedBy: 0 });
-        return await Chat.findByPk(chat[0].chatId, {
+
+        const ch = await Chat.findByPk(chat[0].chatId, {
             attributes: { exclude: excludeKeys }, include: [
                 {
                     model: Message,
@@ -64,6 +64,12 @@ export const initNewChat = async (currentUserId: any, otherUserId: any, mensajeI
                 }
             ]
         })
+        if (chat[0].deleteBy != 0) {
+
+
+            await ch!.update({ deletedBy: 0 });
+        }
+        return ch;
 
     }
 
