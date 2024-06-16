@@ -190,7 +190,7 @@ export const deleteChatByMessages = async (chatId: any, currentUserId: any) => {
 export const deleteChat = async (chatId: any, currentUserId: any) => {
     // Actualiza la entrada de Message para marcar los mensajes como eliminados por el usuario actual
 
-    await deleteChat(chatId, currentUserId);
+    await deleteChatByMessages(chatId, currentUserId);
     await Chat.update(
         { deletedBy: sequelize.literal(`CASE WHEN deletedBy = 0 THEN ${currentUserId} WHEN deletedBy <> ${currentUserId} THEN -1 ELSE deletedBy END`) },
         { where: { id: chatId } }
