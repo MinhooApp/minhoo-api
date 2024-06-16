@@ -52,7 +52,9 @@ export const initNewChat = async (currentUserId: any, otherUserId: any, mensajeI
 
     }
     else {
-        await Message.create({ text: mensajeInicial, senderId: currentUserId, chatId: chat[0].chatId, date: now });
+        const ch = await Message.create({ text: mensajeInicial, senderId: currentUserId, chatId: chat[0].chatId, date: now });
+        //si existe el chat y fue eliminado, se reactiva
+        await ch.update({ deletedBy: 0 });
         return await Chat.findByPk(chat[0].chatId, {
             attributes: { exclude: excludeKeys }, include: [
                 {
@@ -132,60 +134,6 @@ export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
 
 // Función para obtener chats que no han sido eliminados por ambos usuarios
 export const getUserChats = async (currentUserId: any) => {
-    /*const chats =
-
-
-        await Chat.findAll({
-
-
-            where: {
-
-                [Op.or]: [
-                    { deletedBy: 0 }, // Chats no eliminados por ninguno de los usuarios
-                    {
-                        [Op.and]: [
-                            { deletedBy: { [Op.ne]: currentUserId } }, // Mensajes no eliminados por el usuario actual
-                            { deletedBy: { [Op.ne]: -1 } }, // Mensajes no eliminados por ambos usuarios
-                        ],
-                    },
-                ],
-            },
-
-            include: [
-
-                {
-                    model: Message,
-                    as: "messages",
-                    where: {
-
-                        [Op.or]: [
-                            { deletedBy: 0 }, // Chats no eliminados por ninguno de los usuarios
-                            {
-                                [Op.and]: [
-                                    { deletedBy: { [Op.ne]: currentUserId } }, // Mensajes no eliminados por el usuario actual
-                                    { deletedBy: { [Op.ne]: -1 } }, // Mensajes no eliminados por ambos usuarios
-                                ],
-                            },
-                        ],
-                    },
-
-
-                    attributes: { exclude: excludeKeys },
-
-                },
-                {
-                    model: User,
-                    where: {
-                        id: { [Op.ne]: currentUserId }
-                    }
-
-                },
-
-            ],
-            attributes: { exclude: excludeKeys },
-            order: [[{ model: Message, as: "messages" }, 'date', 'DESC']], // Ordena por el campo 'date' de forma descendente
-        });*/
-
     const chats = await Chat_User.findAll(
 
         {
@@ -232,8 +180,6 @@ export const getUserChats = async (currentUserId: any) => {
 }
 
 
-
-
 export const deleteChatByMessages = async (chatId: any, currentUserId: any) => {
     // Actualiza la entrada de Message para marcar los mensajes como eliminados por el usuario actual
     await Message.update(
@@ -243,6 +189,8 @@ export const deleteChatByMessages = async (chatId: any, currentUserId: any) => {
 };
 export const deleteChat = async (chatId: any, currentUserId: any) => {
     // Actualiza la entrada de Message para marcar los mensajes como eliminados por el usuario actual
+
+    await deleteChat(chatId, currentUserId);
     await Chat.update(
         { deletedBy: sequelize.literal(`CASE WHEN deletedBy = 0 THEN ${currentUserId} WHEN deletedBy <> ${currentUserId} THEN -1 ELSE deletedBy END`) },
         { where: { id: chatId } }
