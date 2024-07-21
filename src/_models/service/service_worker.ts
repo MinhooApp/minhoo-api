@@ -46,6 +46,19 @@ Service_Worker.init(
                 },
             },
         },
+        canceled: {
+            type: DataTypes.BOOLEAN,
+            allowNull: false,
+            defaultValue: false,
+            validate: {
+                notNull: {
+                    msg: "The field 'canceled' can't be null",
+                },
+                notEmpty: {
+                    msg: "The field 'canceled' can't be empty",
+                },
+            },
+        },
     },
     {
         sequelize, modelName: 'service_worker'

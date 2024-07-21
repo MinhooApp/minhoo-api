@@ -51,6 +51,12 @@ Offer.init(
             defaultValue: false,
 
         },
+        canceled: {
+            type: DataTypes.BOOLEAN,
+            allowNull: false,
+            defaultValue: false,
+
+        },
         offer_date: {
             type: DataTypes.DATE,
             allowNull: false,
