@@ -13,11 +13,11 @@ export const gets = async () => {
     return offer;
 }
 export const getsByService = async (serviceId: any) => {
-    const offer = await Offer.findAll({ where: { serviceId: serviceId }, include: offerInclude, attributes: { exclude: excludeKeys }, order: [["offer_date", "DESC"]] });
+    const offer = await Offer.findAll({ where: { serviceId: serviceId, canceled: false }, include: offerInclude, attributes: { exclude: excludeKeys }, order: [["offer_date", "DESC"]] });
     return offer;
 }
 export const get = async (id: any) => {
-    const offer = await Offer.findOne({ where: { id: id }, include: offerInclude, attributes: { exclude: excludeKeys }, order: [["offer_date", "DESC"]] });
+    const offer = await Offer.findOne({ where: { id: id, canceled: false }, include: offerInclude, attributes: { exclude: excludeKeys }, order: [["offer_date", "DESC"]] });
     return offer;
 }
 
@@ -28,12 +28,9 @@ export const update = async (id: any, body: any) => {
 
 }
 
-export const deleteoffer = async () => {
+export const deleteoffer = async (id: any) => {
+    const offerTemp = await Offer.findByPk(id);
 
-
-    const offer = await Offer.update({
-
-    }, { where: {} });
-    return offer;
+    await offerTemp?.destroy();
 
 }

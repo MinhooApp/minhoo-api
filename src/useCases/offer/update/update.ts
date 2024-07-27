@@ -1,4 +1,4 @@
-import { Request, Response, formatResponse, repository, serviceRepository } from '../_module/module';
+import { Request, Response, formatResponse, repository, serviceRepository, socket } from '../_module/module';
 
 
 
@@ -42,3 +42,30 @@ export const acceptOffer = async (req: Request, res: Response) => {
 }
 
 
+export const cancelOffer = async (req: Request, res: Response) => {
+    const { offerId } = req.params;
+    // const { serviceId, workerId, } = req.body;
+    try {
+
+        const offer = await repository.get(offerId);
+        if (offer == null) {
+            return formatResponse({ res: res, success: false, message: "Offer not found.", code: 400 });
+        }
+
+        //cancel worker from offer////
+        await serviceRepository.cancelWorker(offer!.serviceId, req.workerId);
+        await repository.update(offerId, { accepted: false, canceled: true })
+
+
+        const service = await serviceRepository.get(offer!.serviceId);
+
+        socket.emit("offers", offer)
+        return formatResponse({ res: res, success: true, body: { service } });
+
+    } catch (error) {
+        console.log(error);
+        return formatResponse({ res: res, success: false, message: error });
+    }
+
+
+}

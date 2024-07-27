@@ -35,9 +35,11 @@ export const serviceInclude: Includeable[] = [
                 model: Worker, as: "offerer",
                 include: workerIncludes,
                 attributes: { exclude: ["auth_token", ...excludeKeys] },
-                // where: { removed: false }
+                //   where: { removed: false }
             }
         ],
+        where: { canceled: false },
+        required: false,
         attributes: { exclude: excludeKeys },
 
 
