@@ -51,7 +51,7 @@ export const postInclude: Includeable[] = [
     {
         model: Comment,
         as: "comments",
-        attributes: ["id", "userId", "comment", "media_url"],
+        attributes: ["id", "userId", "comment", "media_url", "created_date"],
         where: { "is_delete": false },
         required: false,
 
