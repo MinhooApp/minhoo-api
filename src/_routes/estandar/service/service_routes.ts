@@ -1,5 +1,5 @@
 import Router from 'express';
-import { add, myHistory, history, get, gets, myonGoing, onGoing, onGoingWorkers, historyWorkers, update, deleteService, removeWorker } from '../../../useCases/service/_controller/controller';
+import { add, myHistory, history, get, gets, myonGoing, onGoing, onGoingWorkers, onGoingCanceledWorkers, historyWorkers, update, deleteService, removeWorker } from '../../../useCases/service/_controller/controller';
 import { TokenValidation } from '../../../libs/middlewares/verify_jwt';
 const router = Router();
 router.post('/', TokenValidation(), add);
@@ -7,6 +7,7 @@ router.put('/:id', TokenValidation(), update);
 router.get('/myonGoing', TokenValidation(), myonGoing);
 router.get('/onGoing', onGoing);
 router.get('/onGoing/worker', TokenValidation(), onGoingWorkers);
+router.get('/onGoing/worker/canceled', TokenValidation(), onGoingCanceledWorkers);
 router.get('/history/worker', TokenValidation(), historyWorkers);
 router.delete('/:id', TokenValidation(), deleteService);
 router.delete('/worker/:serviceId', TokenValidation(), removeWorker);

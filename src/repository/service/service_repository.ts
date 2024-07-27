@@ -95,7 +95,8 @@ export const onGoingWorkers = async (workerId: number) => {
                 model: Offer,
                 as: "offers",
                 where: {
-                    workerId: workerId
+                    workerId: workerId,
+                    canceled: false
                 },
                 required: true,
 
@@ -105,7 +106,35 @@ export const onGoingWorkers = async (workerId: number) => {
     return service;
 
 }
+export const onGoingCanceledWorkers = async (workerId: number) => {
 
+    const service = await Service.findAll({
+        where: {
+
+            is_available: true,
+            statusId: 1,
+
+
+        },
+
+
+        include: [
+            ...serviceInclude,
+            {
+                model: Offer,
+                as: "offers",
+                where: {
+                    workerId: workerId,
+                    canceled: true
+                },
+                required: true,
+
+            }
+        ], order: [['service_date', 'DESC']]
+    });
+    return service;
+
+}
 export const historyWorkers = async (workerId: number) => {
 
     const service = await Service.findAll({
@@ -173,7 +202,7 @@ export const removeWorker = async (serviceId: any, workerId: any) => {
 }
 export const cancelWorker = async (serviceId: any, workerId: any) => {
     // const serviceTemp = await Service.findByPk(id,);
-    const temp = await Service_Worker.findOne({ where: { serviceId: serviceId, workerId: workerId } })
+    const temp = await Offer.findOne({ where: { serviceId: serviceId, workerId: workerId } })
     const worker = temp?.update({ removed: false, canceled: true })
 
     return worker;

@@ -3,6 +3,8 @@ import { offerInclude } from './offer_includes';
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 export const add = async (body: any) => {
+    const temp = await Offer.findOne({ where: { serviceId: body.serviceId, workerId: body.workerId } });
+    await temp?.destroy();
     const offer = await Offer.create(body);
 
     return offer;

@@ -42,6 +42,15 @@ export const onGoingWorkers = async (req: Request, res: Response) => {
     }
 }
 
+export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
+    try {
+        const services = await repository.onGoingCanceledWorkers(req.workerId);
+        return formatResponse({ res: res, success: true, body: { services } })
+    } catch (error: any) {
+        console.log(error.toString());
+        return formatResponse({ res: res, success: false, message: error })
+    }
+}
 export const historyWorkers = async (req: Request, res: Response) => {
     try {
         const services = await repository.historyWorkers(req.workerId);
