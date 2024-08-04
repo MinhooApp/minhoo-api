@@ -13,7 +13,7 @@ interface JWTOptions {
     name?: string;
     username?: string;
     roles?: number[];
-}
+}//
 const userIncludes = [{
     model: Role,
     as: "roles",

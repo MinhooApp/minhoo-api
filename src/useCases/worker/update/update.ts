@@ -63,7 +63,8 @@ export const update = async (req: Request, res: Response) => {
                     roles.push(userTemp?.roles[i].d);
                 }
 
-                await authRepository.saveToken(userTemp?.id, roles, workertTemp.id);
+
+                await authRepository.saveToken({ userId: userTemp?.get("id"), roles: roles });
             }
             const user = await uRepository.get(req.userId)
 

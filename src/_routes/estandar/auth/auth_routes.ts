@@ -1,9 +1,10 @@
 import Router from 'express';
-import { validateEmail, verifyEmailCode, signUp, login } from '../../../useCases/auth/_controller/controller';
+import { validateEmail, verifyEmailCode, signUp, signUpWithImage, login } from '../../../useCases/auth/_controller/controller';
 const router = Router();
 router.post('/validate/email', validateEmail);
 router.post('/verify/email', verifyEmailCode);
-router.post('/', signUp);
+router.post('/', signUpWithImage);
+router.post('/image', signUpWithImage);
 router.post('/login', login);
 
 export default router

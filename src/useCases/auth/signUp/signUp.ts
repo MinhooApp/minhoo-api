@@ -1,21 +1,26 @@
 
 
-import { formatResponse, repository, generatePassword, Request, Response, uploadFile, fs, sendEmail } from '../_module/module';
-
+import { formatResponse, repository, path, uRepository, generatePassword, Request, Response, uploadFile, fs, sendEmail } from '../_module/module';
+const PUBLIC_FOLDER = path.join(__dirname, '../../../../src/public');
+const PROFILE_IMAGE_FOLDER = path.join(PUBLIC_FOLDER, 'uploads/images/user/profile/');
 const now: any = new Date(new Date().toUTCString())
 
 
 export const signUpWithImage = async (req: Request, res: Response) => {
 
     var upload = uploadFile({
-        route: "/uploads/images/user/profil",
-        file: "image_profil",
-        maxFiles: 1,
+        route: "/uploads/images/user/profile",
+        file: "image_profile",
+        maxFiles: 1, // Cambiar según la cantidad máxima de archivos que quieres permitir
         is_img: true,
     });
+
+
     upload(req, res, async function (err) {
-        var file: any = [];
-        file = req.files;
+        var files: any = [];
+        files = req.files
+        var trash = "";
+
         const roles: any = [];
         const { email, password } = req.body;
         const hashPassword = generatePassword(password as string);
@@ -26,8 +31,20 @@ export const signUpWithImage = async (req: Request, res: Response) => {
         if (validateEmail) {
 
             try {
+                if (files && files.image_profile != null && files.image_profile.length > 0) {
+
+
+                    if (req.body.delete != "profile.png") {
+                        trash = PROFILE_IMAGE_FOLDER + req.body.delete;
+                        fs.unlink(trash, (err: any) => {
+                            if (err) {
+                                console.error(err);
+                            }
+                        });
+                    }
+                }
                 //Elimina el archivo despues de cargarlo, porque el usuario existe
-                fs.unlink(file.image_profil[0].path, (err: any) => {
+                fs.unlink(files.image_profile[0].path, (err: any) => {
                     if (err) {
                         console.error(err);
                     }
@@ -41,13 +58,13 @@ export const signUpWithImage = async (req: Request, res: Response) => {
 
         try {
             //Si existe el archivo, lo agrego al body
-            if (file && file.image_profil) {
-                req.body.image_profil = file.image_profil[0].path.replace("src\\public\\", "\\")
+            if (files && files.image_profile) {
+                req.body.image_profil = files.image_profile[0].path.replace("src\\public\\", "\\")
 
             }
 
-            const categories: [] = req.body.categories.split(',');
-            req.body.categories = categories;
+            // const categories: [] = req.body.categories.split(',');
+            // req.body.categories = categories;
             const userTemp: any = await repository.add(req.body);
 
             userTemp?.roles.forEach((u: any) => {
@@ -55,10 +72,10 @@ export const signUpWithImage = async (req: Request, res: Response) => {
             });
             //userTemp?.get("id"), roles, 0
             const user = await repository.saveToken({ userId: userTemp?.get("id"), roles: roles });
-            return formatResponse({ res: res, success: true, body: user });
+            return formatResponse({ res: res, success: true, body: { user } });
         } catch (error: any) {
-            if (file.image_profil) {
-                const filePath = file.image_profil[0].path;
+            if (files.image_profil) {
+                const filePath = files.image_profil[0].path;
                 fs.unlink(filePath, (err: any) => {
                     if (err) {
                         console.error(err);
@@ -155,7 +172,8 @@ export const verifyEmailCode = async (req: Request, res: Response) => {
             if (differenceInDays > 1) {
                 return formatResponse({ res: res, success: false, message: "Expired code" });
             }
-            signUp(req, res);
+            return formatResponse({ res: res, success: true, message: "welcome!!" });
+            // signUpWithImage(req, res);
         } else {
             return formatResponse({ res: res, success: false, message: "Incorrect code" });
         }
