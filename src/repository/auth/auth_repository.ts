@@ -80,6 +80,7 @@ export const saveToken = async ({
   });
 
   const body = { auth_token: token, uuid: uuid };
+  console.log("HOLAAA "+uuid);
   const userTemp = await User.findOne({
     where: {
       id: userId,
