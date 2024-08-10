@@ -5,25 +5,40 @@ admin.initializeApp({
   credential: admin.credential.cert(firebase_key as admin.ServiceAccount),
 });
 
-export const sendPushToOneUser = async (title: any, body: any, token: any) => {
-  console.log("AQUII ");
-
-  let message = {
-    token: token,
+export const sendPushToSingleUser = async (
+  title: string,
+  body: string,
+  token: string
+) => {
+  const message = {
     notification: {
-      title: title, // Android, iOS (Watch)
-      body: body, // Android, iOS
+      title: title,
+      body: body,
     },
     data: {
       title: title,
       body: body,
       idnotificationlog: "4",
     },
+    token: token,
   };
 
-  sendMessage(message);
+  try {
+    const response = await admin.messaging().send(message);
+    console.log("Successfully sent message:", response);
+  } catch (error: any) {
+    if (
+      error.errorInfo.code === "messaging/registration-token-not-registered"
+    ) {
+      console.error(
+        "The registration token is not registered. Please update your tokens."
+      );
+      // Aquí podrías eliminar el token de la base de datos o tomar otra acción
+    } else {
+      console.error("Error sending message:", error);
+    }
+  }
 };
-
 export const sendPushToMultipleUsers = async (
   title: string,
   body: string,
@@ -51,20 +66,6 @@ export const sendPushToMultipleUsers = async (
     console.error("Error sending message:", error);
   }
 };
-
-export const sendPushToTopic = async (title: any, body: any, topic: any) => {
-  let message = {
-    topic: topic,
-    notification: {},
-    data: {
-      title: title,
-      body: body,
-    },
-  };
-
-  sendMessage(message);
-};
-
 function sendMessage(message: any) {
   admin
     .messaging()

@@ -1,21 +1,38 @@
-
-import { Request, Response, formatResponse, repository, socket } from '../_module/module';
-
-
+import {
+  Request,
+  Response,
+  formatResponse,
+  repository,
+  userRepository,
+  socket,
+  sendNotification,
+} from "../_module/module";
 
 export const add = async (req: Request, res: Response) => {
+  try {
+    const body = req.body;
+    body.workerId = req.workerId;
+    const now = new Date(new Date().toUTCString());
+    req.body.offer_date = now;
+    const offer = await repository.add(body);
+    const response = await repository.get(offer.id);
 
-    try {
-        const body = req.body;
-        body.workerId = req.workerId
-        const now = new Date(new Date().toUTCString())
-        req.body.offer_date = now;
-        const offer = await repository.add(body);
-        const response = await repository.get(offer.id);
-
-        socket.emit("offers", offer)
-        return formatResponse({ res: res, success: true, body: { "offer": response } });
-    } catch (error) {
-        return formatResponse({ res: res, success: false, message: error });
-    }
-}
+    socket.emit("offers", offer);
+    await sendNotification({
+      userId: response!.service.userId,
+      interactorId: req.userId,
+      serviceId: offer.serviceId,
+      offerId: offer.id,
+      type: "postulation",
+      message: `Sent you a new offer!`,
+    });
+    return formatResponse({
+      res: res,
+      success: true,
+      body: { offer: response },
+    });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};

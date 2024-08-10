@@ -1,11 +1,9 @@
 import { io } from "socket.io-client";
 import { Request, Response } from "express";
-import Offer from "../../../_models/offer/offer";
-import { sendNotification } from "../../notification/add/add";
 import { formatResponse } from "../../_response/format_response";
-import * as repository from "../../../repository/offer/offer_repository";
+import * as repository from "../../../repository/notification/notification_repository";
 import * as userRepository from "../../../repository/user/user_repository";
-import * as serviceRepository from "../../../repository/service/service_repository";
+import { sendPushToSingleUser } from "../../common/push_notification/notification";
 const socket = io(process.env.URL_SOCKET || "");
 export {
   Request,
@@ -13,8 +11,6 @@ export {
   formatResponse,
   repository,
   userRepository,
-  serviceRepository,
+  sendPushToSingleUser,
   socket,
-  Offer,
-  sendNotification,
 };

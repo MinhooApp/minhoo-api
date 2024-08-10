@@ -5,7 +5,7 @@ import { formatResponse } from "../../_response/format_response";
 import * as repository from "../../../repository/service/service_repository";
 import * as workerRepository from "../../../repository/worker/worker_repository";
 import {
-  sendPushToOneUser,
+  sendPushToSingleUser,
   sendPushToMultipleUsers,
 } from "../../common/push_notification/notification";
 const socket = io(process.env.URL_SOCKET || "");
@@ -17,7 +17,7 @@ export {
   repository,
   socket,
   axios,
-  sendPushToOneUser,
+  sendPushToSingleUser,
   sendPushToMultipleUsers,
   workerRepository,
 };
