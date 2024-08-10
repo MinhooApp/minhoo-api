@@ -202,5 +202,8 @@ export const cancelWorker = async (serviceId: any, workerId: any) => {
 };
 
 export const deleteservice = async (id: any) => {
-  await Service.update({ is_available: false }, { where: { id: id } });
+  await Service.update(
+    { is_available: false, statusId: 5 },
+    { where: { id: id } }
+  );
 };
