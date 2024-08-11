@@ -30,7 +30,7 @@ export const add = async (req: Request, res: Response) => {
           );
         }
         req.body.userId = req.userId;
-     const comment=   await repository.add(req.body);
+        const comment = await repository.add(req.body);
         const post = await postRepository.get(req.body.postId);
 
         await sendNotification({
@@ -39,7 +39,7 @@ export const add = async (req: Request, res: Response) => {
           postId: post?.id,
           commentId: comment.id,
           type: "comment",
-          message: `Commented: ${req.body.comment}`, 
+          message: `Commented: ${req.body.comment}`,
         });
         return formatResponse({ res: res, success: true, body: { post } });
       } catch (error: any) {

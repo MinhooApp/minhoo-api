@@ -80,6 +80,7 @@ export const update = async (req: Request, res: Response) => {
         await authRepository.saveToken({
           userId: userTemp?.get("id"),
           uuid: userTemp?.get("uuid"),
+          workerId: workertTemp?.get("id"),
           roles: roles,
         });
       }
