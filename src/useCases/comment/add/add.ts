@@ -30,16 +30,16 @@ export const add = async (req: Request, res: Response) => {
           );
         }
         req.body.userId = req.userId;
-        await repository.add(req.body);
+        const comment = await repository.add(req.body);
         const post = await postRepository.get(req.body.postId);
 
         await sendNotification({
           userId: post?.userId,
           interactorId: req.userId,
           postId: post?.id,
-          commentId: req.userId,
+          commentId: comment.id,
           type: "comment",
-          message: `Commented: ${req.body.comment}`, //
+          message: `Commented: ${req.body.comment}`,
         });
         return formatResponse({ res: res, success: true, body: { post } });
       } catch (error: any) {
