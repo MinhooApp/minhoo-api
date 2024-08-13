@@ -56,7 +56,7 @@ export const acceptOffer = async (req: Request, res: Response) => {
     const service = await serviceRepository.get(offer!.serviceId);
 
     await sendNotification({
-      userId: offer.offerer.id,
+      userId: offer.offerer.userId,
       interactorId: req.userId,
       serviceId: offer.serviceId,
       offerId: offer.id,
