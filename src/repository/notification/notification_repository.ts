@@ -72,6 +72,7 @@ export const myNotifications = async (id: number) => {
         attributes: ["id", "senderId", "text"],
       },
     ],
+    order: [["notification_date", "DESC"]],
   });
   return notification;
 };
