@@ -123,11 +123,11 @@ export const historyWorkers = async (workerId: number) => {
   const service = await Service.findAll({
     where: {
       is_available: true,
-      [Op.not]: [
+      /*[Op.not]: [
         {
           //statusId: 1,
         },
-      ],
+      ],*/
     },
 
     include: [
