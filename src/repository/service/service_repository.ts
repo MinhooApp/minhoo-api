@@ -125,7 +125,7 @@ export const historyWorkers = async (workerId: number) => {
       is_available: true,
       [Op.not]: [
         {
-          statusId: 1,
+          //statusId: 1,
         },
       ],
     },
