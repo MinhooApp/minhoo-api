@@ -37,6 +37,7 @@ export const history = async (userId?: number) => {
         ],
       },
       include: serviceInclude,
+      order: [["service_date", "DESC"]],
     });
     return service;
   } else {
