@@ -138,13 +138,13 @@ export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
 // Función para obtener chats que no han sido eliminados por ambos usuarios
 export const getUserChats = async (currentUserId: any) => {
   const chats = await Chat_User.findAll({
-    order: [["date", "ASC"]],
     where: {
       userId: currentUserId,
     },
     include: [
       {
         model: Chat,
+        order: [["date", "ASC"]],
         where: [
           {
             deletedBy: {
