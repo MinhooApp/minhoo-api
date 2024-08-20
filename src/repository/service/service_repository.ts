@@ -19,6 +19,7 @@ export const gets = async () => {
   const service = await Service.findAll({
     where: { is_available: true },
     include: serviceInclude,
+    order: [["service_date", "DESC"]],
   });
   return service;
 };
@@ -47,6 +48,7 @@ export const history = async (userId?: number) => {
           },
         ],
       },
+      order: [["service_date", "DESC"]],
     });
     return service;
   }
@@ -157,6 +159,7 @@ export const getByUser = async (id: any, userId: any) => {
   const service = await Service.findOne({
     where: { id: id, userId: userId },
     include: serviceInclude,
+    order: [["service_date", "DESC"]],
   });
   return service;
 };
