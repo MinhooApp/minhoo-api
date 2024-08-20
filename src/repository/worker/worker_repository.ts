@@ -2,7 +2,7 @@ import User from "../../_models/user/user";
 import Category from "../../_models/category/category";
 import Worker from "../../_models/worker/worker";
 import { workerIncludes } from "./worker_includes";
-import { Op } from "sequelize";
+import { Op, Sequelize } from "sequelize";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 export const add = async (body: any) => {
@@ -18,16 +18,19 @@ export const gets = async () => {
 };
 
 export const workers = async (page: any, size: any) => {
-  let option = {
+  const option = {
     limit: +size,
     offset: +page * +size,
   };
+
   const workers = await Worker.findAndCountAll({
     where: { available: true, visible: true },
     ...option,
     include: workerIncludes,
     attributes: { exclude: excludeKeys },
+    order: Sequelize.literal("RAND()"), // Ordenar aleatoriamente usando literal
   });
+
   return workers;
 };
 
