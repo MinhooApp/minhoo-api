@@ -144,14 +144,11 @@ export const getUserChats = async (currentUserId: any) => {
     include: [
       {
         model: Chat,
-        order: [["date", "ASC"]],
-        where: [
-          {
-            deletedBy: {
-              [Op.not]: [-1, currentUserId], // Excluir -1 y currentUserId
-            },
+        where: {
+          deletedBy: {
+            [Op.not]: [-1, currentUserId], // Excluir -1 y currentUserId
           },
-        ],
+        },
         include: [
           {
             model: User,
@@ -174,6 +171,14 @@ export const getUserChats = async (currentUserId: any) => {
           },
         ],
       },
+    ],
+    order: [
+      [
+        { model: Chat, as: "Chat" },
+        { model: Message, as: "messages" },
+        "date",
+        "DESC",
+      ],
     ],
   });
 
