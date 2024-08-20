@@ -1,4 +1,4 @@
-import { Op, Sequelize } from "sequelize";
+import { Op } from "sequelize";
 import Chat from "../../_models/chat/chat";
 import User from "../../_models/user/user";
 import sequelize from "../../_db/connection";
@@ -135,25 +135,7 @@ export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
   }
 };
 
-// Función para obtener chats que no han sido eliminados por ambos usuarios
 export const getUserChats = async (currentUserId: any) => {
-  // Realiza una subconsulta para obtener la fecha más reciente del mensaje para cada chat
-  const latestMessagesSubquery = Message.findAll({
-    attributes: [
-      "chatId",
-      [Sequelize.fn("MAX", Sequelize.col("date")), "latestMessageDate"],
-    ],
-    group: ["chatId"],
-    raw: true,
-  });
-
-  const latestMessages = await latestMessagesSubquery;
-
-  const latestMessagesMap = latestMessages.reduce((acc: any, msg) => {
-    acc[msg.chatId] = msg.latestMessageDate;
-    return acc;
-  }, {});
-
   const chats = await Chat_User.findAll({
     where: {
       userId: currentUserId,
@@ -187,20 +169,15 @@ export const getUserChats = async (currentUserId: any) => {
             limit: 1,
           },
         ],
-        order: [
-          [
-            Sequelize.literal(
-              `CASE WHEN Chat.id IN (${Object.keys(latestMessagesMap).join(
-                ","
-              )}) THEN ${Object.values(latestMessagesMap)
-                .map((date) => `'${date}'`)
-                .join(", ")} ELSE '0000-00-00' END`
-            ),
-            "DESC",
-          ],
-        ],
       },
     ],
+  });
+
+  // Ordenar los chats por la fecha del último mensaje
+  chats.sort((a: any, b: any) => {
+    const dateA = a.Chat.messages[0]?.date || 0;
+    const dateB = b.Chat.messages[0]?.date || 0;
+    return dateB - dateA;
   });
 
   return chats;
