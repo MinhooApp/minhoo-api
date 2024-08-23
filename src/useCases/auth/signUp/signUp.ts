@@ -16,113 +16,84 @@ const PROFILE_IMAGE_FOLDER = path.join(
   "uploads/images/user/profile/"
 );
 const now: any = new Date(new Date().toUTCString());
-
 export const signUpWithImage = async (req: Request, res: Response) => {
-  var upload = uploadFile({
-    route: "/uploads/images/user/profile",
-    file: "image_profile",
-    maxFiles: 1, // Cambiar según la cantidad máxima de archivos que quieres permitir
-    is_img: true,
-  });
+  try {
+    // Si el contenido es JSON, omite la subida de archivos
+    if (req.is("application/json")) {
+      await processSignUp(req, res, null);
+    } else {
+      // Configuración de subida de archivos
+      const upload = uploadFile({
+        route: "/uploads/images/user/profile",
+        file: "image_profile",
+        maxFiles: 1, // Cambiar según la cantidad máxima de archivos que quieres permitir
+        is_img: true,
+      });
 
-  upload(req, res, async function (err) {
-    var files: any = [];
-    files = req.files;
-    var trash = "";
-
-    const roles: any = [];
-    const { email, password, uuid } = req.body;
-    const hashPassword = generatePassword(password as string);
-    req.body.password = hashPassword;
-    req.body.roles = [1];
-    const validateEmail = await repository.findByEmail(email);
-
-    if (validateEmail) {
-      try {
-        if (
-          files &&
-          files.image_profile != null &&
-          files.image_profile.length > 0
-        ) {
-          if (req.body.delete != "profile.png") {
-            trash = PROFILE_IMAGE_FOLDER + req.body.delete;
-            fs.unlink(trash, (err: any) => {
-              if (err) {
-                console.error(err);
-              }
-            });
-          }
+      upload(req, res, async function (err) {
+        if (err) {
+          return formatResponse({
+            res,
+            success: false,
+            code: 500, //
+            message: "Error uploading file",
+          });
         }
-        //Elimina el archivo despues de cargarlo, porque el usuario existe
-        fs.unlink(files.image_profile[0].path, (err: any) => {
-          if (err) {
-            console.error(err);
-          }
-        });
-      } catch (error) {
-        console.error(err);
-      }
-      // sendEmail
-      return formatResponse({
-        res: res,
-        success: false,
-        code: 401,
-        message: "The user already exists",
-        islogin: true,
+
+        const files = req.files as any;
+        await processSignUp(req, res, files);
       });
     }
-
-    try {
-      //Si existe el archivo, lo agrego al body
-      if (files && files.image_profile) {
-        req.body.image_profil = files.image_profile[0].path.replace(
-          "src\\public\\",
-          "\\"
-        );
-      }
-
-      // const categories: [] = req.body.categories.split(',');
-      // req.body.categories = categories;
-      const userTemp: any = await repository.add(req.body);
-
-      userTemp?.roles.forEach((u: any) => {
-        roles.push(u.id);
-      });
-      //userTemp?.get("id"), roles, 0
-      const user = await repository.saveToken({
-        userId: userTemp?.get("id"),
-        uuid,
-        roles: roles,
-      });
-      return formatResponse({ res: res, success: true, body: { user } });
-    } catch (error: any) {
-      if (files.image_profil) {
-        const filePath = files.image_profil[0].path;
-        fs.unlink(filePath, (err: any) => {
-          if (err) {
-            console.error(err);
-          }
-        });
-      }
-      return formatResponse({
-        res: res,
-        success: false,
-        message: error.errors[0].message,
-      });
-    }
-  });
+  } catch (error: any) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 500,
+      message: "An unexpected error occurred",
+    });
+  }
 };
-export const signUp = async (req: Request, res: Response) => {
-  const roles: any = [];
-  const { email, password, uuid } = req.body;
+
+// Función para procesar el registro de usuario
+const processSignUp = async (req: Request, res: Response, files: any) => {
+  let trash = "";
+
+  const { email, password, confirm_password, uuid } = req.body;
+
+  if (password !== confirm_password) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 401,
+      message: "Password and password confirmation do not match",
+      islogin: true,
+    });
+  }
+
   const hashPassword = generatePassword(password as string);
   req.body.password = hashPassword;
   req.body.roles = [1];
+
   const validateEmail = await repository.findByEmail(email);
 
   if (validateEmail) {
+    if (files && files.image_profile) {
+      try {
+        if (req.body.delete !== "profile.png") {
+          trash = PROFILE_IMAGE_FOLDER + req.body.delete;
+          fs.unlink(trash, (err: any) => {
+            if (err) console.error(err);
+          });
+        }
+        fs.unlink(files.image_profile[0].path, (err: any) => {
+          if (err) console.error(err);
+        });
+      } catch (error: any) {
+        console.error(error);
+      }
+    }
     return formatResponse({
-      res: res,
+      res,
       success: false,
       code: 401,
       message: "The user already exists",
@@ -131,18 +102,37 @@ export const signUp = async (req: Request, res: Response) => {
   }
 
   try {
-    const userTemp = await repository.add(req.body);
-    userTemp?.roles.forEach((u: any) => {
-      roles.push(u.id);
-    });
-    //userTemp?.get("id"), roles, 0
+    if (files && files.image_profile) {
+      req.body.image_profile = files.image_profile[0].path.replace(
+        "src\\public\\",
+        "\\"
+      );
+    }
+
+    const userTemp: any = await repository.add(req.body);
+
+    const roles = userTemp?.roles.map((role: any) => role.id) || [];
+
     const user = await repository.saveToken({
       userId: userTemp?.get("id"),
       uuid,
       roles,
     });
-    return formatResponse({ res: res, success: true, body: { user } });
-  } catch (error) {}
+
+    return formatResponse({ res, success: true, body: { user } });
+  } catch (error: any) {
+    if (files?.image_profile) {
+      const filePath = files.image_profile[0].path;
+      fs.unlink(filePath, (err: any) => {
+        if (err) console.error(err);
+      });
+    }
+    return formatResponse({
+      res,
+      success: false,
+      message: error.message || "An error occurred during user registration",
+    });
+  }
 };
 
 export const validateEmail = async (req: Request, res: Response) => {
