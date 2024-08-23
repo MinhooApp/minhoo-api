@@ -16,7 +16,7 @@ const PROFILE_IMAGE_FOLDER = path.join(
   "uploads/images/user/profile/"
 );
 const now: any = new Date(new Date().toUTCString());
-export const signUpWithImage = async (req: Request, res: Response) => {
+export const signUp = async (req: Request, res: Response) => {
   try {
     // Si el contenido es JSON, omite la subida de archivos
     if (req.is("application/json")) {
