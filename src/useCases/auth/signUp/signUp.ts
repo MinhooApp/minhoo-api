@@ -32,6 +32,15 @@ export const signUpWithImage = async (req: Request, res: Response) => {
 
     const roles: any = [];
     const { email, password, uuid } = req.body;
+    if (req.body.password != req.body.confirm_password) {
+      return formatResponse({
+        res: res,
+        success: false,
+        code: 401,
+        message: "password and password confirmation do not match",
+        islogin: true,
+      });
+    }
     const hashPassword = generatePassword(password as string);
     req.body.password = hashPassword;
     req.body.roles = [1];
