@@ -48,6 +48,15 @@ export const get = async (id: any) => {
         required: false,
       },
     ],
+    order: [
+      [{ model: Post, as: "posts" }, "created_date", "DESC"], // Ordena los Post
+      [
+        { model: Post, as: "posts" },
+        { model: MediaPost, as: "post_media" },
+        "createdAt",
+        "DESC",
+      ], // Ordena los MediaPost
+    ],
   });
   return user;
 };
