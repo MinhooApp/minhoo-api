@@ -21,7 +21,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     await sendNotification({
       userId: userId,
       interactorId: req.userId,
-      messageId: newMessage.chatId,
+      messageId: newMessage.id,
 
       type: "message",
       message: `wrote you a new message`,
