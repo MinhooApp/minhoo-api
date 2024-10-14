@@ -26,6 +26,7 @@ export const sendMessage = async (req: Request, res: Response) => {
       type: "message",
       message: `wrote you a new message`,
     });
+
     return formatResponse({ res: res, success: true, body: response });
   } catch (error) {
     console.log(error);
