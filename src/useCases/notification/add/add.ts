@@ -28,7 +28,14 @@ export const sendNotification = async (
   params: SendNotificationParams
 ): Promise<void> => {
   try {
+    // Verificar si userId e interactorId son diferentes
+    if (params.userId === params.interactorId) {
+      // Si son iguales, no hacer nada y salir de la función
+      return;
+    }
+
     const now = new Date(new Date().toUTCString());
+
     // Crear la notificación a partir de los parámetros
     const notificationData = {
       userId: params.userId,
