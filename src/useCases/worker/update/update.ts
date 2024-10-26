@@ -51,6 +51,7 @@ export const update = async (req: Request, res: Response) => {
         name: req.body.name,
         last_name: req.body.last_name,
         dialing_code: "+" + req.body.dialing_code.replace("+", ""),
+        iso_code: req.body.iso_code,
         phone: req.body.phone,
         image_profil: filePath != "" ? filePath : undefined,
       };
