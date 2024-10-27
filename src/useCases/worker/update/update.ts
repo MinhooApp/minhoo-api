@@ -53,11 +53,12 @@ export const update = async (req: Request, res: Response) => {
         dialing_code: "+" + req.body.dialing_code.replace("+", ""),
         iso_code: req.body.iso_code,
         phone: req.body.phone,
-        image_profil: req.body.delete_image
-          ? "\\uploads\\images\\user\\profile\\profile.png"
-          : filePath != ""
-          ? filePath
-          : undefined,
+        image_profil:
+          req.body.delete_image === true || req.body.delete_image === "true"
+            ? "\\uploads\\images\\user\\profile\\profile.png"
+            : filePath && filePath !== ""
+            ? filePath
+            : undefined,
       };
 
       /////Body to update worker data/////////////
