@@ -1,14 +1,18 @@
-import Router from 'express';
-import { workers, worker, update, visibleProfile } from '../../../useCases/worker/_controller/controller';
-import { TokenValidation } from '../../../libs/middlewares/verify_jwt';
+import Router from "express";
+import {
+  workers,
+  worker,
+  update,
+  visibleProfile,
+  deleteImageProfile,
+} from "../../../useCases/worker/_controller/controller";
+import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
 
 const router = Router();
-router.get('/', workers);
-router.get('/one/:id?', TokenValidation(), worker);
-router.post('/', TokenValidation(), update);
-router.put('/visible', TokenValidation(), visibleProfile);
+router.get("/", workers);
+router.get("/one/:id?", TokenValidation(), worker);
+router.post("/", TokenValidation(), update);
+router.put("/visible", TokenValidation(), visibleProfile);
+router.delete("/image", TokenValidation(), deleteImageProfile);
 
-
-
-
-export default router
+export default router;
