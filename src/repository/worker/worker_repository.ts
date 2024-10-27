@@ -95,3 +95,10 @@ export const tokensByNewService = async (
   const uuids = tokens.map((worker) => worker.personal_data.uuid);
   return uuids;
 };
+
+export const deleteImageProfil = async (id: any) => {
+  return await User.update(
+    { image_profil: "\\uploads\\images\\user\\profile\\profile.png" },
+    { where: { id: id } }
+  );
+};

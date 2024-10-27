@@ -126,3 +126,13 @@ export const visibleProfile = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
+
+export const deleteImageProfile = async (req: Request, res: Response) => {
+  try {
+    await repository.deleteImageProfil(req.userId);
+    return formatResponse({ res: res, success: true, body: {} });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
