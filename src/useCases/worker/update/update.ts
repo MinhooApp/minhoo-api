@@ -53,7 +53,11 @@ export const update = async (req: Request, res: Response) => {
         dialing_code: "+" + req.body.dialing_code.replace("+", ""),
         iso_code: req.body.iso_code,
         phone: req.body.phone,
-        image_profil: filePath != "" ? filePath : undefined,
+        image_profil: req.body.delete_mage
+          ? "\\uploads\\images\\user\\profile\\profile.png"
+          : filePath != ""
+          ? filePath
+          : undefined,
       };
 
       /////Body to update worker data/////////////
@@ -63,6 +67,7 @@ export const update = async (req: Request, res: Response) => {
         categories: req.body.skills,
         userId: req.userId,
       };
+
       //update user//
       await uRepository.update(req.userId, bodyUser);
       const userTemp = await uRepository.get(req.userId);
