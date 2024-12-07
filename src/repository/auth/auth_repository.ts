@@ -65,6 +65,26 @@ export const findByEmail = async (email: String) => {
   });
   return user;
 };
+import { Op } from "sequelize";
+
+export const findByEmailAndCode = async (email: string, code: string) => {
+  const now = new Date();
+  const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000); // Calcula la fecha/hora de hace 10 minutos
+
+  const user = await User.findOne({
+    where: {
+      email: email,
+      temp_code: code,
+      created_temp_code: {
+        [Op.gte]: tenMinutesAgo, // Verifica que created_temp_code sea mayor o igual a hace 10 minutos
+      },
+    },
+    include: userIncludes,
+  });
+
+  return user;
+};
+
 //
 export const saveToken = async ({
   userId: userId,

@@ -204,3 +204,81 @@ export const verifyEmailCode = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
+
+export const requestRestorePassword = async (req: Request, res: Response) => {
+  const { email } = req.body;
+  const now = new Date(new Date().toUTCString());
+  const body = {
+    temp_code: generateTempPassword(),
+    created_temp_code: now,
+  };
+
+  try {
+    const user = await repository.findByEmail(email);
+    if (user) {
+      await uRepository.update(user?.id, body);
+    }
+    return formatResponse({
+      res: res,
+      success: true,
+      body: { created_temp_code: now },
+    });
+  } catch (error) {
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
+export const validateRestorePassword = async (req: Request, res: Response) => {
+  const { email, code } = req.body;
+  const now = new Date(new Date().toUTCString());
+
+  try {
+    const user = await repository.findByEmailAndCode(email, code);
+    if (user) {
+      return formatResponse({
+        res: res,
+        success: true,
+        body: "code validated",
+      });
+    } else {
+      return formatResponse({
+        res: res,
+        success: false,
+        islogin: true,
+        message: "code not validated",
+      });
+    }
+  } catch (error) {
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+export const restorePassword = async (req: Request, res: Response) => {
+  const { email, password, confirm_password } = req.body;
+  const hashPassword = generatePassword(password as string);
+  req.body.password = hashPassword;
+  if (confirm_password != password) {
+    return formatResponse({
+      res: res,
+      success: false,
+      islogin: true,
+      message: "password and confirm password not match",
+    });
+  }
+  try {
+    const userTemp = await repository.findByEmail(email);
+    const user = await uRepository.update(userTemp?.id, req.body);
+    return formatResponse({
+      res: res,
+      success: true,
+      body: "Password restored successfully",
+    });
+  } catch (error) {
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
+function generateTempPassword(): string {
+  // Genera un número aleatorio entre 100000 y 999999
+  const randomPassword = Math.floor(100000 + Math.random() * 900000);
+  return randomPassword.toString(); // Convierte el número a cadena
+}
