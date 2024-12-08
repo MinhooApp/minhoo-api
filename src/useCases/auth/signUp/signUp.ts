@@ -9,6 +9,7 @@ import {
   uploadFile,
   fs,
   sendEmail,
+  bcryptjs,
 } from "../_module/module";
 const PUBLIC_FOLDER = path.join(__dirname, "../../../../src/public");
 const PROFILE_IMAGE_FOLDER = path.join(

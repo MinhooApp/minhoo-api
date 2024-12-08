@@ -4,6 +4,8 @@ import {
   formatResponse,
   repository,
   bcryptjs,
+  generatePassword,
+  uRepository,
 } from "../_module/module";
 
 export const login = async (req: Request, res: Response) => {
@@ -52,6 +54,46 @@ export const login = async (req: Request, res: Response) => {
     }
   } catch (error) {
     console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
+export const changePass = async (req: Request, res: Response) => {
+  try {
+    const { current_password, password, confirm_password } = req.body;
+    //Validar Existencia de Usuario
+    const userTemp = await repository.findById(req.userId);
+
+    const validatePass = bcryptjs.compareSync(
+      String(current_password),
+      userTemp?.password
+    );
+    if (!validatePass) {
+      return formatResponse({
+        islogin: true,
+        res: res,
+        success: false,
+        message: "Current password not valid.",
+      });
+    }
+    if (password !== confirm_password) {
+      return formatResponse({
+        islogin: true,
+        res: res,
+        success: false,
+        message: "Password and password confirmation do not match",
+      });
+    }
+    const hashPassword = generatePassword(password as string);
+    req.body.password = hashPassword;
+    const body = {
+      password: hashPassword,
+      temp_code: null,
+      created_temp_code: null,
+    };
+    await uRepository.update(userTemp?.id, body);
+    return formatResponse({ res: res, success: true });
+  } catch (error) {
     return formatResponse({ res: res, success: false, message: error });
   }
 };

@@ -65,6 +65,13 @@ export const findByEmail = async (email: String) => {
   });
   return user;
 };
+export const findById = async (id: number) => {
+  const user = await User.findOne({
+    where: { id: id },
+    include: userIncludes,
+  });
+  return user;
+};
 import { Op } from "sequelize";
 
 export const findByEmailAndCode = async (email: string, code: string) => {
