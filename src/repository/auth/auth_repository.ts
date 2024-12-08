@@ -73,7 +73,7 @@ export const findById = async (id: number) => {
   return user;
 };
 import { Op } from "sequelize";
-
+//
 export const findByEmailAndCode = async (email: string, code: string) => {
   const now = new Date();
   const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000); // Calcula la fecha/hora de hace 10 minutos
