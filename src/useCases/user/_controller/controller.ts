@@ -1,4 +1,3 @@
-
-import { follow } from '../add/add';
-import { get, gets, follows, followers } from '../get/get';
-export { get, gets, follow, follows, followers }
+import { follow } from "../add/add";
+import { get, gets, myData, follows, followers } from "../get/get";
+export { get, gets, myData, follow, follows, followers };
