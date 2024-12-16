@@ -150,14 +150,20 @@ export const validateEmail = async (req: Request, res: Response) => {
         message: "The email already exists",
       });
     } else {
-      const send = true; //: any = await sendEmail("cto@minhoo.app", "./src/public/html/email/emailCode.html", 8088);
+      const send = true; //: any =
+      const cod = generateTempPassword();
       if (send == true) {
         const body = {
-          code: 8088,
+          code: cod,
           email: email,
           created: now,
         };
-        const code = await repository.registerCode(body);
+        await repository.registerCode(body); //register code
+        await sendEmail(
+          "cto@minhoo.app",
+          "./src/public/html/email/emailCode.html",
+          cod
+        );
         return formatResponse({
           res: res,
           success: true,

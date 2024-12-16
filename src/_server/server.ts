@@ -40,7 +40,7 @@ class Server {
   async dbConnection() {
     try {
       // Se usa para crear las tablas de manera inicial
-      await sequelize.sync({ force: false });
+      await sequelize.sync({ force: true });
       console.log("✔️  Database Online !!!");
     } catch (error: any) {
       console.log(error);
