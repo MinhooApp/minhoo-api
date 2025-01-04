@@ -23,6 +23,7 @@ class Server {
     //private host: string;
 
 
+<<<<<<< HEAD
     constructor(options: Options) {
         const { port, public_path = 'public' } = options;
         this.port = port;
@@ -36,6 +37,16 @@ class Server {
         /////////Sockets/////////////socketController
         this.sockets();
 
+=======
+  async dbConnection() {
+    try {
+      // Se usa para crear las tablas de manera inicial
+      await sequelize.sync({ force: true });
+      console.log("✔️  Database Online !!!");
+    } catch (error: any) {
+      console.log(error);
+      throw new Error("🚫 " + error);
+>>>>>>> 53d154fdc11ea1ccd8010318e19e853a74b03617
     }
 
 
