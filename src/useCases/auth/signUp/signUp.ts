@@ -234,9 +234,9 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
 
   try {
     const user = await repository.findByEmail(email);
-    if (user) {
-      await uRepository.update(user?.id, body);
-    }
+    if (user !== null && user !== undefined) {
+      await uRepository.update(user.id, body);
+          
     const emailParams = {
       subject: "reset password",
       email: email,
@@ -245,13 +245,16 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
     };
 
     await sendEmail(emailParams);
+    }
+
     return formatResponse({
       res: res,
       success: true,
       body: { created_temp_code: now },
     });
   } catch (error) {
-    return formatResponse({ res: res, success: false, message: error });
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: "error" });
   }
 };
 
