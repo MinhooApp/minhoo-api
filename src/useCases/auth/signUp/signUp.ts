@@ -120,6 +120,14 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
       roles,
     });
 
+    const emailParams = {
+      subject: "Welcome to Minhoo!",
+      email: email,
+      htmlPath: "./src/public/html/email/welcome_to_minhoo.html",
+      replacements: [{ name: `${user!.name} ${user!.last_name}` }],
+    };
+    await sendEmail(emailParams);
+
     return formatResponse({ res, success: true, body: { user } });
   } catch (error: any) {
     if (files?.image_profile) {
@@ -159,11 +167,14 @@ export const validateEmail = async (req: Request, res: Response) => {
           created: now,
         };
         await repository.registerCode(body); //register code
-        await sendEmail(
-          "cto@minhoo.app",
-          "./src/public/html/email/emailCode.html",
-          cod
-        );
+
+        const emailParams = {
+          subject: "Email verification",
+          email: email,
+          htmlPath: "./src/public/html/email/emailCode.html",
+          replacements: [{ code: cod }],
+        };
+        await sendEmail(emailParams);
         return formatResponse({
           res: res,
           success: true,
@@ -215,8 +226,9 @@ export const verifyEmailCode = async (req: Request, res: Response) => {
 export const requestRestorePassword = async (req: Request, res: Response) => {
   const { email } = req.body;
   const now = new Date(new Date().toUTCString());
+  const code = generateTempPassword();
   const body = {
-    temp_code: generateTempPassword(),
+    temp_code: code,
     created_temp_code: now,
   };
 
@@ -225,6 +237,14 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
     if (user) {
       await uRepository.update(user?.id, body);
     }
+    const emailParams = {
+      subject: "reset password",
+      email: email,
+      htmlPath: "./src/public/html/email/reset_your_password.html",
+      replacements: [{ code: code, name: user!.name }],
+    };
+
+    await sendEmail(emailParams);
     return formatResponse({
       res: res,
       success: true,
