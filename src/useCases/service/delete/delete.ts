@@ -1,10 +1,15 @@
+import { uRepository } from "useCases/auth/_module/module";
+import { findById } from "../../../repository/auth/auth_repository";
 import {
+  //
   Request,
   Response,
   formatResponse,
   repository,
-  sendPushToMultipleUsers,
+  sendNotification,
   socket,
+  sendEmail,
+  workerRepository,
 } from "../_module/module";
 export const deleteService = async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -31,9 +36,32 @@ export const removeWorker = async (req: Request, res: Response) => {
   const { serviceId } = req.params;
   const { workerId } = req.body;
   try {
-    const worker = await repository.removeWorker(serviceId, workerId);
+    const workerTemp = await repository.removeWorker(serviceId, workerId);
+    const workerData = await workerRepository.worker(workerId);
+    //SEND EMAIL
+    const emailParams = {
+      subject: "Offer Accepted",
+      email: workerData!.personal_data.email,
+      htmlPath: "./src/public/html/email/offer_canceled_by_client_email.html",
+      replacements: [
+        {
+          code: "@@name",
+          name: `${workerData!.personal_data.name} ${
+            workerData!.personal_data.last_name
+          }`,
+        },
+      ],
+    };
+    await sendNotification({
+      userId: workerData!.personal_data.id,
+      interactorId: req.userId,
+      serviceId: parseInt(serviceId),
+      type: "applicationRemoved",
+      message: `Application Removed`,
+    });
+    await sendEmail(emailParams);
 
-    return formatResponse({ res: res, success: true, body: worker });
+    return formatResponse({ res: res, success: true, body: workerTemp });
   } catch (error) {
     console.log(error);
     return formatResponse({ res: res, success: false, message: error });

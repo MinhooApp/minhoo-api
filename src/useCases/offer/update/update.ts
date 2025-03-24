@@ -6,6 +6,7 @@ import {
   serviceRepository,
   socket,
   sendNotification,
+  sendEmail,
 } from "../_module/module";
 
 export const acceptOffer = async (req: Request, res: Response) => {
@@ -63,6 +64,20 @@ export const acceptOffer = async (req: Request, res: Response) => {
       type: "offerAccepted",
       message: `has accepted your job offer!`,
     });
+
+    //SEND EMAIL
+    const emailParams = {
+      subject: "Offer Accepted",
+      email: offer.offerer.personal_data.email,
+      htmlPath: "./src/public/html/email/offer_accepted_email.html",
+      replacements: [
+        {
+          code: "@@name",
+          name: `${offer.offerer.personal_data.name} ${offer.offerer.personal_data.last_name}`,
+        },
+      ],
+    };
+    await sendEmail(emailParams);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
