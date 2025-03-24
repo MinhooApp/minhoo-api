@@ -33,14 +33,14 @@ export const deleteService = async (req: Request, res: Response) => {
 };
 
 export const removeWorker = async (req: Request, res: Response) => {
-  const { serviceId } = req.params;
   const { workerId } = req.body;
+  const { serviceId } = req.params;
   try {
     const workerTemp = await repository.removeWorker(serviceId, workerId);
     const workerData = await workerRepository.worker(workerId);
     //SEND EMAIL
     const emailParams = {
-      subject: "Offer Accepted",
+      subject: "Offer Removed",
       email: workerData!.personal_data.email,
       htmlPath: "./src/public/html/email/offer_canceled_by_client_email.html",
       replacements: [

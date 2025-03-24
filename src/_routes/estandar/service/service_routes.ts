@@ -14,10 +14,12 @@ import {
   update,
   deleteService,
   removeWorker,
+  sendTestNotification,
 } from "../../../useCases/service/_controller/controller";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
 const router = Router();
 router.post("/", TokenValidation(), add);
+router.post("/send", sendTestNotification);
 router.put("/:id", TokenValidation(), update);
 router.get("/myonGoing", TokenValidation(), myonGoing);
 router.get("/onGoing", onGoing);

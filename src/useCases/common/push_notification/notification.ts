@@ -17,6 +17,7 @@ export const sendPushToSingleUser = async (
     | "applicationRemoved"
     | "like"
     | "admin"
+    | "follow"
     | "message",
   id: number
 ) => {
@@ -28,7 +29,7 @@ export const sendPushToSingleUser = async (
     data: {
       title: title,
       body: body,
-      idnotificationlog: id.toString(),
+      notificationId: id.toString(),
       type: type,
     },
     token: token,

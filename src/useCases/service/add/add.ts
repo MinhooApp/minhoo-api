@@ -7,6 +7,7 @@ import {
   axios,
   workerRepository,
   sendPushToMultipleUsers,
+  sendNotification,
 } from "../_module/module";
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 export const add = async (req: Request, res: Response) => {
@@ -132,4 +133,23 @@ const sendNotificationByNewService = async (
     categoryId
   );
   return tokens;
+};
+
+export const sendTestNotification = async (req: Request, res: Response) => {
+  try {
+    await sendNotification({
+      userId: req.body.userid,
+      interactorId: req.body.interactorId,
+      serviceId: req.body.serviceId,
+      type: req.body.type,
+      message: req.body.message,
+    });
+    return formatResponse({
+      res: res,
+      success: true,
+      body: { response: "ok" },
+    });
+  } catch (error) {
+    console.log(error);
+  }
 };
