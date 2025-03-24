@@ -1,5 +1,6 @@
 import { io } from "socket.io-client";
 import { Request, Response } from "express";
+import sendEmail from "../../_utils/send_email";
 import Offer from "../../../_models/offer/offer";
 import { sendNotification } from "../../notification/add/add";
 import { formatResponse } from "../../_response/format_response";
@@ -17,4 +18,5 @@ export {
   socket,
   Offer,
   sendNotification,
+  sendEmail,
 };

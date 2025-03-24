@@ -15,6 +15,8 @@ interface SendNotificationParams {
     | "postulation"
     | "comment"
     | "offerAccepted"
+    | "applicationCanceled"
+    | "applicationRemoved"
     | "like"
     | "admin"
     | "message";
@@ -56,9 +58,26 @@ export const sendNotification = async (
     const notification = await repository.add(notificationData);
     const uuid = await userRepository.getUuid(params.userId);
     socket.emit("notification", notification);
-    sendPushToSingleUser("Minhoo news", params.message, uuid);
+    sendPushToSingleUser(
+      "Minhoo news",
+      params.message,
+      uuid,
+      params.type,
+      getFirstAvailableId(params) // <- puede devolver undefined
+    );
   } catch (error) {
     console.error("Error al enviar la notificación:", error);
     throw error; // Puedes lanzar el error o manejarlo según tu lógica de manejo de errores
   }
 };
+
+function getFirstAvailableId(data: SendNotificationParams): number {
+  return (data.userId ||
+    data.interactorId ||
+    data.serviceId ||
+    data.postId ||
+    data.offerId ||
+    data.likerId ||
+    data.commentId ||
+    data.messageId!)!;
+}

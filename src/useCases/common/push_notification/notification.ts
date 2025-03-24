@@ -8,7 +8,17 @@ admin.initializeApp({
 export const sendPushToSingleUser = async (
   title: string,
   body: string,
-  token: string
+  token: string,
+  type:
+    | "postulation"
+    | "comment"
+    | "offerAccepted"
+    | "applicationCanceled"
+    | "applicationRemoved"
+    | "like"
+    | "admin"
+    | "message",
+  id: number
 ) => {
   const message = {
     notification: {
