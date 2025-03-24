@@ -28,7 +28,8 @@ export const sendPushToSingleUser = async (
     data: {
       title: title,
       body: body,
-      idnotificationlog: "4",
+      idnotificationlog: id.toString(),
+      type: type,
     },
     token: token,
   };
