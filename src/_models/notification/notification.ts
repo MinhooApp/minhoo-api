@@ -12,8 +12,11 @@ interface NotificationAttributes {
     | "postulation"
     | "comment"
     | "offerAccepted"
+    | "applicationCanceled"
+    | "applicationRemoved"
     | "like"
     | "admin"
+    | "follow"
     | "message";
   message: string;
   likerId?: number; // ID del usuario que dio el "like"

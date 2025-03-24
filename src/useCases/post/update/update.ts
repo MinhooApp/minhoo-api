@@ -16,7 +16,6 @@ export const like = async (req: Request, res: Response) => {
         postId: post?.id,
         userId: post?.userId,
         interactorId: req.userId,
-
         type: "like",
         message: `Has given your post a star!`,
       });

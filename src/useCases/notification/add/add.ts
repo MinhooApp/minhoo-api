@@ -10,6 +10,7 @@ interface SendNotificationParams {
   serviceId?: number;
   postId?: number;
   offerId?: number;
+  followerId?: number;
   notification_date?: Date;
   type:
     | "postulation"
@@ -19,7 +20,8 @@ interface SendNotificationParams {
     | "applicationRemoved"
     | "like"
     | "admin"
-    | "message";
+    | "message"
+    | "follow";
   message: string;
   likerId?: number; // ID del usuario que dio el "like" (opcional)
   commentId?: number; // ID del comentario (opcional)
@@ -33,7 +35,7 @@ export const sendNotification = async (
     // Verificar si userId e interactorId son diferentes
     if (params.userId === params.interactorId) {
       // Si son iguales, no hacer nada y salir de la función
-      return;
+      //  return;
     }
 
     const now = new Date(new Date().toUTCString());
@@ -72,12 +74,11 @@ export const sendNotification = async (
 };
 
 function getFirstAvailableId(data: SendNotificationParams): number {
-  return (data.userId ||
-    data.interactorId ||
-    data.serviceId ||
+  return (data.serviceId ||
     data.postId ||
     data.offerId ||
     data.likerId ||
     data.commentId ||
+    data.followerId ||
     data.messageId!)!;
 }
