@@ -57,7 +57,9 @@ export const removeWorker = async (req: Request, res: Response) => {
       interactorId: req.userId,
       serviceId: parseInt(serviceId),
       type: "applicationRemoved",
-      message: `Application Removed`,
+      message: `${workerData!.personal_data.name} ${
+        workerData!.personal_data.last_name
+      } has canceled your application.`,
     });
     await sendEmail(emailParams);
 

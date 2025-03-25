@@ -48,7 +48,9 @@ export const removeOffer = async (req: Request, res: Response) => {
         interactorId: req.userId,
         serviceId: parseInt(offer!.serviceId),
         type: "applicationCanceled",
-        message: `Application Canceled`,
+        message: `${service!.client.name} ${
+          service!.client.last_name
+        } has withdrawn his candidacy`,
       });
       await sendEmail(emailParams);
       return formatResponse({
