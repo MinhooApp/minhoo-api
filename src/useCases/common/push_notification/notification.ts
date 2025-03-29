@@ -22,10 +22,10 @@ export const sendPushToSingleUser = async (
   id: number
 ) => {
   const message = {
-    notification: {
+    /* notification: {
       title: title,
       body: body,
-    },
+    },*/
     data: {
       title: title,
       body: body,
