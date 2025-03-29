@@ -65,7 +65,7 @@ export const sendNotification = async (
       params.message,
       uuid,
       params.type,
-      params.interactorId! // <- puede devolver undefined
+      getFirstAvailableId(notificationData)! // <- puede devolver undefined
     );
   } catch (error) {
     console.error("Error al enviar la notificación:", error);
