@@ -22,7 +22,6 @@ export const sendMessage = async (req: Request, res: Response) => {
       userId: userId,
       interactorId: req.userId,
       messageId: newMessage.id,
-
       type: "message",
       message: `wrote you a new message`,
     });

@@ -107,7 +107,25 @@ export const getChatMessages = async (chatId: any, currentUserId: any) => {
 
   return messages;
 };
+export const getSenderByMessageId = async (messageId: any) => {
+  const messages = await Message.findOne({
+    order: [["date", "DESC"]],
+    where: {
+      id: messageId,
+    },
+    include: [
+      {
+        model: User,
+        as: "sender",
+        attributes: { exclude: excludeKeys },
+      },
+    ],
 
+    attributes: { exclude: excludeKeys },
+  });
+
+  return messages;
+};
 export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
   // Verifica si ya existe un chat activo entre los usuarios
   const existingChat = await chatExist(currentUserId, otherUserId);
