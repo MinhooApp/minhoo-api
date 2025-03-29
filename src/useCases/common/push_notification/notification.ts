@@ -22,6 +22,8 @@ export const sendPushToSingleUser = async (
   id: number
 ) => {
   const message = {
+    //esto se comenta, para evitar la doble notificacion push
+    //cuando hay notificaion local en flutter
     /* notification: {
       title: title,
       body: body,
@@ -51,6 +53,7 @@ export const sendPushToSingleUser = async (
     }
   }
 };
+
 export const sendPushToMultipleUsers = async (
   title: string,
   body: string,
@@ -78,6 +81,7 @@ export const sendPushToMultipleUsers = async (
     console.error("Error sending message:", error);
   }
 };
+
 function sendMessage(message: any) {
   admin
     .messaging()
