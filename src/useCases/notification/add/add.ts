@@ -74,11 +74,29 @@ export const sendNotification = async (
 };
 
 function getFirstAvailableId(data: SendNotificationParams): number {
-  return (data.serviceId ||
-    data.postId ||
-    data.offerId ||
-    data.likerId ||
-    data.commentId ||
-    data.followerId ||
-    data.messageId!)!;
+  switch (data.type) {
+    case "postulation":
+    case "applicationCanceled":
+    case "offerAccepted":
+    case "applicationRemoved":
+      return data.serviceId!;
+
+    case "like":
+    case "comment":
+      return data.postId!;
+
+    case "follow":
+    case "message":
+      return data.interactorId!;
+
+    case "admin":
+    default:
+      return (data.serviceId ||
+        data.postId ||
+        data.offerId ||
+        data.likerId ||
+        data.commentId ||
+        data.followerId ||
+        data.messageId!)!;
+  }
 }
