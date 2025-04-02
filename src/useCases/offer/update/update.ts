@@ -110,7 +110,7 @@ export const cancelOffer = async (req: Request, res: Response) => {
     //SEND EMAIL
     const emailParams = {
       subject: "Application canceled",
-      email: offer.offerer.personal_data.email,
+      email: service!.client.email,
       htmlPath: "./src/public/html/email/offer_canceled_by_woorker_email.html",
       replacements: [
         {
@@ -126,7 +126,7 @@ export const cancelOffer = async (req: Request, res: Response) => {
       serviceId: offer.serviceId,
       offerId: offer.id,
       type: "applicationCanceled",
-      message: `${offer.offerer.personal_data.name} ${offer.offerer.personal_data.last_name} has withdrawn his candidacy!`,
+      message: `Application canceled`,
     });
     await sendEmail(emailParams);
     return formatResponse({ res: res, success: true, body: { service } });

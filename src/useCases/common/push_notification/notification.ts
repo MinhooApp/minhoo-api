@@ -22,9 +22,7 @@ export const sendPushToSingleUser = async (
   id: number
 ) => {
   const message = {
-    //esto se comenta, para evitar la doble notificacion push
-    //cuando hay notificaion local en flutter
-    /* notification: {
+    /*notification: {
       title: title,
       body: body,
     },*/
@@ -39,21 +37,19 @@ export const sendPushToSingleUser = async (
 
   try {
     const response = await admin.messaging().send(message);
-    console.log("Successfully sent message:", response);
+    console.log("✅ Successfully sent message:", response);
   } catch (error: any) {
     if (
-      error.errorInfo.code === "messaging/registration-token-not-registered"
+      error.errorInfo?.code === "messaging/registration-token-not-registered"
     ) {
       console.error(
-        "The registration token is not registered. Please update your tokens."
+        "🚫 The registration token is not registered. Please update your tokens."
       );
-      // Aquí podrías eliminar el token de la base de datos o tomar otra acción
     } else {
-      console.error("Error sending message:", error);
+      console.error("🔥 Error sending message:", error);
     }
   }
 };
-
 export const sendPushToMultipleUsers = async (
   title: string,
   body: string,
