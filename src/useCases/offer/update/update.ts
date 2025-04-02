@@ -121,7 +121,7 @@ export const cancelOffer = async (req: Request, res: Response) => {
     };
 
     await sendNotification({
-      userId: offer.offerer.userId,
+      userId: service!.userId,
       interactorId: req.userId,
       serviceId: offer.serviceId,
       offerId: offer.id,
