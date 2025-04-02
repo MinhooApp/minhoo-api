@@ -21,18 +21,24 @@ export const sendPushToSingleUser = async (
     | "message",
   id: number
 ) => {
-  const message = {
-    /*notification: {
-      title: title,
-      body: body,
-    },*/
-    data: {
-      title: title,
-      body: body,
-      notificationId: id.toString(),
-      type: type,
+  const message: admin.messaging.Message = {
+    token,
+    notification: {
+      title,
+      body,
     },
-    token: token,
+    data: {
+      title,
+      body,
+      notificationId: id.toString(),
+      type,
+    },
+    android: {
+      priority: "high",
+      notification: {
+        channelId: "high_importance_channel",
+      },
+    },
   };
 
   try {
@@ -50,6 +56,7 @@ export const sendPushToSingleUser = async (
     }
   }
 };
+
 export const sendPushToMultipleUsers = async (
   title: string,
   body: string,
