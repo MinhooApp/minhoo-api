@@ -99,13 +99,36 @@ export const cancelOffer = async (req: Request, res: Response) => {
       });
     }
 
-    //cancel worker from offer////
+    //cancel offer from worker////
     await serviceRepository.cancelWorker(offer!.serviceId, req.workerId);
     await repository.update(offerId, { accepted: false, canceled: true });
 
     const service = await serviceRepository.get(offer!.serviceId);
 
     socket.emit("offers", offer);
+
+    //SEND EMAIL
+    const emailParams = {
+      subject: "Application canceled",
+      email: offer.offerer.personal_data.email,
+      htmlPath: "./src/public/html/email/offer_canceled_by_woorker_email.html",
+      replacements: [
+        {
+          code: "@@name",
+          name: `${offer.offerer.personal_data.name} ${offer.offerer.personal_data.last_name}`,
+        },
+      ],
+    };
+
+    await sendNotification({
+      userId: offer.offerer.userId,
+      interactorId: req.userId,
+      serviceId: offer.serviceId,
+      offerId: offer.id,
+      type: "applicationCanceled",
+      message: `${offer.offerer.personal_data.name} ${offer.offerer.personal_data.last_name} has withdrawn his candidacy!`,
+    });
+    await sendEmail(emailParams);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
