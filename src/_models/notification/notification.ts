@@ -1,5 +1,6 @@
-import { DataTypes, Model, Optional } from "sequelize";
 import sequelize from "../../_db/connection";
+import { DataTypes, Model, Optional } from "sequelize";
+import { TypeNotification } from "_models/notification/type_notification";
 
 interface NotificationAttributes {
   id: number;
@@ -8,16 +9,7 @@ interface NotificationAttributes {
   serviceId?: number;
   postId?: number;
   offerId?: number;
-  type:
-    | "postulation"
-    | "comment"
-    | "offerAccepted"
-    | "applicationCanceled"
-    | "applicationRemoved"
-    | "like"
-    | "admin"
-    | "follow"
-    | "message";
+  type: TypeNotification;
   message: string;
   likerId?: number; // ID del usuario que dio el "like"
   commentId?: number; // ID del comentario

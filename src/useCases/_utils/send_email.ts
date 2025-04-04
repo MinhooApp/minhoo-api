@@ -14,13 +14,19 @@ interface SendEmailParams {
   replacements: Replacement[]; // Lista de objetos con claves y valores para reemplazo
   from?: string; // Dirección del remitente opcional
 }
-
+interface SendManyEmailParams {
+  subject: string;
+  emails: string[]; // Lista de destinatarios
+  htmlPath: string;
+  replacements: Record<string, string>[]; // Lista de diccionarios con reemplazos
+  from?: string;
+}
 // Interfaz para los reemplazos dinámicos
 interface Replacement {
   [key: string]: string; // Clave y valor para cada reemplazo
 }
 
-async function sendEmail(params: SendEmailParams): Promise<boolean> {
+export const sendEmail = async (params: SendEmailParams) => {
   const { subject, email, htmlPath, replacements, from } = params; // Desestructuración de parámetros
   const readFile = promisify(fs.readFile);
 
@@ -56,13 +62,58 @@ async function sendEmail(params: SendEmailParams): Promise<boolean> {
     };
 
     // Enviar el correo
-    const info = await transporter.sendMail(mailOptions);
-    console.log("Email enviado: " + info.response);
+    transporter.sendMail(mailOptions);
+    console.log("Email enviado: ");
     return true; // Retorna true si se envió correctamente
   } catch (error) {
     console.error("Error al enviar el correo:", error);
     return false; // Retorna false si hubo un error
   }
-}
+};
 
-export default sendEmail;
+export const sendEmailToMany = async (params: SendManyEmailParams) => {
+  const { subject, emails, htmlPath, replacements, from } = params;
+  const readFile = promisify(fs.readFile);
+
+  const transporter = nodemailer.createTransport({
+    host: process.env.EMAIL_HOST,
+    port: Number(process.env.EMAIL_PORT),
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+
+  try {
+    // Leer contenido HTML desde el archivo
+    let htmlContent = await readFile(htmlPath, "utf8");
+
+    // Aplicar reemplazos en el contenido HTML
+    replacements.forEach((replacement) => {
+      Object.keys(replacement).forEach((key) => {
+        const placeholder = `@@${key}`;
+        const value = replacement[key];
+        htmlContent = htmlContent.replace(new RegExp(placeholder, "g"), value);
+      });
+    });
+
+    // Configuración del correo
+    const mailOptions = {
+      from: from || process.env.EMAIL_USER || "test@test.com",
+      to: emails, // lista de correos
+      subject: subject,
+      html: htmlContent,
+    };
+
+    // Enviar el correo
+    await transporter.sendMail(mailOptions);
+    console.log("Correo enviado a múltiples destinatarios:", emails);
+    return true;
+  } catch (error) {
+    console.error(
+      "Error al enviar el correo a múltiples destinatarios:",
+      error
+    );
+    return false;
+  }
+};

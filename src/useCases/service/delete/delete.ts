@@ -9,6 +9,7 @@ import {
   sendNotification,
   socket,
   sendEmail,
+  sendEmailToMany,
   workerRepository,
 } from "../_module/module";
 export const deleteService = async (req: Request, res: Response) => {
@@ -21,7 +22,31 @@ export const deleteService = async (req: Request, res: Response) => {
       message: "Service not found",
     });
   }
+
+  const workers = await repository.workersByService(id, req.userId);
+  let emails = [];
+  //send emails
+  for (let i = 0; i < workers.length; i++) {
+    emails.push(workers[i].personal_data?.email);
+
+    await sendNotification({
+      userId: workers[i]!.personal_data.id,
+      interactorId: req.userId,
+      serviceId: parseInt(tempService.id),
+      type: "requestCanceled",
+      message: ` has canceled your application.`,
+    });
+  }
+  //SEND EMAIL
+  const emailParams = {
+    subject: "Request canceled",
+    emails: emails,
+    htmlPath: "./src/public/html/email/offer_canceled_by_woorker_email.html",
+    replacements: [],
+  };
+
   await repository.deleteservice(id);
+  sendEmailToMany(emailParams);
 
   ////////Emit the service/////
   socket.emit("services", tempService);
@@ -29,6 +54,7 @@ export const deleteService = async (req: Request, res: Response) => {
     res: res,
     success: true,
     message: "Service deleted successfully",
+    body: workers,
   });
 };
 

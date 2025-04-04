@@ -1,3 +1,4 @@
+import { TypeNotification } from "_models/notification/type_notification";
 import {
   repository,
   sendPushToSingleUser,
@@ -12,16 +13,7 @@ interface SendNotificationParams {
   offerId?: number;
   followerId?: number;
   notification_date?: Date;
-  type:
-    | "postulation"
-    | "comment"
-    | "offerAccepted"
-    | "applicationCanceled"
-    | "applicationRemoved"
-    | "like"
-    | "admin"
-    | "message"
-    | "follow";
+  type: TypeNotification;
   message: string;
   likerId?: number; // ID del usuario que dio el "like" (opcional)
   commentId?: number; // ID del comentario (opcional)
@@ -79,6 +71,7 @@ function getFirstAvailableId(data: SendNotificationParams): number {
     case "applicationCanceled":
     case "offerAccepted":
     case "applicationRemoved":
+    case "requestCanceled":
       return data.serviceId!;
 
     case "like":

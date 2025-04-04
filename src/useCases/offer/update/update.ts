@@ -93,15 +93,15 @@ export const cancelOffer = async (req: Request, res: Response) => {
     if (offer == null) {
       return formatResponse({
         res: res,
-        success: false,
+        success: false, //
         message: "Offer not found.",
         code: 400,
       });
     }
 
     //cancel offer from worker////
-    await serviceRepository.cancelWorker(offer!.serviceId, req.workerId);
-    await repository.update(offerId, { accepted: false, canceled: true });
+    //await serviceRepository.cancelWorker(offer!.serviceId, req.workerId);
+    // await repository.update(offerId, { accepted: false, canceled: true });
 
     const service = await serviceRepository.get(offer!.serviceId);
 

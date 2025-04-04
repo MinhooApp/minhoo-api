@@ -1,5 +1,6 @@
 import { firebase_key } from "./firebase_key";
 import admin from "firebase-admin";
+import { TypeNotification } from "../../../_models/notification/type_notification";
 
 admin.initializeApp({
   credential: admin.credential.cert(firebase_key as admin.ServiceAccount),
@@ -9,16 +10,7 @@ export const sendPushToSingleUser = async (
   title: string,
   body: string,
   token: string,
-  type:
-    | "postulation"
-    | "comment"
-    | "offerAccepted"
-    | "applicationCanceled"
-    | "applicationRemoved"
-    | "like"
-    | "admin"
-    | "follow"
-    | "message",
+  type: TypeNotification,
   id: number
 ) => {
   const message: admin.messaging.Message = {

@@ -5,7 +5,7 @@ import crypto from "crypto";
 import bcryptjs from "bcryptjs";
 import { io } from "socket.io-client";
 import { Request, Response } from "express";
-import sendEmail from "../../_utils/send_email";
+import { sendEmail } from "../../_utils/send_email";
 import { uploadFile } from "../../../useCases/_utils/common";
 import { formatResponse } from "../../_response/format_response";
 import generatePassword from "../../../libs/helper/generatePassword";

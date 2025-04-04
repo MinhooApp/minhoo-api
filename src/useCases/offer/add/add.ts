@@ -3,7 +3,7 @@ import {
   Response,
   formatResponse,
   repository,
-  userRepository,
+  sendEmail,
   socket,
   sendNotification,
 } from "../_module/module";
@@ -26,6 +26,21 @@ export const add = async (req: Request, res: Response) => {
       type: "postulation",
       message: `Sent you a new offer!`,
     });
+    //SEND EMAIL
+    const emailParams = {
+      subject: "Application Cancelled",
+      email: response!.service.client.email,
+      htmlPath: "./src/public/html/email/send_offer_emmail.html",
+      replacements: [
+        {
+          code: "@@name",
+          name: `${response!.service!.client.name} ${
+            response!.service!.client.last_name
+          }`,
+        },
+      ],
+    };
+    await sendEmail(emailParams);
     return formatResponse({
       res: res,
       success: true,

@@ -1,7 +1,7 @@
 import axios from "axios";
 import { io } from "socket.io-client";
 import { Request, Response } from "express";
-import sendEmail from "../../_utils/send_email";
+import { sendEmail, sendEmailToMany } from "../../_utils/send_email";
 import { sendNotification } from "../../notification/add/add";
 import { formatResponse } from "../../_response/format_response";
 import * as repository from "../../../repository/service/service_repository";
@@ -24,4 +24,5 @@ export {
   workerRepository,
   sendNotification,
   sendEmail,
+  sendEmailToMany,
 };

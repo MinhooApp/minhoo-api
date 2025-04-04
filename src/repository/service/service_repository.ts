@@ -1,8 +1,12 @@
+import { worker } from "./../../useCases/worker/get/get";
 import { Op } from "sequelize";
 import Offer from "../../_models/offer/offer";
 import Service from "../../_models/service/service";
 import { serviceInclude } from "./service_includes";
 import Service_Worker from "../../_models/service/service_worker";
+import { workerIncludes } from "repository/worker/worker_includes";
+import Worker from "../../_models/worker/worker";
+import User from "../../_models/user/user";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 export const add = async (body: any) => {
@@ -163,6 +167,45 @@ export const getByUser = async (id: any, userId: any) => {
     order: [["service_date", "DESC"]],
   });
   return service;
+};
+
+export const workersByService = async (id: any, userId: any) => {
+  const service = await Service.findOne({
+    where: {
+      id: id,
+    },
+    include: [
+      {
+        model: Offer,
+        as: "offers",
+        where: {
+          accepted: true,
+        },
+        required: true,
+        include: [
+          {
+            model: Worker,
+            as: "offerer",
+            include: [
+              {
+                model: User,
+                as: "personal_data",
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    order: [["service_date", "DESC"]],
+  });
+
+  if (!service || !service.offers) return [];
+
+  const offerers = service.offers
+    .map((offer: any) => offer.offerer)
+    .filter((offerer: any) => !!offerer); // por si acaso
+
+  return offerers;
 };
 
 export const update = async (id: any, body: any) => {
