@@ -25,32 +25,30 @@ export const removeOffer = async (req: Request, res: Response) => {
         code: 400,
       });
     } else {
-      await serviceRepository.removeWorker(offer.serviceId, offer.workerId);
-      await repository.update(offerId, { accepted: false });
+      //  await serviceRepository.removeWorker(offer.serviceId, offer.workerId);
+      //  await repository.update(offerId, { accepted: false });
       const service = await serviceRepository.get(offer!.serviceId);
 
       //SEND EMAIL
       const emailParams = {
         subject: "Application Cancelled",
-        email: service!.client.email,
+        email: offer.offerer.personal_data.client.email,
         htmlPath:
           "./src/public/html/email/offer_canceled_by_woorker_email.html",
         replacements: [
           {
             code: "@@name",
-            name: `${service!.client.name} ${service!.client.last_name}`,
+            name: `${offer.offerer.personal_data.client.name} ${offer.offerer.personal_data.client.last_name}`,
           },
         ],
       };
 
       await sendNotification({
-        userId: service!.userId,
+        userId: offer.offerer.personal_data.userId,
         interactorId: req.userId,
         serviceId: parseInt(offer!.serviceId),
         type: "applicationCanceled",
-        message: `${service!.client.name} ${
-          service!.client.last_name
-        } has withdrawn his candidacy`,
+        message: "has withdrawn your candidacy",
       });
       await sendEmail(emailParams);
       return formatResponse({
