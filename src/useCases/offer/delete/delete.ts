@@ -25,8 +25,8 @@ export const removeOffer = async (req: Request, res: Response) => {
         code: 400,
       });
     } else {
-      //  await serviceRepository.removeWorker(offer.serviceId, offer.workerId);
-      //  await repository.update(offerId, { accepted: false });
+      await serviceRepository.removeWorker(offer.serviceId, offer.workerId);
+      await repository.update(offerId, { accepted: false });
       const service = await serviceRepository.get(offer!.serviceId);
 
       //SEND EMAIL
