@@ -32,19 +32,19 @@ export const removeOffer = async (req: Request, res: Response) => {
       //SEND EMAIL
       const emailParams = {
         subject: "Application Cancelled",
-        email: offer.offerer.personal_data.client.email,
+        email: offer.offerer.personal_data.email,
         htmlPath:
           "./src/public/html/email/offer_canceled_by_woorker_email.html",
         replacements: [
           {
             code: "@@name",
-            name: `${offer.offerer.personal_data.client.name} ${offer.offerer.personal_data.client.last_name}`,
+            name: `${offer.offerer.personal_data.name} ${offer.offerer.personal_data.last_name}`,
           },
         ],
       };
 
       await sendNotification({
-        userId: offer.offerer.personal_data.userId,
+        userId: offer.offerer.personal_data.id,
         interactorId: req.userId,
         serviceId: parseInt(offer!.serviceId),
         type: "applicationCanceled",
