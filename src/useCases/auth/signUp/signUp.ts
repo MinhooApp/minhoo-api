@@ -125,6 +125,7 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
       email: email,
       htmlPath: "./src/public/html/email/welcome_to_minhoo.html",
       replacements: [{ name: `${user!.name} ${user!.last_name}` }],
+      from: "Minhoo App",
     };
     await sendEmail(emailParams);
 
@@ -173,6 +174,7 @@ export const validateEmail = async (req: Request, res: Response) => {
           email: email,
           htmlPath: "./src/public/html/email/emailCode.html",
           replacements: [{ code: cod }],
+          from: "Minhoo App",
         };
         await sendEmail(emailParams);
         return formatResponse({
@@ -242,6 +244,7 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
         email: email,
         htmlPath: "./src/public/html/email/reset_your_password.html",
         replacements: [{ code: code, name: user!.name }],
+        from: "Minhoo App",
       };
 
       await sendEmail(emailParams);

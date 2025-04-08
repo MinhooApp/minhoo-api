@@ -69,6 +69,7 @@ export const removeWorker = async (req: Request, res: Response) => {
       subject: "Offer Removed",
       email: workerData!.personal_data.email,
       htmlPath: "./src/public/html/email/offer_canceled_by_client_email.html",
+      from: "Minhoo App",
       replacements: [
         {
           code: "@@name",

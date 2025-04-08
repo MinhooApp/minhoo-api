@@ -61,7 +61,7 @@ export const sendEmail = async (params: SendEmailParams) => {
     });
 
     const mailOptions = {
-      from: from || process.env.EMAIL_USER || "test@test.com",
+      from: from || "Minhoo App",
       to: email,
       subject: subject,
       html: htmlContent,
@@ -108,7 +108,7 @@ export const sendEmailToMany = async (params: SendManyEmailParams) => {
     });
 
     const mailOptions = {
-      from: from || process.env.EMAIL_USER || "test@test.com",
+      from: from || "Minhoo App",
       to: validEmails,
       subject: subject,
       html: htmlContent,
