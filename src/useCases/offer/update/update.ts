@@ -78,6 +78,7 @@ export const acceptOffer = async (req: Request, res: Response) => {
       ],
     };
     await sendEmail(emailParams);
+    // emito para notificar a todos los usuarios viendo el servicio
     socket.emit("offers", offer);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
