@@ -78,6 +78,7 @@ export const acceptOffer = async (req: Request, res: Response) => {
       ],
     };
     await sendEmail(emailParams);
+    socket.emit("offers", offer);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
