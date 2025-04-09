@@ -6,6 +6,7 @@ import {
   serviceRepository,
   sendEmail,
   sendNotification,
+  socket,
 } from "../_module/module";
 import {
   findByEmail,
@@ -51,6 +52,10 @@ export const removeOffer = async (req: Request, res: Response) => {
         message: "has withdrawn your candidacy",
       });
       await sendEmail(emailParams);
+
+      // emito para notificar a todos los usuarios viendo el servicio
+
+      socket.emit("offers", offer);
       return formatResponse({
         res: res,
         success: true,
