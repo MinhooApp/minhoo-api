@@ -300,6 +300,16 @@ export const restorePassword = async (req: Request, res: Response) => {
   try {
     const userTemp = await repository.findByEmail(email);
     const user = await uRepository.update(userTemp?.id, req.body);
+
+    const emailParams = {
+      subject: "reset password",
+      email: email,
+      htmlPath: "./src/public/html/email/successful_password_change_email.html",
+      replacements: [{ name: userTemp!.name }],
+      from: "Minhoo App",
+    };
+
+    await sendEmail(emailParams);
     return formatResponse({
       res: res,
       success: true,

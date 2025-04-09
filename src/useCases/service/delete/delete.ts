@@ -41,7 +41,7 @@ export const deleteService = async (req: Request, res: Response) => {
   const emailParams = {
     subject: "Request canceled",
     emails: emails,
-    htmlPath: "./src/public/html/email/offer_canceled_by_woorker_email.html",
+    htmlPath: "./src/public/html/email/service_canceled_email.html",
     replacements: [],
   };
 
