@@ -100,8 +100,8 @@ export const cancelOffer = async (req: Request, res: Response) => {
     }
 
     //cancel offer from worker////
-    //await serviceRepository.cancelWorker(offer!.serviceId, req.workerId);
-    // await repository.update(offerId, { accepted: false, canceled: true });
+    await serviceRepository.cancelWorker(offer!.serviceId, req.workerId);
+    await repository.update(offerId, { accepted: false, canceled: true });
 
     const service = await serviceRepository.get(offer!.serviceId);
 
