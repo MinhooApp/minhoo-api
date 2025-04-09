@@ -90,6 +90,11 @@ export const removeWorker = async (req: Request, res: Response) => {
     });
     await sendEmail(emailParams);
 
+    // emito para notificar a todos los usuarios viendo el servicio
+    const offer = {
+      serviceId: serviceId,
+    };
+    socket.emit("offers", offer);
     return formatResponse({ res: res, success: true, body: workerTemp });
   } catch (error) {
     console.log(error);
