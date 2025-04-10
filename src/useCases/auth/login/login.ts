@@ -6,6 +6,7 @@ import {
   bcryptjs,
   generatePassword,
   uRepository,
+  sendEmail,
 } from "../_module/module";
 
 export const login = async (req: Request, res: Response) => {
@@ -92,8 +93,18 @@ export const changePass = async (req: Request, res: Response) => {
       created_temp_code: null,
     };
     await uRepository.update(userTemp?.id, body);
+    const emailParams = {
+      subject: "reset password",
+      email: req.body.email,
+      htmlPath: "./src/public/html/email/successful_password_change_email.html",
+      replacements: [{ name: userTemp!.name }],
+      from: "Minhoo App",
+    };
+
+    await sendEmail(emailParams);
     return formatResponse({ res: res, success: true });
   } catch (error) {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
+//

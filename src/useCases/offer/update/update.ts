@@ -113,7 +113,7 @@ export const cancelOffer = async (req: Request, res: Response) => {
     const emailParams = {
       subject: "Application canceled",
       email: service!.client.email,
-      htmlPath: "./src/public/html/email/offer_canceled_by_woorker_email.html",
+      htmlPath: "./src/public/html/email/offer_canceled_by_worker_email.html",
       replacements: [
         {
           code: "@@name",
