@@ -27,6 +27,7 @@ export const removeOffer = async (req: Request, res: Response) => {
       });
     } else {
       await serviceRepository.removeWorker(offer.serviceId, offer.workerId);
+      await serviceRepository.cancelWorker(offer!.serviceId, offer.workerId);
       await repository.update(offerId, { accepted: false });
       const service = await serviceRepository.get(offer!.serviceId);
 
