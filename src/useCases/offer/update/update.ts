@@ -117,7 +117,7 @@ export const cancelOffer = async (req: Request, res: Response) => {
       replacements: [
         {
           code: "@@name",
-          name: `${offer.offerer.personal_data.name} ${offer.offerer.personal_data.last_name}`,
+          name: `${service!.client.name} ${service!.client.last_name}`,
         },
       ],
     };
