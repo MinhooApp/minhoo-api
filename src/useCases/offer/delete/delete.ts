@@ -33,12 +33,12 @@ export const removeOffer = async (req: Request, res: Response) => {
       //SEND EMAIL
       const emailParams = {
         subject: "Application Cancelled",
-        email: service!.client.email,
-        htmlPath: "./src/public/html/email/offer_canceled_by_worker_email.html",
+        email: offer.offerer.personal_data.email,
+        htmlPath: "./src/public/html/email/offer_canceled_by_client_email.html",
         replacements: [
           {
             code: "@@name",
-            name: `${service!.client.name} ${service!.client.last_name}`,
+            name: `${offer.offerer.personal_data.name} ${offer.offerer.personal_data.last_name}`,
           },
         ],
       };
