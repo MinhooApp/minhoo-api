@@ -234,7 +234,7 @@ export const removeWorker = async (serviceId: any, workerId: any) => {
   const temp = await Service_Worker.findOne({
     where: { serviceId: serviceId, workerId: workerId },
   });
-  const worker = temp?.update({ removed: true });
+  const worker = temp?.update({ removed: true, canceled: false });
 
   return worker;
 };
