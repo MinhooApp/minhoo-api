@@ -39,7 +39,7 @@ export const removeOffer = async (req: Request, res: Response) => {
         replacements: [
           {
             code: "@@name",
-            name: `${service!.client.name} ${service!.clientlast_name}`,
+            name: `${service!.client.name} ${service!.client.last_name}`,
           },
         ],
       };
