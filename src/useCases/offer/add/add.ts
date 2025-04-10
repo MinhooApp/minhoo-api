@@ -28,7 +28,7 @@ export const add = async (req: Request, res: Response) => {
     });
     //SEND EMAIL
     const emailParams = {
-      subject: "Application Cancelled",
+      subject: "There is an applicant for your offer",
       email: response!.service.client.email,
       htmlPath: "./src/public/html/email/send_offer_emmail.html",
       replacements: [
