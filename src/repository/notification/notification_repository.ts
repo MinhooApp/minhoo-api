@@ -30,6 +30,10 @@ export const myNotifications = async (id: number) => {
         attributes: ["id", "name", "last_name", "image_profil"],
       },
       {
+        model: Service,
+        as: "service",
+      },
+      {
         model: Offer,
         as: "offer",
         attributes: ["id", "serviceId", "workerId"],
@@ -37,7 +41,6 @@ export const myNotifications = async (id: number) => {
           {
             model: Service,
             as: "service",
-            attributes: ["id", "userId"],
           },
           {
             model: Worker,
