@@ -95,7 +95,7 @@ export const changePass = async (req: Request, res: Response) => {
     await uRepository.update(userTemp?.id, body);
     const emailParams = {
       subject: "reset password",
-      email: req.body.email,
+      email: userTemp!.email,
       htmlPath: "./src/public/html/email/successful_password_change_email.html",
       replacements: [{ name: userTemp!.name }],
       from: "Minhoo App",
