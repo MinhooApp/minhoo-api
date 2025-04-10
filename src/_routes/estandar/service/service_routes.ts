@@ -12,6 +12,7 @@ import {
   onGoingCanceledWorkers,
   historyWorkers,
   update,
+  finalized,
   deleteService,
   removeWorker,
   sendTestNotification,
@@ -20,6 +21,7 @@ import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
 const router = Router();
 router.post("/", TokenValidation(), add);
 router.post("/send", sendTestNotification);
+router.get("/finalized/:id", TokenValidation(), finalized);
 router.put("/:id", TokenValidation(), update);
 router.get("/myonGoing", TokenValidation(), myonGoing);
 router.get("/onGoing", onGoing);

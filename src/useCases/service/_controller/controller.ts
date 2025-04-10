@@ -1,4 +1,4 @@
-import { update } from "../update/update";
+import { update, finalized } from "../update/update";
 import { add, searchAddress, sendTestNotification } from "../add/add";
 import { deleteService, removeWorker } from "../delete/delete";
 import {
@@ -25,6 +25,7 @@ export {
   onGoingCanceledWorkers,
   historyWorkers,
   update,
+  finalized,
   deleteService,
   removeWorker,
   sendTestNotification,

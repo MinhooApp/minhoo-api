@@ -7,6 +7,7 @@ import Service_Worker from "../../_models/service/service_worker";
 import { workerIncludes } from "repository/worker/worker_includes";
 import Worker from "../../_models/worker/worker";
 import User from "../../_models/user/user";
+import { finalized } from "../../useCases/service/update/update";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 export const add = async (body: any) => {
@@ -237,6 +238,15 @@ export const removeWorker = async (serviceId: any, workerId: any) => {
   const worker = temp?.update({ removed: true, canceled: false });
 
   return worker;
+};
+export const finalizedService = async (id: any) => {
+  const serviceTemp = await Service.findByPk(id);
+  await serviceTemp!.update({ statusId: 2 });
+  const service = await Service.findOne({
+    where: { id: id },
+    include: serviceInclude,
+  });
+  return service;
 };
 export const cancelWorker = async (serviceId: any, workerId: any) => {
   // const serviceTemp = await Service.findByPk(id,);
