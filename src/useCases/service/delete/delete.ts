@@ -34,12 +34,12 @@ export const deleteService = async (req: Request, res: Response) => {
       interactorId: req.userId,
       serviceId: parseInt(tempService.id),
       type: "requestCanceled",
-      message: ` has canceled the service request.`,
+      message: `The offer has closed.`,
     });
   }
   //SEND EMAIL
   const emailParams = {
-    subject: "Request canceled",
+    subject: "The offer has closed",
     emails: emails,
     htmlPath: "./src/public/html/email/service_canceled_email.html",
     replacements: [],

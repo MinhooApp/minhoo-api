@@ -143,6 +143,19 @@ User.init(
       allowNull: false,
       defaultValue: true,
     },
+    alert: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+      validate: {
+        notNull: {
+          msg: "The alert 'available' can't be null",
+        },
+        notEmpty: {
+          msg: "The alert 'available' can't be empty",
+        },
+      },
+    },
   },
   {
     sequelize,

@@ -210,7 +210,7 @@ export const followers = async (id: any) => {
 };
 
 export const getUuid = async (id: number) => {
-  const user = await User.findByPk(id);
+  const user = await User.findOne({ where: { id: id, alert: true } });
   //const uuid = user?.map((user) => user!.uuid);
   return user?.uuid;
 };
