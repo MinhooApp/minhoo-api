@@ -58,7 +58,7 @@ export const deleteService = async (req: Request, res: Response) => {
   });
 };
 
-export const removeWorker = async (req: Request, res: Response) => {
+/*export const removeWorker = async (req: Request, res: Response) => {
   const { workerId } = req.body;
   const { serviceId } = req.params;
   try {
@@ -100,4 +100,4 @@ export const removeWorker = async (req: Request, res: Response) => {
     console.log(error);
     return formatResponse({ res: res, success: false, message: error });
   }
-};
+};*/

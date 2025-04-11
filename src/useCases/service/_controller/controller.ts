@@ -1,6 +1,6 @@
 import { update, finalized } from "../update/update";
 import { add, searchAddress, sendTestNotification } from "../add/add";
-import { deleteService, removeWorker } from "../delete/delete";
+import { deleteService } from "../delete/delete";
 import {
   myHistory,
   history,
@@ -27,6 +27,5 @@ export {
   update,
   finalized,
   deleteService,
-  removeWorker,
   sendTestNotification,
 };

@@ -14,7 +14,6 @@ import {
   update,
   finalized,
   deleteService,
-  removeWorker,
   sendTestNotification,
 } from "../../../useCases/service/_controller/controller";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
@@ -33,7 +32,6 @@ router.get(
 );
 router.get("/history/worker", TokenValidation(), historyWorkers);
 router.delete("/:id", TokenValidation(), deleteService);
-router.delete("/worker/:serviceId", TokenValidation(), removeWorker);
 router.get("/", TokenValidation(), gets);
 router.get("/myHistory", TokenValidation(), myHistory);
 router.get("/history", TokenValidation(), history);

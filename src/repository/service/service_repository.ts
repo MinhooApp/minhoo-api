@@ -248,12 +248,16 @@ export const finalizedService = async (id: any) => {
   });
   return service;
 };
-export const cancelWorker = async (serviceId: any, workerId: any) => {
+export const cancelWorker = async (
+  serviceId: any,
+  workerId: any,
+  removed: boolean
+) => {
   // const serviceTemp = await Service.findByPk(id,);
   const temp = await Offer.findOne({
     where: { serviceId: serviceId, workerId: workerId },
   });
-  const worker = temp?.update({ removed: false, canceled: true });
+  const worker = temp?.update({ removed: removed, canceled: true });
 
   return worker;
 };
