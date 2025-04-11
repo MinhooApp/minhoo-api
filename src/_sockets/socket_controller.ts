@@ -14,25 +14,30 @@ export const socketController = (socket: Socket) => {
   //////////////////////Services////////////////////////
   socket.on("services", (service: Service) => {
     socket.broadcast.emit("services", service);
-    console.log("emitiendooooo");
+    console.log("emitiendo");
   });
 
   //////////////////////Offer////////////////////////
   socket.on("offers", (offer: Offer) => {
     socket.broadcast.emit(`offers/${offer.serviceId}`, offer);
-    console.log("emitiendooooo");
+    console.log("emitiendo");
   });
   ////////////////////////////Chat///////////////
+  socket.on("chats", (userId: Number) => {
+    //socket.emit(`chat/${message.chatId}`, message)//emits to the user who generates the action
+    socket.broadcast.emit(`chats/${userId}`); //emit all user
+    console.log("emitiendo chats");
+  });
   socket.on("chat", (message: Message) => {
     //socket.emit(`chat/${message.chatId}`, message)//emits to the user who generates the action
     socket.broadcast.emit(`chat/${message.chatId}`, message); //emit all user
-    console.log("emitiendooooo");
+    console.log("emitiendo");
   });
 
   //////////////////////Nottification////////////////////////
   socket.on("notification", (notification: Notification) => {
     socket.broadcast.emit(`notification/${notification.userId}`, notification);
 
-    console.log(`emitiendooooo ${notification}`);
+    console.log(`emitiendo ${notification}`);
   });
 };

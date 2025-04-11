@@ -18,6 +18,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     const newMessage: any = response.messages[response.messages.length - 1];
     ////////Emit the chat/////
     socket.emit("chat", newMessage);
+    socket.emit("chats", userId);
     await sendNotification({
       userId: userId,
       interactorId: req.userId,
