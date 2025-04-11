@@ -34,7 +34,7 @@ export const deleteService = async (req: Request, res: Response) => {
       interactorId: req.userId,
       serviceId: parseInt(tempService.id),
       type: "requestCanceled",
-      message: ` has canceled your application.`,
+      message: ` has canceled the service request.`,
     });
   }
   //SEND EMAIL
