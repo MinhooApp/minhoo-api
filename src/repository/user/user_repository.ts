@@ -70,6 +70,15 @@ export const update = async (id: any, body: any) => {
   return [user];
 };
 
+export const activeAlerts = async (id: any) => {
+  const userTemp = await User.findOne({
+    where: { id: id },
+    include: userIncludes,
+  });
+  const user = await userTemp?.update({ alert: !userTemp!.alert });
+  return user;
+};
+
 export const deleteuser = async () => {
   const user = await User.update({}, { where: { available: 1 } });
   return user;
