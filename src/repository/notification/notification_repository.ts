@@ -22,7 +22,7 @@ export const gets = async () => {
 
 export const myNotifications = async (id: number) => {
   const notification = await Notification.findAll({
-    where: { userId: id },
+    where: { userId: id, deleted: false },
     include: [
       {
         model: User,
@@ -84,8 +84,13 @@ export const get = async (id: any) => {
   return notification;
 };
 
-export const update = async (id: any, body: any) => {
-  const notificationTemp = await Notification.findByPk(id);
+export const update = async (userId: number, id: any, body: any) => {
+  const notificationTemp = await Notification.findOne({
+    where: {
+      userId: userId,
+      id: id,
+    },
+  });
   const notification = await notificationTemp?.update(body);
   return [notification];
 };

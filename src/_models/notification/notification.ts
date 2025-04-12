@@ -18,6 +18,7 @@ interface NotificationAttributes {
   createdAt?: Date;
   updatedAt?: Date;
   read: boolean; // Nuevo campo para indicar si la notificación ha sido leída
+  deleted: boolean; // indica si la notificacion fue eliminada
 }
 
 interface NotificationCreationAttributes
@@ -48,6 +49,7 @@ class Notification
   public createdAt!: Date;
   public updatedAt!: Date;
   public read!: boolean; // Nuevo campo para indicar si la notificación ha sido leída
+  public deleted!: boolean; // indica si la notificacion fue eliminada
 }
 
 Notification.init(
@@ -119,6 +121,10 @@ Notification.init(
     read: {
       type: DataTypes.BOOLEAN,
       defaultValue: false, // Asumimos que la notificación no está leída al momento de su creación
+    },
+    deleted: {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false, // Asumimos que la notificación no está eliminada  al momento de su creación
     },
   },
   {
