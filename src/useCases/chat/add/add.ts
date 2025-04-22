@@ -17,15 +17,15 @@ export const sendMessage = async (req: Request, res: Response) => {
     );
 
     ////////Emit the chat/////
-    /*socket.emit("chat", response);
+    socket.emit("chat", response);
     socket.emit("chats", userId);
     await sendNotification({
       userId: userId,
       interactorId: req.userId,
-      messageId: newMessage.id,
+      messageId: response.id,
       type: "message",
       message: `wrote you a new message`,
-    });*/
+    });
     const messages = await repository.getChatByUser(req.userId, userId);
     return formatResponse({ res: res, success: true, body: response });
   } catch (error) {
