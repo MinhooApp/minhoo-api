@@ -20,15 +20,14 @@ export const sendMessage = async (req: Request, res: Response) => {
       (max, msg) => (msg.id > max.id ? msg : max),
       messages[0]
     );
-    const lastId = messages[messages.length - 1]?.id;
-    const chatId = lastMessage.chatId;
+
     ////////Emit the chat/////
-    socket.emit("chat", lastId);
-    socket.emit("chats", { chatId: chatId });
+    socket.emit("chat", lastMessage);
+    socket.emit("chats", userId);
     await sendNotification({
       userId: userId,
       interactorId: req.userId,
-      messageId: lastId,
+      messageId: lastMessage.id,
       type: "message",
       message: `wrote you a new message`,
     });
