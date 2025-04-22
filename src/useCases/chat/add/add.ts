@@ -15,9 +15,9 @@ export const sendMessage = async (req: Request, res: Response) => {
       userId,
       message
     );
-    const newMessage: any = response.messages[response.messages.length - 1];
+
     ////////Emit the chat/////
-    socket.emit("chat", newMessage);
+    /*socket.emit("chat", response);
     socket.emit("chats", userId);
     await sendNotification({
       userId: userId,
@@ -25,9 +25,9 @@ export const sendMessage = async (req: Request, res: Response) => {
       messageId: newMessage.id,
       type: "message",
       message: `wrote you a new message`,
-    });
+    });*/
     const messages = await repository.getChatByUser(req.userId, userId);
-    return formatResponse({ res: res, success: true, body: messages });
+    return formatResponse({ res: res, success: true, body: response });
   } catch (error) {
     console.log(error);
     return formatResponse({ res: res, success: false, message: error });
