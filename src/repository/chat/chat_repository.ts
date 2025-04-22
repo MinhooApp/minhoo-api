@@ -62,33 +62,7 @@ export const initNewChat = async (
     deletedBy: 0, // importante si tu modelo no tiene default
   });
 
-  // Devolver el chat con mensajes válidos
-  const chatResult = await Chat.findOne({
-    where: { id: chatId },
-    attributes: { exclude: excludeKeys },
-    include: [
-      {
-        model: Message,
-        as: "messages",
-        where: {
-          [Op.or]: [
-            { deletedBy: 0 },
-            { deletedBy: { [Op.ne]: currentUserId } },
-          ],
-        },
-        required: false,
-        attributes: { exclude: excludeKeys },
-      },
-      {
-        model: User,
-        as: "users",
-        attributes: { exclude: excludeKeys },
-        through: { attributes: [] },
-      },
-    ],
-  });
-
-  return chatResult;
+  return existingChat;
 };
 
 // Función para obtener mensajes de un chat que no han sido eliminados por ambos usuarios

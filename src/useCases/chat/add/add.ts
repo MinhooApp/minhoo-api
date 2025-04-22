@@ -26,8 +26,8 @@ export const sendMessage = async (req: Request, res: Response) => {
       type: "message",
       message: `wrote you a new message`,
     });
-
-    return formatResponse({ res: res, success: true, body: response });
+    const messages = await repository.getChatByUser(req.userId, userId);
+    return formatResponse({ res: res, success: true, body: messages });
   } catch (error) {
     console.log(error);
     return formatResponse({ res: res, success: false, message: error });
