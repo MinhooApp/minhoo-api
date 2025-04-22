@@ -18,7 +18,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     const messages = await repository.getChatByUser(req.userId, userId);
     const lastId = messages[messages.length - 1]?.id;
     ////////Emit the chat/////
-    socket.emit("chat", response);
+    socket.emit("chat", lastId);
     socket.emit("chats", userId);
     await sendNotification({
       userId: userId,
