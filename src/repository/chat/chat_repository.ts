@@ -34,7 +34,7 @@ export const initNewChat = async (
   const now = new Date(new Date().toUTCString());
   const existingChat = await chatExist(currentUserId, otherUserId);
   let chatId: number;
-
+  let chat;
   if (existingChat.length === 0) {
     const newChat = await Chat.create();
     chatId = newChat.id;
@@ -47,7 +47,7 @@ export const initNewChat = async (
     chatId = existingChat[0].chatId;
 
     // Reactivar si está eliminado
-    const chat = await Chat.findByPk(chatId);
+    chat = await Chat.findByPk(chatId);
     if (chat && existingChat[0].deletedBy !== 0) {
       await chat.update({ deletedBy: 0 });
     }
@@ -62,7 +62,7 @@ export const initNewChat = async (
     deletedBy: 0, // importante si tu modelo no tiene default
   });
 
-  return existingChat;
+  return chat;
 };
 
 // Función para obtener mensajes de un chat que no han sido eliminados por ambos usuarios
