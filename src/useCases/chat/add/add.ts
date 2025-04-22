@@ -16,10 +16,15 @@ export const sendMessage = async (req: Request, res: Response) => {
       message
     );
     const messages = await repository.getChatByUser(req.userId, userId);
+    const lastMessage = messages.reduce(
+      (max, msg) => (msg.id > max.id ? msg : max),
+      messages[0]
+    );
     const lastId = messages[messages.length - 1]?.id;
+    const chatId = lastMessage.chatId;
     ////////Emit the chat/////
     socket.emit("chat", lastId);
-    socket.emit("chats", userId);
+    socket.emit("chats", { chatId: chatId });
     await sendNotification({
       userId: userId,
       interactorId: req.userId,
