@@ -213,18 +213,35 @@ export const deleteChatByMessages = async (chatId: any, currentUserId: any) => {
   );
 };
 export const deleteChat = async (chatId: any, currentUserId: any) => {
-  // Actualiza la entrada de Message para marcar los mensajes como eliminados por el usuario actual
+  // Actualiza los mensajes del chat aplicando la misma lógica de "deletedBy"
+  await Message.update(
+    {
+      deletedBy: sequelize.literal(`
+        CASE 
+          WHEN deletedBy = 0 THEN ${currentUserId}
+          WHEN deletedBy <> ${currentUserId} THEN -1
+          ELSE deletedBy
+        END
+      `),
+    },
+    { where: { chatId } }
+  );
 
-  await deleteChatByMessages(chatId, currentUserId);
+  // Actualiza el chat con la misma lógica
   await Chat.update(
     {
-      deletedBy: sequelize.literal(
-        `CASE WHEN deletedBy = 0 THEN ${currentUserId} WHEN deletedBy <> ${currentUserId} THEN -1 ELSE deletedBy END`
-      ),
+      deletedBy: sequelize.literal(`
+        CASE 
+          WHEN deletedBy = 0 THEN ${currentUserId}
+          WHEN deletedBy <> ${currentUserId} THEN -1
+          ELSE deletedBy
+        END
+      `),
     },
     { where: { id: chatId } }
   );
 };
+
 async function chatExist(currentUserId: any, otherUserId: any) {
   const chat = await Chat_User.findAll({
     where: {
