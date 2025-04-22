@@ -25,76 +25,73 @@ export const update = async (id: any, body: any) => {
   const chat = await chatTemp?.update(body);
   return [chat];
 };
+
 export const initNewChat = async (
   currentUserId: any,
   otherUserId: any,
   mensajeInicial: any
 ) => {
   const now = new Date(new Date().toUTCString());
-  // Verifica si ya existe un chat activo entre los usuarios
-  const chat = await chatExist(currentUserId, otherUserId);
-  // Si no existe un chat activo, crea uno nuevo y envía un mensaje inicial
-  if (chat.length <= 0) {
-    const newChat = await Chat.create(); //
+
+  // Verifica si ya existe un chat entre los dos usuarios
+  const existingChat = await chatExist(currentUserId, otherUserId);
+
+  let chatId: number;
+
+  if (existingChat.length === 0) {
+    // Crear nuevo chat
+    const newChat = await Chat.create();
+
     await Chat_User.bulkCreate([
       { userId: otherUserId, chatId: newChat.id },
       { userId: currentUserId, chatId: newChat.id },
     ]);
-    // Envía el mensaje inicial
-    await Message.create({
-      text: mensajeInicial,
-      senderId: currentUserId,
-      chatId: newChat.id,
-      date: now,
-    });
-    return await Chat.findByPk(newChat.id, {
-      attributes: { exclude: excludeKeys },
-      include: [
-        {
-          model: Message,
-          as: "messages",
-          attributes: { exclude: excludeKeys },
-        },
-      ],
-    });
+
+    chatId = newChat.id;
   } else {
-    await Message.create({
-      text: mensajeInicial,
-      senderId: currentUserId,
-      chatId: chat[0].chatId,
-      date: now,
-    });
-    //si existe el chat y fue eliminado, se reactiva
+    chatId = existingChat[0].chatId;
 
-    const ch = await Chat.findByPk(chat[0].chatId, {
-      attributes: { exclude: excludeKeys },
-      include: [
-        {
-          model: Message,
-          as: "messages",
-          attributes: { exclude: excludeKeys },
-          where: {
-            [Op.or]: [
-              { deletedBy: 0 },
-              { deletedBy: { [Op.ne]: currentUserId } },
-            ],
-          },
-          required: false, // ← para permitir chats sin mensajes visibles
-        },
-        {
-          model: User,
-          as: "users",
-          attributes: { exclude: excludeKeys },
-          through: { attributes: [] },
-        },
-      ],
-    });
-
-    if (chat[0].deleteBy != 0) {
-      await ch!.update({ deletedBy: 0 });
+    // Reactivar el chat si estaba eliminado por currentUserId
+    const chat = await Chat.findByPk(chatId);
+    if (chat && existingChat[0].deletedBy !== 0) {
+      await chat.update({ deletedBy: 0 });
     }
-    return ch;
   }
+
+  // Enviar mensaje inicial
+  await Message.create({
+    text: mensajeInicial,
+    senderId: currentUserId,
+    chatId,
+    date: now,
+  });
+
+  // Devolver el chat con mensajes válidos
+  const result = await Chat.findByPk(chatId, {
+    attributes: { exclude: excludeKeys },
+    include: [
+      {
+        model: Message,
+        as: "messages",
+        attributes: { exclude: excludeKeys },
+        where: {
+          [Op.or]: [
+            { deletedBy: 0 },
+            { deletedBy: { [Op.ne]: currentUserId } },
+          ],
+        },
+        required: false, // importante para que devuelva el chat aunque no haya mensajes visibles
+      },
+      {
+        model: User,
+        as: "users",
+        attributes: { exclude: excludeKeys },
+        through: { attributes: [] },
+      },
+    ],
+  });
+
+  return result;
 };
 
 // Función para obtener mensajes de un chat que no han sido eliminados por ambos usuarios
