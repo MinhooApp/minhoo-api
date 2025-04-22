@@ -127,30 +127,38 @@ export const getSenderByMessageId = async (messageId: any) => {
   return messages;
 };
 export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
-  // Verifica si ya existe un chat activo entre los usuarios
+  // Buscar si hay un chat existente entre ambos usuarios
   const existingChat = await chatExist(currentUserId, otherUserId);
 
-  if (existingChat.length > 0) {
-    const messages = await Message.findAll({
-      order: [["date", "ASC"]],
-      where: {
-        chatId: existingChat[0].chatId,
-        [Op.and]: [
-          {
-            deletedBy: {
-              [Op.not]: [-1, currentUserId], // Excluir -1 y currentUserId
-            },
-          },
-        ],
+  if (existingChat.length === 0) return [];
+
+  const chatId = existingChat[0].chatId;
+
+  // Verificar si el chat está eliminado para este usuario
+  const chat = await Chat.findOne({
+    where: {
+      id: chatId,
+      deletedBy: {
+        [Op.not]: [-1, currentUserId], // El chat no debe estar eliminado por ambos ni por currentUserId
       },
+    },
+  });
 
-      attributes: { exclude: excludeKeys },
-    });
+  if (!chat) return [];
 
-    return messages;
-  } else {
-    return [];
-  }
+  // Obtener los mensajes válidos
+  const messages = await Message.findAll({
+    order: [["date", "ASC"]],
+    where: {
+      chatId,
+      deletedBy: {
+        [Op.not]: [-1, currentUserId], // Excluir mensajes eliminados por currentUserId o por ambos
+      },
+    },
+    attributes: { exclude: excludeKeys },
+  });
+
+  return messages;
 };
 
 export const getUserChats = async (currentUserId: any) => {
