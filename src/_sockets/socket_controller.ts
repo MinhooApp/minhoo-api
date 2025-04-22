@@ -30,7 +30,7 @@ export const socketController = (socket: Socket) => {
   });
   socket.on("chat", (message: Message) => {
     //socket.emit(`chat/${message.chatId}`, message)//emits to the user who generates the action
-    socket.broadcast.emit(`chat/${message.chatId}`, message); //emit all user
+    socket.broadcast.emit(`chat/${message.chatId}`); //emit all user
     console.log("emitiendo");
   });
 
