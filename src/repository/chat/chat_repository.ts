@@ -73,9 +73,23 @@ export const initNewChat = async (
           model: Message,
           as: "messages",
           attributes: { exclude: excludeKeys },
+          where: {
+            [Op.or]: [
+              { deletedBy: 0 },
+              { deletedBy: { [Op.ne]: currentUserId } },
+            ],
+          },
+          required: false, // ← para permitir chats sin mensajes visibles
+        },
+        {
+          model: User,
+          as: "users",
+          attributes: { exclude: excludeKeys },
+          through: { attributes: [] },
         },
       ],
     });
+
     if (chat[0].deleteBy != 0) {
       await ch!.update({ deletedBy: 0 });
     }
