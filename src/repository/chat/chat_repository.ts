@@ -32,55 +32,52 @@ export const initNewChat = async (
   mensajeInicial: any
 ) => {
   const now = new Date(new Date().toUTCString());
-
-  // Verifica si ya existe un chat entre los dos usuarios
   const existingChat = await chatExist(currentUserId, otherUserId);
-
   let chatId: number;
 
   if (existingChat.length === 0) {
-    // Crear nuevo chat
     const newChat = await Chat.create();
+    chatId = newChat.id;
 
     await Chat_User.bulkCreate([
-      { userId: otherUserId, chatId: newChat.id },
-      { userId: currentUserId, chatId: newChat.id },
+      { userId: currentUserId, chatId },
+      { userId: otherUserId, chatId },
     ]);
-
-    chatId = newChat.id;
   } else {
     chatId = existingChat[0].chatId;
 
-    // Reactivar el chat si estaba eliminado por currentUserId
+    // Reactivar si está eliminado
     const chat = await Chat.findByPk(chatId);
     if (chat && existingChat[0].deletedBy !== 0) {
       await chat.update({ deletedBy: 0 });
     }
   }
 
-  // Enviar mensaje inicial
+  // Crear mensaje inicial
   await Message.create({
     text: mensajeInicial,
     senderId: currentUserId,
     chatId,
     date: now,
+    deletedBy: 0, // importante si tu modelo no tiene default
   });
 
   // Devolver el chat con mensajes válidos
-  const result = await Chat.findByPk(chatId, {
+  const chatResult = await Chat.findOne({
+    where: { id: chatId },
     attributes: { exclude: excludeKeys },
     include: [
       {
         model: Message,
         as: "messages",
-        attributes: { exclude: excludeKeys },
         where: {
           [Op.or]: [
             { deletedBy: 0 },
             { deletedBy: { [Op.ne]: currentUserId } },
           ],
         },
-        required: false, // importante para que devuelva el chat aunque no haya mensajes visibles
+        required: false,
+        attributes: { exclude: excludeKeys },
       },
       {
         model: User,
@@ -91,7 +88,7 @@ export const initNewChat = async (
     ],
   });
 
-  return result;
+  return chatResult;
 };
 
 // Función para obtener mensajes de un chat que no han sido eliminados por ambos usuarios
