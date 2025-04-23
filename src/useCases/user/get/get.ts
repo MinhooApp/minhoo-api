@@ -66,3 +66,47 @@ export const followers = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
+
+export const validatePhone = async (req: Request, res: Response) => {
+  const { phone, dialing_code } = req.body;
+
+  if (!phone) {
+    return formatResponse({
+      res,
+      success: false,
+      message: "Phone is required",
+    });
+  }
+  if (!dialing_code) {
+    return formatResponse({
+      res,
+      success: false,
+      message: "Dialing Code is required",
+    });
+  }
+
+  try {
+    const user = await repository.findByPhone(req.userId, phone, dialing_code);
+
+    if (user) {
+      return formatResponse({
+        res,
+        success: true,
+        body: { already_exists: true },
+      });
+    } else {
+      return formatResponse({
+        res,
+        success: true,
+        body: { already_exists: false },
+      });
+    }
+  } catch (error) {
+    console.error("Error in validatePhone:", error);
+    return formatResponse({
+      res,
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};

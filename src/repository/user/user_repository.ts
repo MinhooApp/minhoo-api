@@ -5,6 +5,7 @@ import MediaPost from "../../_models/post/media_post";
 import Worker from "../../_models/worker/worker";
 import Follower from "../../_models/follower/follower";
 import Category from "../../_models/category/category";
+import { Op } from "sequelize";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 export const gets = async () => {
@@ -222,4 +223,18 @@ export const getUuid = async (id: number) => {
   const user = await User.findOne({ where: { id: id, alert: true } });
   //const uuid = user?.map((user) => user!.uuid);
   return user?.uuid;
+};
+export const findByPhone = async (
+  id: number,
+  phone: string,
+  dialing_code: string
+) => {
+  const user = await User.findOne({
+    where: {
+      id: { [Op.ne]: id }, // id distinto al recibido
+      phone,
+      dialing_code,
+    },
+  });
+  return user;
 };
