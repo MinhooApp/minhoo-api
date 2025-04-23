@@ -233,7 +233,7 @@ export const findByPhone = async (
     where: {
       id: { [Op.ne]: id }, // id distinto al recibido
       phone,
-      dialing_code,
+      //  dialing_code,
     },
   });
   return user;
