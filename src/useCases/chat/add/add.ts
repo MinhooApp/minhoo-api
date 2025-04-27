@@ -6,7 +6,7 @@ import {
   socket,
   sendNotification,
 } from "../_module/module";
-
+//
 export const sendMessage = async (req: Request, res: Response) => {
   const { userId, message } = req.body;
   try {
@@ -32,7 +32,11 @@ export const sendMessage = async (req: Request, res: Response) => {
       message: `wrote you a new message`,
     });
 
-    return formatResponse({ res: res, success: true, body: messages });
+    const payload = {
+      chatId: messages.length > 0 ? messages[0].chatId : null,
+      messages,
+    };
+    return formatResponse({ res: res, success: true, body: payload });
   } catch (error) {
     console.log(error);
     return formatResponse({ res: res, success: false, message: error });
