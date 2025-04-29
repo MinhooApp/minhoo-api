@@ -107,8 +107,7 @@ export const onGoingWorkers = async (workerId: number) => {
 export const onGoingCanceledWorkers = async (workerId: number) => {
   const service = await Service.findAll({
     where: {
-      is_available: true,
-      statusId: 1,
+      statusId: 5,
     },
 
     include: [
