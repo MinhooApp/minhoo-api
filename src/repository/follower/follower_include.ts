@@ -1,6 +1,6 @@
 import { Includeable, Op, Sequelize } from "sequelize";
 import Follower from "../../_models/follower/follower";
-import User from "_models/user/user";
+import User from "../../_models/user/user";
 
 export const followIncludes: Includeable[] = [
   {
