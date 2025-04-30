@@ -117,7 +117,6 @@ export const onGoingCanceledWorkers = async (workerId: number) => {
         as: "offers",
         where: {
           workerId: workerId,
-          canceled: true,
         },
         required: true,
       },
