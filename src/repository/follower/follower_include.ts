@@ -7,7 +7,13 @@ export const followIncludes: Includeable[] = [
     model: Follower,
     as: "followers",
     //where: Sequelize.literal("`user->followers`.`userId`="),
-    include: [{ model: User, as: "follower_data" }],
+    include: [
+      {
+        model: User,
+        as: "follower_data",
+        attributes: ["id", "name", "last_name", "image_profil"],
+      },
+    ],
     attributes: [
       "followerId", // Incluir el ID en la cláusula GROUP BY
     ],
@@ -16,7 +22,13 @@ export const followIncludes: Includeable[] = [
   {
     model: Follower,
     as: "followings",
-    include: [{ model: User, as: "following_data" }],
+    include: [
+      {
+        model: User,
+        as: "following_data",
+        attributes: ["id", "name", "last_name", "image_profil"],
+      },
+    ],
     // where: Sequelize.literal("`followings`.`followerId`= user.id"),
     attributes: [
       "userId", // Incluir el ID en la cláusula GROUP BY
