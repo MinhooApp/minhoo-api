@@ -238,3 +238,11 @@ export const findByPhone = async (
   });
   return user;
 };
+export const findNewPhone = async (phone: string) => {
+  const user = await User.findOne({
+    where: {
+      phone,
+    },
+  });
+  return user;
+};

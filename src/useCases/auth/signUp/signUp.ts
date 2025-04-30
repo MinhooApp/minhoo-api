@@ -319,6 +319,42 @@ export const restorePassword = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
+export const validatePhone = async (req: Request, res: Response) => {
+  const { phone } = req.body;
+
+  if (!phone) {
+    return formatResponse({
+      res,
+      success: false,
+      message: "Phone is required",
+    });
+  }
+
+  try {
+    const user = await uRepository.findNewPhone(phone);
+
+    if (user) {
+      return formatResponse({
+        res,
+        success: true,
+        body: { already_exists: true },
+      });
+    } else {
+      return formatResponse({
+        res,
+        success: true,
+        body: { already_exists: false },
+      });
+    }
+  } catch (error) {
+    console.error("Error in validatePhone:", error);
+    return formatResponse({
+      res,
+      success: false,
+      message: "Internal server error",
+    });
+  }
+};
 
 function generateTempPassword(): string {
   // Genera un número aleatorio entre 100000 y 999999

@@ -6,6 +6,7 @@ import {
   verifyEmailCode,
   requestRestorePassword,
   restorePassword,
+  validatePhone,
 } from "../signUp/signUp";
 export {
   validateEmail,
@@ -16,4 +17,5 @@ export {
   requestRestorePassword,
   validateRestorePassword,
   restorePassword,
+  validatePhone,
 };
