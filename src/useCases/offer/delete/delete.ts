@@ -55,7 +55,7 @@ export const removeOffer = async (req: Request, res: Response) => {
         type: "applicationCanceled",
         message: "has withdrawn your candidacy",
       });
-      await sendEmail(emailParams);
+      sendEmail(emailParams);
 
       // emito para notificar a todos los usuarios viendo el servicio
 

@@ -77,7 +77,7 @@ export const acceptOffer = async (req: Request, res: Response) => {
         },
       ],
     };
-    await sendEmail(emailParams);
+    sendEmail(emailParams);
     // emito para notificar a todos los usuarios viendo el servicio
     socket.emit("offers", offer);
     return formatResponse({ res: res, success: true, body: { service } });
@@ -131,7 +131,7 @@ export const cancelOffer = async (req: Request, res: Response) => {
       type: "applicationCanceled",
       message: `Application canceled`,
     });
-    await sendEmail(emailParams);
+    sendEmail(emailParams);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);

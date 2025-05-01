@@ -101,7 +101,7 @@ export const changePass = async (req: Request, res: Response) => {
       from: "Minhoo App",
     };
 
-    await sendEmail(emailParams);
+    sendEmail(emailParams);
     return formatResponse({ res: res, success: true });
   } catch (error) {
     return formatResponse({ res: res, success: false, message: error });

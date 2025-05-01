@@ -127,7 +127,7 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
       replacements: [{ name: `${user!.name} ${user!.last_name}` }],
       from: "Minhoo App",
     };
-    await sendEmail(emailParams);
+    sendEmail(emailParams);
 
     return formatResponse({ res, success: true, body: { user } });
   } catch (error: any) {
@@ -176,7 +176,7 @@ export const validateEmail = async (req: Request, res: Response) => {
           replacements: [{ code: cod }],
           from: "Minhoo App",
         };
-        await sendEmail(emailParams);
+        sendEmail(emailParams);
         return formatResponse({
           res: res,
           success: true,
@@ -247,7 +247,7 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
         from: "Minhoo App",
       };
 
-      await sendEmail(emailParams);
+      sendEmail(emailParams);
     }
 
     return formatResponse({
@@ -309,7 +309,7 @@ export const restorePassword = async (req: Request, res: Response) => {
       from: "Minhoo App",
     };
 
-    await sendEmail(emailParams);
+    sendEmail(emailParams);
     return formatResponse({
       res: res,
       success: true,

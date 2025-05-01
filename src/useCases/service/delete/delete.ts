@@ -88,7 +88,7 @@ export const deleteService = async (req: Request, res: Response) => {
         workerData!.personal_data.last_name
       } has canceled your application.`,
     });
-    await sendEmail(emailParams);
+    sendEmail(emailParams);
 
     // emito para notificar a todos los usuarios viendo el servicio
     const offer = {

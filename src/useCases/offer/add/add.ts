@@ -40,7 +40,7 @@ export const add = async (req: Request, res: Response) => {
         },
       ],
     };
-    await sendEmail(emailParams);
+    sendEmail(emailParams);
     return formatResponse({
       res: res,
       success: true,
