@@ -25,7 +25,7 @@ export const add = async (req: Request, res: Response) => {
 
     ////////Emit the service/////
     socket.emit("services", service);
-    sendPushToMultipleUsers("New Service Posted", "Go GO GO", tokens);
+    //  / sendPushToMultipleUsers("New Service Posted", "Go GO GO", tokens);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
