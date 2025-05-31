@@ -20,18 +20,17 @@ router.get("/myData", TokenValidation(), myData);
 router.get("/alert", TokenValidation(), activeAlerts);
 router.post("/phone/validate", TokenValidation(), validatePhone);
 
-router.get("/share/profile/:id", (req, res) => {
-  const userId = req.params.id;
+router.get("/share/:id", (req, res) => {
+  const postId = req.params.id;
 
   const userAgent = req.headers["user-agent"] || "";
-
   const isAndroid = /android/i.test(userAgent);
   const isIOS = /iphone|ipad|ipod/i.test(userAgent);
 
-  const deepLink = `minhoo://profile/${userId}`;
+  const deepLink = `minhoo://profile/${postId}`;
   const fallbackAndroid =
     "https://play.google.com/store/apps/details?id=aud.minhoo.io";
-  const fallbackIOS = "https://apps.apple.com/app/id123456789"; // tu ID real de App Store
+  const fallbackIOS = "https://apps.apple.com/app/id123456789";
 
   res.setHeader("Content-Type", "text/html");
   res.send(`
@@ -40,25 +39,32 @@ router.get("/share/profile/:id", (req, res) => {
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Redirigiendo al perfil...</title>
+        <title>Minhoo</title>
         <style>
           body {
             font-family: sans-serif;
             text-align: center;
-            padding-top: 50px;
+            padding-top: 40px;
+          }
+          a.button {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 12px 20px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 18px;
           }
         </style>
       </head>
       <body>
-        <p>Abriendo perfil en Minhoo...</p>
-        <script>
-          setTimeout(function() {
-            window.location.href = '${
-              isAndroid ? fallbackAndroid : fallbackIOS
-            }';
-          }, 1500);
-          window.location.href = '${deepLink}';
-        </script>
+        <h2>¿Tienes instalada la app Minhoo?</h2>
+        <a class="button" href="${deepLink}">Abrir la app</a>
+        <p>Si no tienes la app, instálala aquí:</p>
+        <a href="${
+          isAndroid ? fallbackAndroid : fallbackIOS
+        }" class="button">Ir a la tienda</a>
       </body>
     </html>
   `);
