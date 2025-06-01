@@ -36,19 +36,41 @@ router.get("/share/:id", (req, res) => {
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Redirigiendo...</title>
+        <title>Minhoo</title>
+        <style>
+          body {
+            font-family: sans-serif;
+            text-align: center;
+            padding: 40px 20px;
+          }
+          .button {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 12px 24px;
+            background-color: #007bff;
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-size: 18px;
+          }
+          .small {
+            margin-top: 20px;
+            font-size: 14px;
+            color: #666;
+          }
+        </style>
         <script>
-          // Redirige al deep link
-          window.location.href = "${deepLink}";
-
-          // Si después de 2 segundos el usuario sigue en esta página, redirige al fallback
+          // Fallback automático si el usuario no interactúa
           setTimeout(() => {
             window.location.href = "${fallback}";
-          }, 2000);
+          }, 3000);
         </script>
       </head>
       <body>
-        <p>Redirigiendo a la app...</p>
+        <h2>Estamos abriendo Minhoo...</h2>
+        <p>Si no se abre automáticamente, toca el botón:</p>
+        <a class="button" href="${deepLink}">Abrir la app</a>
+        <p class="small">Si no tienes la app instalada, serás redirigido a la tienda.</p>
       </body>
     </html>
   `);
