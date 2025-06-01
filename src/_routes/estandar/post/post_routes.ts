@@ -33,45 +33,84 @@ router.get("/share/:id", (req, res) => {
   res.send(`
     <!DOCTYPE html>
     <html lang="es">
-      <head>
-        <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Minhoo</title>
-        <style>
-          body {
-            font-family: sans-serif;
-            text-align: center;
-            padding: 40px 20px;
-          }
-          .button {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 12px 24px;
-            background-color: #007bff;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            font-size: 18px;
-          }
-          .small {
-            margin-top: 20px;
-            font-size: 14px;
-            color: #666;
-          }
-        </style>
-        <script>
-          // Fallback automático si el usuario no interactúa
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <title>Minhoo</title>
+      <style>
+        body {
+          margin: 0;
+          padding: 0;
+          font-family: "Helvetica Neue", sans-serif;
+          background-color: #ffffff;
+          color: #333333;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          align-items: center;
+          height: 100vh;
+          text-align: center;
+        }
+        h1 {
+          color: #FBB03B;
+          font-size: 24px;
+          margin-bottom: 16px;
+        }
+        p {
+          font-size: 16px;
+          margin: 0 20px 30px;
+        }
+        .btn {
+          display: block;
+          width: 80%;
+          max-width: 300px;
+          padding: 14px;
+          margin: 10px 0;
+          text-decoration: none;
+          font-size: 16px;
+          font-weight: bold;
+          border-radius: 8px;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .btn-primary {
+          background-color: #FBB03B;
+          color: #ffffff;
+        }
+        .btn-secondary {
+          background-color: #ffffff;
+          color: #FBB03B;
+          border: 2px solid #FBB03B;
+        }
+        .loader {
+          margin-top: 30px;
+          width: 40px;
+          height: 40px;
+          border: 4px solid #f3f3f3;
+          border-top: 4px solid #FBB03B;
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+          0% { transform: rotate(0deg); }
+          100% { transform: rotate(360deg); }
+        }
+      </style>
+      <script>
+        // Intento de redirección automática al deep link
+        window.onload = function() {
           setTimeout(() => {
             window.location.href = "${fallback}";
           }, 3000);
-        </script>
-      </head>
-      <body>
-        <h2>Estamos abriendo Minhoo...</h2>
-        <p>Si no se abre automáticamente, toca el botón:</p>
-        <a class="button" href="${deepLink}">Abrir la app</a>
-        <p class="small">Si no tienes la app instalada, serás redirigido a la tienda.</p>
-      </body>
+        }
+      </script>
+    </head>
+    <body>
+      <h1>¡Abre Minhoo!</h1>
+      <p>Estamos intentando abrir la app. Si no ocurre automáticamente, puedes hacerlo tú mismo:</p>
+      <a class="btn btn-primary" href="${deepLink}">Abrir la app</a>
+      <a class="btn btn-secondary" href="${fallback}">Descargar la app</a>
+      <div class="loader"></div>
+    </body>
     </html>
   `);
 });
