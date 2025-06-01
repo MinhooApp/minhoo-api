@@ -32,33 +32,25 @@ export const users = async (page: any = 0, size: any = 10) => {
 export const get = async (id: any) => {
   const user = await User.findOne({
     where: { id: id },
-
     include: [
       ...userIncludes,
       {
         model: Post,
         as: "posts",
         where: { is_delete: false },
+        required: false,
         include: [
           {
             model: MediaPost,
             as: "post_media",
             attributes: ["url", "is_img"],
+            separate: true, // Importante para ordenar internamente
             order: [["createdAt", "ASC"]],
           },
         ],
-        required: false,
       },
     ],
-    order: [
-      [{ model: Post, as: "posts" }, "created_date", "DESC"], // Ordena los Post
-      [
-        { model: Post, as: "posts" },
-        { model: MediaPost, as: "post_media" },
-        "createdAt",
-        "ASC",
-      ], // Ordena los MediaPost
-    ],
+    order: [[{ model: Post, as: "posts" }, "created_date", "DESC"]],
   });
   return user;
 };
