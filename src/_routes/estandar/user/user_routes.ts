@@ -99,14 +99,7 @@ router.get("/share/:id", (req, res) => {
           100% { transform: rotate(360deg); }
         }
       </style>
-      <script>
-        // Intento de redirección automática al deep link
-        window.onload = function() {
-          setTimeout(() => {
-            window.location.href = "${fallback}";
-          }, 3000);
-        }
-      </script>
+    
     </head>
     <body>
       <h1>¡Abre Minhoo!</h1>
