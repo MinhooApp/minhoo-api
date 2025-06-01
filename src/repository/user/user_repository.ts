@@ -44,6 +44,7 @@ export const get = async (id: any) => {
             model: MediaPost,
             as: "post_media",
             attributes: ["url", "is_img"],
+            order: [["createdAt", "ASC"]],
           },
         ],
         required: false,
