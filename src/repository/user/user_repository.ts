@@ -56,7 +56,7 @@ export const get = async (id: any) => {
         { model: Post, as: "posts" },
         { model: MediaPost, as: "post_media" },
         "createdAt",
-        "DESC",
+        "ASC",
       ], // Ordena los MediaPost
     ],
   });
