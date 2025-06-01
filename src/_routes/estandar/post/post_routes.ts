@@ -27,6 +27,7 @@ router.get("/share/:id", (req, res) => {
   const fallbackAndroid =
     "https://play.google.com/store/apps/details?id=aud.minhoo.io";
   const fallbackIOS = "https://apps.apple.com/app/id123456789";
+  const fallback = isAndroid ? fallbackAndroid : fallbackIOS;
 
   res.setHeader("Content-Type", "text/html");
   res.send(`
@@ -35,32 +36,19 @@ router.get("/share/:id", (req, res) => {
       <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Minhoo</title>
-        <style>
-          body {
-            font-family: sans-serif;
-            text-align: center;
-            padding-top: 40px;
-          }
-          a.button {
-            display: inline-block;
-            margin-top: 20px;
-            padding: 12px 20px;
-            background-color: #007bff;
-            color: white;
-            text-decoration: none;
-            border-radius: 8px;
-            font-size: 18px;
-          }
-        </style>
+        <title>Redirigiendo...</title>
+        <script>
+          // Redirige al deep link
+          window.location.href = "${deepLink}";
+
+          // Si después de 2 segundos el usuario sigue en esta página, redirige al fallback
+          setTimeout(() => {
+            window.location.href = "${fallback}";
+          }, 2000);
+        </script>
       </head>
       <body>
-        <h2>¿Tienes instalada la app Minhoo?</h2>
-        <a class="button" href="${deepLink}">Abrir la app</a>
-        <p>Si no tienes la app, instálala aquí:</p>
-        <a href="${
-          isAndroid ? fallbackAndroid : fallbackIOS
-        }" class="button">Ir a la tienda</a>
+        <p>Redirigiendo a la app...</p>
       </body>
     </html>
   `);
