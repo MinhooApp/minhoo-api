@@ -31,6 +31,11 @@ export const sendPushToSingleUser = async (
         channelId: "high_importance_channel",
       },
     },
+    apns: {
+      headers: {
+        "apns-priority": "10",
+      },
+    },
   };
 
   try {
@@ -48,32 +53,52 @@ export const sendPushToSingleUser = async (
     }
   }
 };
-
 export const sendPushToMultipleUsers = async (
   title: string,
   body: string,
   tokens: string[]
 ) => {
-  console.log("AQUII ");
-  console.log(firebase_key);
-  const message = {
+  console.log("📣 Enviando notificaciones push a múltiples usuarios");
+  console.log("🔑 Firebase Key:", firebase_key);
+
+  const message: admin.messaging.MulticastMessage = {
     notification: {
-      title: title, // Android, iOS (Watch)
-      body: body, // Android, iOS
+      title,
+      body,
     },
     data: {
-      title: title,
-      body: body,
+      title,
+      body,
       idnotificationlog: "4",
     },
-    tokens: tokens,
+    android: {
+      priority: "high",
+      notification: {
+        channelId: "high_importance_channel",
+      },
+    },
+    apns: {
+      headers: {
+        "apns-priority": "10", // "10" es para notificaciones visibles; "5" es para silenciosas
+      },
+      payload: {
+        aps: {
+          alert: {
+            title,
+            body,
+          },
+          sound: "default",
+        },
+      },
+    },
+    tokens,
   };
 
   try {
-    const response = await admin.messaging().sendMulticast(message);
-    console.log("Successfully sent message:", response);
+    const response = await admin.messaging().sendEachForMulticast(message);
+    console.log("✅ Notificación enviada con éxito:", response);
   } catch (error) {
-    console.error("Error sending message:", error);
+    console.error("❌ Error al enviar notificación:", error);
   }
 };
 
