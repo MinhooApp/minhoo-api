@@ -1,5 +1,6 @@
 import { firebase_key } from "./firebase_key";
 import admin from "firebase-admin";
+import { TypeNotification } from "../../../_models/notification/type_notification";
 
 admin.initializeApp({
   credential: admin.credential.cert(firebase_key as admin.ServiceAccount),
@@ -9,45 +10,46 @@ export const sendPushToSingleUser = async (
   title: string,
   body: string,
   token: string,
-  type:
-    | "postulation"
-    | "comment"
-    | "offerAccepted"
-    | "applicationCanceled"
-    | "applicationRemoved"
-    | "like"
-    | "admin"
-    | "follow"
-    | "message",
+  type: TypeNotification,
   id: number
 ) => {
-  const message = {
+  const message: admin.messaging.Message = {
+    token,
     notification: {
-      title: title,
-      body: body,
+      title,
+      body,
     },
     data: {
-      title: title,
-      body: body,
+      title,
+      body,
       notificationId: id.toString(),
-      type: type,
+      type,
     },
-    token: token,
+    android: {
+      priority: "high",
+      notification: {
+        channelId: "high_importance_channel",
+      },
+    },
+    apns: {
+      headers: {
+        "apns-priority": "10",
+      },
+    },
   };
 
   try {
     const response = await admin.messaging().send(message);
-    console.log("Successfully sent message:", response);
+    console.log("✅ Successfully sent message:", response);
   } catch (error: any) {
     if (
-      error.errorInfo.code === "messaging/registration-token-not-registered"
+      error.errorInfo?.code === "messaging/registration-token-not-registered"
     ) {
       console.error(
-        "The registration token is not registered. Please update your tokens."
+        "🚫 The registration token is not registered. Please update your tokens."
       );
-      // Aquí podrías eliminar el token de la base de datos o tomar otra acción
     } else {
-      console.error("Error sending message:", error);
+      console.error("🔥 Error sending message:", error);
     }
   }
 };
@@ -56,28 +58,50 @@ export const sendPushToMultipleUsers = async (
   body: string,
   tokens: string[]
 ) => {
-  console.log("AQUII ");
-  console.log(firebase_key);
-  const message = {
+  console.log("📣 Enviando notificaciones push a múltiples usuarios");
+  console.log("🔑 Firebase Key:", firebase_key);
+
+  const message: admin.messaging.MulticastMessage = {
     notification: {
-      title: title, // Android, iOS (Watch)
-      body: body, // Android, iOS
+      title,
+      body,
     },
     data: {
-      title: title,
-      body: body,
+      title,
+      body,
       idnotificationlog: "4",
     },
-    tokens: tokens,
+    android: {
+      priority: "high",
+      notification: {
+        channelId: "high_importance_channel",
+      },
+    },
+    apns: {
+      headers: {
+        "apns-priority": "10", // "10" es para notificaciones visibles; "5" es para silenciosas
+      },
+      payload: {
+        aps: {
+          alert: {
+            title,
+            body,
+          },
+          sound: "default",
+        },
+      },
+    },
+    tokens,
   };
 
   try {
-    const response = await admin.messaging().sendMulticast(message);
-    console.log("Successfully sent message:", response);
+    const response = await admin.messaging().sendEachForMulticast(message);
+    console.log("✅ Notificación enviada con éxito:", response);
   } catch (error) {
-    console.error("Error sending message:", error);
+    console.error("❌ Error al enviar notificación:", error);
   }
 };
+
 function sendMessage(message: any) {
   admin
     .messaging()

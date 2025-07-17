@@ -25,62 +25,44 @@ export const update = async (id: any, body: any) => {
   const chat = await chatTemp?.update(body);
   return [chat];
 };
+
 export const initNewChat = async (
   currentUserId: any,
   otherUserId: any,
   mensajeInicial: any
 ) => {
   const now = new Date(new Date().toUTCString());
-  // Verifica si ya existe un chat activo entre los usuarios
-  const chat = await chatExist(currentUserId, otherUserId);
-  // Si no existe un chat activo, crea uno nuevo y envía un mensaje inicial
-  if (chat.length <= 0) {
-    const newChat = await Chat.create(); //
-    await Chat_User.bulkCreate([
-      { userId: otherUserId, chatId: newChat.id },
-      { userId: currentUserId, chatId: newChat.id },
-    ]);
-    // Envía el mensaje inicial
-    await Message.create({
-      text: mensajeInicial,
-      senderId: currentUserId,
-      chatId: newChat.id,
-      date: now,
-    });
-    return await Chat.findByPk(newChat.id, {
-      attributes: { exclude: excludeKeys },
-      include: [
-        {
-          model: Message,
-          as: "messages",
-          attributes: { exclude: excludeKeys },
-        },
-      ],
-    });
-  } else {
-    await Message.create({
-      text: mensajeInicial,
-      senderId: currentUserId,
-      chatId: chat[0].chatId,
-      date: now,
-    });
-    //si existe el chat y fue eliminado, se reactiva
+  const existingChat = await chatExist(currentUserId, otherUserId);
+  let chatId: number;
+  let chat;
+  if (existingChat.length === 0) {
+    const newChat = await Chat.create();
+    chatId = newChat.id;
 
-    const ch = await Chat.findByPk(chat[0].chatId, {
-      attributes: { exclude: excludeKeys },
-      include: [
-        {
-          model: Message,
-          as: "messages",
-          attributes: { exclude: excludeKeys },
-        },
-      ],
-    });
-    if (chat[0].deleteBy != 0) {
-      await ch!.update({ deletedBy: 0 });
+    await Chat_User.bulkCreate([
+      { userId: currentUserId, chatId },
+      { userId: otherUserId, chatId },
+    ]);
+  } else {
+    chatId = existingChat[0].chatId;
+
+    // Reactivar si está eliminado
+    chat = await Chat.findByPk(chatId);
+    if (chat && existingChat[0].deletedBy !== 0) {
+      await chat.update({ deletedBy: 0 });
     }
-    return ch;
   }
+
+  // Crear mensaje inicial
+  await Message.create({
+    text: mensajeInicial,
+    senderId: currentUserId,
+    chatId,
+    date: now,
+    deletedBy: 0, // importante si tu modelo no tiene default
+  });
+
+  return chat;
 };
 
 // Función para obtener mensajes de un chat que no han sido eliminados por ambos usuarios
@@ -107,32 +89,58 @@ export const getChatMessages = async (chatId: any, currentUserId: any) => {
 
   return messages;
 };
+export const getSenderByMessageId = async (messageId: any) => {
+  const messages = await Message.findOne({
+    order: [["date", "DESC"]],
+    where: {
+      id: messageId,
+    },
+    include: [
+      {
+        model: User,
+        as: "sender",
+        attributes: { exclude: excludeKeys },
+      },
+    ],
 
+    attributes: { exclude: excludeKeys },
+  });
+
+  return messages;
+};
 export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
-  // Verifica si ya existe un chat activo entre los usuarios
+  // Buscar si hay un chat existente entre ambos usuarios
   const existingChat = await chatExist(currentUserId, otherUserId);
 
-  if (existingChat.length > 0) {
-    const messages = await Message.findAll({
-      order: [["date", "ASC"]],
-      where: {
-        chatId: existingChat[0].chatId,
-        [Op.and]: [
-          {
-            deletedBy: {
-              [Op.not]: [-1, currentUserId], // Excluir -1 y currentUserId
-            },
-          },
-        ],
+  if (existingChat.length === 0) return [];
+
+  const chatId = existingChat[0].chatId;
+
+  // Verificar si el chat está eliminado para este usuario
+  const chat = await Chat.findOne({
+    where: {
+      id: chatId,
+      deletedBy: {
+        [Op.not]: [-1, currentUserId], // El chat no debe estar eliminado por ambos ni por currentUserId
       },
+    },
+  });
 
-      attributes: { exclude: excludeKeys },
-    });
+  if (!chat) return [];
 
-    return messages;
-  } else {
-    return [];
-  }
+  // Obtener los mensajes válidos
+  const messages = await Message.findAll({
+    order: [["date", "ASC"]],
+    where: {
+      chatId,
+      deletedBy: {
+        [Op.not]: [-1, currentUserId], // Excluir mensajes eliminados por currentUserId o por ambos
+      },
+    },
+    attributes: { exclude: excludeKeys },
+  });
+
+  return messages;
 };
 
 export const getUserChats = async (currentUserId: any) => {
@@ -195,18 +203,35 @@ export const deleteChatByMessages = async (chatId: any, currentUserId: any) => {
   );
 };
 export const deleteChat = async (chatId: any, currentUserId: any) => {
-  // Actualiza la entrada de Message para marcar los mensajes como eliminados por el usuario actual
+  // Actualiza los mensajes del chat aplicando la misma lógica de "deletedBy"
+  await Message.update(
+    {
+      deletedBy: sequelize.literal(`
+        CASE 
+          WHEN deletedBy = 0 THEN ${currentUserId}
+          WHEN deletedBy <> ${currentUserId} THEN -1
+          ELSE deletedBy
+        END
+      `),
+    },
+    { where: { chatId } }
+  );
 
-  await deleteChatByMessages(chatId, currentUserId);
+  // Actualiza el chat con la misma lógica
   await Chat.update(
     {
-      deletedBy: sequelize.literal(
-        `CASE WHEN deletedBy = 0 THEN ${currentUserId} WHEN deletedBy <> ${currentUserId} THEN -1 ELSE deletedBy END`
-      ),
+      deletedBy: sequelize.literal(`
+        CASE 
+          WHEN deletedBy = 0 THEN ${currentUserId}
+          WHEN deletedBy <> ${currentUserId} THEN -1
+          ELSE deletedBy
+        END
+      `),
     },
     { where: { id: chatId } }
   );
 };
+
 async function chatExist(currentUserId: any, otherUserId: any) {
   const chat = await Chat_User.findAll({
     where: {

@@ -6,7 +6,7 @@ import {
   socket,
   sendNotification,
 } from "../_module/module";
-
+//
 export const sendMessage = async (req: Request, res: Response) => {
   const { userId, message } = req.body;
   try {
@@ -15,19 +15,28 @@ export const sendMessage = async (req: Request, res: Response) => {
       userId,
       message
     );
-    const newMessage: any = response.messages[response.messages.length - 1];
+    const messages = await repository.getChatByUser(req.userId, userId);
+    const lastMessage = messages.reduce(
+      (max, msg) => (msg.id > max.id ? msg : max),
+      messages[0]
+    );
+
     ////////Emit the chat/////
-    socket.emit("chat", newMessage);
+    socket.emit("chat", lastMessage);
+    socket.emit("chats", userId);
     await sendNotification({
       userId: userId,
       interactorId: req.userId,
-      messageId: newMessage.id,
-
+      messageId: lastMessage.id,
       type: "message",
       message: `wrote you a new message`,
     });
 
-    return formatResponse({ res: res, success: true, body: response });
+    const payload = {
+      chatId: messages.length > 0 ? messages[0].chatId : null,
+      messages,
+    };
+    return formatResponse({ res: res, success: true, body: payload });
   } catch (error) {
     console.log(error);
     return formatResponse({ res: res, success: false, message: error });

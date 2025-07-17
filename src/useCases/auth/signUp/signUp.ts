@@ -125,8 +125,9 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
       email: email,
       htmlPath: "./src/public/html/email/welcome_to_minhoo.html",
       replacements: [{ name: `${user!.name} ${user!.last_name}` }],
+      from: "Minhoo App",
     };
-    await sendEmail(emailParams);
+    sendEmail(emailParams);
 
     return formatResponse({ res, success: true, body: { user } });
   } catch (error: any) {
@@ -173,8 +174,9 @@ export const validateEmail = async (req: Request, res: Response) => {
           email: email,
           htmlPath: "./src/public/html/email/emailCode.html",
           replacements: [{ code: cod }],
+          from: "Minhoo App",
         };
-        await sendEmail(emailParams);
+        sendEmail(emailParams);
         return formatResponse({
           res: res,
           success: true,
@@ -242,9 +244,10 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
         email: email,
         htmlPath: "./src/public/html/email/reset_your_password.html",
         replacements: [{ code: code, name: user!.name }],
+        from: "Minhoo App",
       };
 
-      await sendEmail(emailParams);
+      sendEmail(emailParams);
     }
 
     return formatResponse({
@@ -297,6 +300,16 @@ export const restorePassword = async (req: Request, res: Response) => {
   try {
     const userTemp = await repository.findByEmail(email);
     const user = await uRepository.update(userTemp?.id, req.body);
+
+    const emailParams = {
+      subject: "reset password",
+      email: email,
+      htmlPath: "./src/public/html/email/successful_password_change_email.html",
+      replacements: [{ name: userTemp!.name }],
+      from: "Minhoo App",
+    };
+
+    sendEmail(emailParams);
     return formatResponse({
       res: res,
       success: true,
@@ -304,6 +317,42 @@ export const restorePassword = async (req: Request, res: Response) => {
     });
   } catch (error) {
     return formatResponse({ res: res, success: false, message: error });
+  }
+};
+export const validatePhone = async (req: Request, res: Response) => {
+  const { phone } = req.body;
+
+  if (!phone) {
+    return formatResponse({
+      res,
+      success: false,
+      message: "Phone is required",
+    });
+  }
+
+  try {
+    const user = await uRepository.findNewPhone(phone);
+
+    if (user) {
+      return formatResponse({
+        res,
+        success: true,
+        body: { already_exists: true },
+      });
+    } else {
+      return formatResponse({
+        res,
+        success: true,
+        body: { already_exists: false },
+      });
+    }
+  } catch (error) {
+    console.error("Error in validatePhone:", error);
+    return formatResponse({
+      res,
+      success: false,
+      message: "Internal server error",
+    });
   }
 };
 

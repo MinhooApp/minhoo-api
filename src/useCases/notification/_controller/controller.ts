@@ -1,4 +1,4 @@
 import { myNotifications } from "../get/get";
-import { readNotification } from "../update/update";
+import { readNotification, deleteNotification } from "../update/update";
 
-export { myNotifications, readNotification };
+export { myNotifications, readNotification, deleteNotification };

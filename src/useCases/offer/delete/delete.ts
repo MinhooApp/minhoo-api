@@ -6,6 +6,7 @@ import {
   serviceRepository,
   sendEmail,
   sendNotification,
+  socket,
 } from "../_module/module";
 import {
   findByEmail,
@@ -26,31 +27,39 @@ export const removeOffer = async (req: Request, res: Response) => {
       });
     } else {
       await serviceRepository.removeWorker(offer.serviceId, offer.workerId);
+      await serviceRepository.cancelWorker(
+        offer!.serviceId,
+        offer.workerId,
+        true
+      );
       await repository.update(offerId, { accepted: false });
       const service = await serviceRepository.get(offer!.serviceId);
 
       //SEND EMAIL
       const emailParams = {
         subject: "Application Cancelled",
-        email: service!.client.email,
-        htmlPath:
-          "./src/public/html/email/offer_canceled_by_woorker_email.html",
+        email: offer.offerer.personal_data.email,
+        htmlPath: "./src/public/html/email/offer_canceled_by_client_email.html",
         replacements: [
           {
             code: "@@name",
-            name: `${service!.client.name} ${service!.client.last_name}`,
+            name: `${offer.offerer.personal_data.name} ${offer.offerer.personal_data.last_name}`,
           },
         ],
       };
 
       await sendNotification({
-        userId: service!.userId,
+        userId: offer.offerer.personal_data.id,
         interactorId: req.userId,
         serviceId: parseInt(offer!.serviceId),
         type: "applicationCanceled",
-        message: `Application Canceled`,
+        message: "has withdrawn your candidacy",
       });
-      await sendEmail(emailParams);
+      sendEmail(emailParams);
+
+      // emito para notificar a todos los usuarios viendo el servicio
+
+      socket.emit("offers", offer);
       return formatResponse({
         res: res,
         success: true,

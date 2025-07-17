@@ -141,6 +141,7 @@ export const sendTestNotification = async (req: Request, res: Response) => {
       userId: req.body.userid,
       interactorId: req.body.interactorId,
       serviceId: req.body.serviceId,
+      postId: req.body.postId,
       type: req.body.type,
       message: req.body.message,
     });

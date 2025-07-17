@@ -77,7 +77,9 @@ export const acceptOffer = async (req: Request, res: Response) => {
         },
       ],
     };
-    await sendEmail(emailParams);
+    sendEmail(emailParams);
+    // emito para notificar a todos los usuarios viendo el servicio
+    socket.emit("offers", offer);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
@@ -93,19 +95,43 @@ export const cancelOffer = async (req: Request, res: Response) => {
     if (offer == null) {
       return formatResponse({
         res: res,
-        success: false,
+        success: false, //
         message: "Offer not found.",
         code: 400,
       });
     }
 
-    //cancel worker from offer////
-    await serviceRepository.cancelWorker(offer!.serviceId, req.workerId);
+    //cancel offer from worker////
+    await serviceRepository.removeWorker(offer.serviceId, req.workerId);
+    await serviceRepository.cancelWorker(offer!.serviceId, req.workerId, false);
     await repository.update(offerId, { accepted: false, canceled: true });
 
     const service = await serviceRepository.get(offer!.serviceId);
 
     socket.emit("offers", offer);
+
+    //SEND EMAIL
+    const emailParams = {
+      subject: "Application canceled",
+      email: service!.client.email,
+      htmlPath: "./src/public/html/email/offer_canceled_by_worker_email.html",
+      replacements: [
+        {
+          code: "@@name",
+          name: `${service!.client.name} ${service!.client.last_name}`,
+        },
+      ],
+    };
+    //
+    await sendNotification({
+      userId: service!.userId,
+      interactorId: req.userId,
+      serviceId: offer.serviceId,
+      offerId: offer.id,
+      type: "applicationCanceled",
+      message: `Application canceled`,
+    });
+    sendEmail(emailParams);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);

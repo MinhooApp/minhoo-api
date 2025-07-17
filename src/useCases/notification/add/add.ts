@@ -1,3 +1,4 @@
+import { TypeNotification } from "_models/notification/type_notification";
 import {
   repository,
   sendPushToSingleUser,
@@ -12,16 +13,7 @@ interface SendNotificationParams {
   offerId?: number;
   followerId?: number;
   notification_date?: Date;
-  type:
-    | "postulation"
-    | "comment"
-    | "offerAccepted"
-    | "applicationCanceled"
-    | "applicationRemoved"
-    | "like"
-    | "admin"
-    | "message"
-    | "follow";
+  type: TypeNotification;
   message: string;
   likerId?: number; // ID del usuario que dio el "like" (opcional)
   commentId?: number; // ID del comentario (opcional)
@@ -65,7 +57,7 @@ export const sendNotification = async (
       params.message,
       uuid,
       params.type,
-      getFirstAvailableId(params) // <- puede devolver undefined
+      getFirstAvailableId(notificationData)! // <- puede devolver undefined
     );
   } catch (error) {
     console.error("Error al enviar la notificación:", error);
@@ -74,11 +66,30 @@ export const sendNotification = async (
 };
 
 function getFirstAvailableId(data: SendNotificationParams): number {
-  return (data.serviceId ||
-    data.postId ||
-    data.offerId ||
-    data.likerId ||
-    data.commentId ||
-    data.followerId ||
-    data.messageId!)!;
+  switch (data.type) {
+    case "postulation":
+    case "applicationCanceled":
+    case "offerAccepted":
+    case "applicationRemoved":
+    case "requestCanceled":
+      return data.serviceId!;
+
+    case "like":
+    case "comment":
+      return data.postId!;
+
+    case "follow":
+    case "message":
+      return data.interactorId!;
+
+    case "admin":
+    default:
+      return (data.serviceId ||
+        data.postId ||
+        data.offerId ||
+        data.likerId ||
+        data.commentId ||
+        data.followerId ||
+        data.messageId!)!;
+  }
 }

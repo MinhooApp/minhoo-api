@@ -181,3 +181,7 @@ Notification.belongsTo(Message, {
 // Asociación Notification con Offer
 Offer.hasMany(Notification, { as: "notifications", foreignKey: "offerId" });
 Notification.belongsTo(Offer, { as: "offer", foreignKey: "offerId" });
+
+// Asociación Notification con Service
+Service.hasMany(Notification, { as: "notifications", foreignKey: "serviceId" });
+Notification.belongsTo(Service, { as: "service", foreignKey: "serviceId" });
