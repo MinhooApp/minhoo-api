@@ -1,9 +1,6 @@
 import sequelize from "../../_db/connection";
 import { DataTypes, Model, Optional } from "sequelize";
-import {
-  TypeNotification,
-  TypeNotificationEnum,
-} from "_models/notification/type_notification";
+import { TypeNotification } from "_models/notification/type_notification";
 
 interface NotificationAttributes {
   id: number;
@@ -14,14 +11,14 @@ interface NotificationAttributes {
   offerId?: number;
   type: TypeNotification;
   message: string;
-  likerId?: number;
-  commentId?: number;
-  messageId?: number;
+  likerId?: number; // ID del usuario que dio el "like"
+  commentId?: number; // ID del comentario
+  messageId?: number; // ID del mensaje
   notification_date?: Date;
   createdAt?: Date;
   updatedAt?: Date;
-  read: boolean;
-  deleted: boolean;
+  read: boolean; // Nuevo campo para indicar si la notificación ha sido leída
+  deleted: boolean; // indica si la notificacion fue eliminada
 }
 
 interface NotificationCreationAttributes
@@ -45,8 +42,8 @@ class Notification
   public notification_date?: Date;
   public createdAt!: Date;
   public updatedAt!: Date;
-  public read!: boolean;
-  public deleted!: boolean;
+  public read!: boolean; // Nuevo campo para indicar si la notificación ha sido leída
+  public deleted!: boolean; // indica si la notificacion fue eliminada
 }
 
 Notification.init(
@@ -77,7 +74,14 @@ Notification.init(
       allowNull: true,
     },
     type: {
-      type: DataTypes.ENUM(...TypeNotificationEnum),
+      type: DataTypes.ENUM(
+        "postulation",
+        "comment",
+        "offerAccepted",
+        "like",
+        "admin",
+        "message"
+      ),
       allowNull: false,
     },
     message: {
@@ -86,15 +90,15 @@ Notification.init(
     },
     likerId: {
       type: DataTypes.INTEGER,
-      allowNull: true,
+      allowNull: true, // Puede ser null si no aplica
     },
     commentId: {
       type: DataTypes.INTEGER,
-      allowNull: true,
+      allowNull: true, // Puede ser null si no aplica
     },
     messageId: {
       type: DataTypes.INTEGER,
-      allowNull: true,
+      allowNull: true, // Puede ser null si no aplica
     },
     notification_date: {
       type: DataTypes.DATE,
@@ -110,11 +114,11 @@ Notification.init(
     },
     read: {
       type: DataTypes.BOOLEAN,
-      defaultValue: false,
+      defaultValue: false, // Asumimos que la notificación no está leída al momento de su creación
     },
     deleted: {
       type: DataTypes.BOOLEAN,
-      defaultValue: false,
+      defaultValue: false, // Asumimos que la notificación no está eliminada  al momento de su creación
     },
   },
   {
