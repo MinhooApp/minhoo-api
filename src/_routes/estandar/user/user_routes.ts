@@ -25,11 +25,12 @@ router.get("/share/:id", async (req, res) => {
   const isIOS = /iphone|ipad|ipod/i.test(userAgent);
 
   const deepLink = `minhoo://profile/${userId}`;
-  const fallbackAndroid = "https://play.google.com/store/apps/details?id=aud.minhoo.io";
+  const fallbackAndroid =
+    "https://play.google.com/store/apps/details?id=aud.minhoo.io";
   const fallbackIOS = "https://apps.apple.com/app/id123456789";
   const fallback = isAndroid ? fallbackAndroid : fallbackIOS;
 
-  const filePath = path.join(__dirname, "../public/html/share/share.html");
+  const filePath = "./src/public/html/share/share.html";
 
   try {
     let html = await fs.readFile(filePath, "utf8");
