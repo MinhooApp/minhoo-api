@@ -18,13 +18,13 @@ router.get("/followers/:id?", TokenValidation(), followers);
 router.get("/one/:id?", get);
 router.get("/myData", TokenValidation(), myData);
 router.get("/share/:id", async (req, res) => {
-  const postId = req.params.id;
+  const userId = req.params.id;
 
   const userAgent = req.headers["user-agent"] || "";
   const isAndroid = /android/i.test(userAgent);
   const isIOS = /iphone|ipad|ipod/i.test(userAgent);
 
-  const deepLink = `minhoo://profile/${postId}`;
+  const deepLink = `minhoo://profile/${userId}`;
   const fallbackAndroid = "https://play.google.com/store/apps/details?id=aud.minhoo.io";
   const fallbackIOS = "https://apps.apple.com/app/id123456789";
   const fallback = isAndroid ? fallbackAndroid : fallbackIOS;
