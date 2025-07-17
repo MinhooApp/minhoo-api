@@ -70,5 +70,17 @@ Category.afterSync(async () => {
         { id: 15, name: "Event Help & Planning", es_name: "Ayuda y planificación de eventos" },
         { id: 16, name: "Home Organization", es_name: "Organización del hogar" },
         { id: 17, name: "Others", es_name: "Otras" },
-    ];});
+    ];
+
+    for (const category of categories) {
+        await Category.findOrCreate({
+            where: {
+                id: category.id,
+                name: category.name,
+                es_name: category.es_name,
+            },
+        });
+    }
+});
+
 export default Category;

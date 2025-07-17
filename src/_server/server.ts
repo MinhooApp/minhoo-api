@@ -27,13 +27,8 @@ class Server {
     this.publicPath = public_path;
     this.server = new HttpServer(this.app);
     this.io = new SocketIOServer(this.server, {
-      cors: {
-        origin: "https://api.minhoo.xyz",
-        methods: ["GET", "POST"],
-        credentials: true
-      }
+      /* opciones */
     });
-
     this.middlewares();
     this.dbConnection();
     this.configure();
@@ -81,7 +76,7 @@ class Server {
   }
   /////////////////////////////////
   listen() {
-    this.server.listen(this.port, "0.0.0.0",() => {
+    this.server.listen(this.port, () => {
       console.log("Servidor corriendo en puerto", this.port);
     });
   }
