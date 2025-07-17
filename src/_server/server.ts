@@ -27,9 +27,7 @@ class Server {
     this.publicPath = public_path;
     this.server = new HttpServer(this.app);
     this.io = new SocketIOServer(this.server, {
-      cors: {
-        origin: "*",
-      },
+      /* opciones */
     });
     this.middlewares();
     this.dbConnection();
