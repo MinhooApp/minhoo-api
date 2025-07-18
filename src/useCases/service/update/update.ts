@@ -26,7 +26,8 @@ export const finalized = async (req: Request, res: Response) => {
       serviceId: id,
     };
     socket.emit("offers", offer);
-    socket.emit("services", tempService);
+    const deletedService = await repository.get(id);
+    socket.emit("services", deletedService);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
