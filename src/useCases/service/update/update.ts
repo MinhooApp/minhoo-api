@@ -26,6 +26,7 @@ export const finalized = async (req: Request, res: Response) => {
       serviceId: id,
     };
     socket.emit("offers", offer);
+    socket.emit("services", tempService);
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
