@@ -30,7 +30,8 @@ router.get("/share/:id", async (req, res) => {
   const fallbackAndroid =
     "https://play.google.com/store/apps/details?id=aud.minhoo.io";
   const fallbackIOS = "https://apps.apple.com/app/id123456789";
-  const fallback = isAndroid ? fallbackAndroid : fallbackIOS;
+  const fallbackIOSTestFlight = "https://testflight.apple.com/join/46uzBSsa";
+  const fallback = isAndroid ? fallbackAndroid : fallbackIOSTestFlight;
 
   const filePath = "./src/public/html/share/share.html";
 
