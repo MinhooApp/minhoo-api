@@ -48,6 +48,8 @@ export const postInclude: Includeable[] = [
     as: "comments",
     attributes: ["id", "userId", "comment", "media_url", "created_date"],
     where: { is_delete: false },
+    separate: true, // necesario para ordenar en include
+    order: [["created_date", "DESC"]],
     required: false,
 
     include: [
