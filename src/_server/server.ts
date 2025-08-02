@@ -27,7 +27,11 @@ class Server {
     this.publicPath = public_path;
     this.server = new HttpServer(this.app);
     this.io = new SocketIOServer(this.server, {
-      /* opciones */
+      cors: {
+        origin: "*", // O el dominio real de tu frontend
+        methods: ["GET", "POST"],
+        credentials: false,
+      },
     });
     this.middlewares();
     this.dbConnection();
