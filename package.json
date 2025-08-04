@@ -41,6 +41,7 @@
     "sequelize": "^6.34.0"
   },
   "dependencies": {
+    "@nestjs/platform-express": "^11.1.5",
     "axios": "^1.7.3",
     "bcryptjs": "^2.4.3",
     "concurrently": "^8.2.2",
