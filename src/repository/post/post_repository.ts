@@ -31,7 +31,24 @@ export const all = async () => {
   });
   return post;
 };
-export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
+
+export const gets = async (page: any = 0, size: any = 10) => {
+  let option = {
+    limit: +size,
+    offset: +page * +size,
+  };
+  const post = await Post.findAndCountAll({
+    where: { is_delete: false },
+    ...option,
+    include: postInclude,
+
+    order: [["created_date", "DESC"]],
+    attributes: { exclude: excludeKeys },
+  });
+
+  return post;
+};
+/*export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
   const option = { limit: +size, offset: +page * +size };
 
   const andConds: any[] = [];
@@ -51,7 +68,7 @@ export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
     );
   }*/
 
-  const posts = await Post.findAndCountAll({
+/*const posts = await Post.findAndCountAll({
     where: {
       is_delete: false,
       ...(andConds.length ? { [Op.and]: andConds } : {}),
@@ -64,7 +81,7 @@ export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
   });
 
   return posts;
-};
+};*/
 // /
 export const getOne = async (id: any, meId: any) => {
   const post = await Post.findOne({
