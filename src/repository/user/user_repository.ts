@@ -34,6 +34,7 @@ export const get = async (id: any, meId: any = -1) => {
   const user = await User.findOne({
     where: {
       id: id,
+      is_delete: false,
       [Op.and]: [
         Sequelize.literal(`
                   NOT EXISTS (
