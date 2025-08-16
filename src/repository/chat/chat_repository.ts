@@ -5,6 +5,7 @@ import sequelize from "../../_db/connection";
 import Worker from "../../_models/worker/worker";
 import Message from "../../_models/chat/message";
 import Chat_User from "../../_models/chat/chat_user";
+import UserBlock from "../../_models/block/block";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 export const add = async (body: any) => {
   const chat = await Chat.create(body);
@@ -26,6 +27,28 @@ export const update = async (id: any, body: any) => {
   return [chat];
 };
 
+/**
+ * Valida si hay un bloqueo entre dos usuarios (en cualquier dirección).
+ * @param user_A id del primer usuario
+ * @param user_B id del segundo usuario
+ * @returns true si existe un bloqueo entre ellos, false si no.
+ */
+export const validateBlock = async (
+  user_A: number,
+  user_B: number
+): Promise<boolean> => {
+  const block = await UserBlock.findOne({
+    where: {
+      [Op.or]: [
+        { blocker_id: user_A, blocked_id: user_B },
+        { blocker_id: user_B, blocked_id: user_A },
+      ],
+    },
+    attributes: ["id"], // solo necesitamos saber si existe
+  });
+
+  return !!block; // true si encontró, false si no
+};
 export const initNewChat = async (
   currentUserId: any,
   otherUserId: any,
@@ -109,34 +132,36 @@ export const getSenderByMessageId = async (messageId: any) => {
   return messages;
 };
 export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
-  // Buscar si hay un chat existente entre ambos usuarios
-  const existingChat = await chatExist(currentUserId, otherUserId);
+  const me = Number(currentUserId);
+  const other = Number(otherUserId);
 
-  if (existingChat.length === 0) return [];
+  // 1) Bloqueo en cualquier dirección → no hay chat/mensajes
+  if (await isBlockedEitherWay(me, other)) {
+    return []; // o throw new Forbidden('No puedes chatear con este usuario');
+  }
+
+  // 2) Buscar chat existente entre ambos (tu función actual)
+  const existingChat = await chatExist(me, other);
+  if (!existingChat?.length) return [];
 
   const chatId = existingChat[0].chatId;
 
-  // Verificar si el chat está eliminado para este usuario
+  // 3) Validar que el chat no esté eliminado para este usuario
   const chat = await Chat.findOne({
     where: {
       id: chatId,
-      deletedBy: {
-        [Op.not]: [-1, currentUserId], // El chat no debe estar eliminado por ambos ni por currentUserId
-      },
+      deletedBy: { [Op.not]: [-1, me] },
     },
   });
-
   if (!chat) return [];
 
-  // Obtener los mensajes válidos
+  // 4) Mensajes no eliminados para este usuario
   const messages = await Message.findAll({
-    order: [["date", "ASC"]],
     where: {
       chatId,
-      deletedBy: {
-        [Op.not]: [-1, currentUserId], // Excluir mensajes eliminados por currentUserId o por ambos
-      },
+      deletedBy: { [Op.not]: [-1, me] },
     },
+    order: [["date", "ASC"]],
     attributes: { exclude: excludeKeys },
   });
 
@@ -260,4 +285,17 @@ async function chatExist(currentUserId: any, otherUserId: any) {
     order: ["userId"],
   });
   return chat;
+}
+async function isBlockedEitherWay(a: number, b: number): Promise<boolean> {
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return false;
+  const row = await UserBlock.findOne({
+    where: {
+      [Op.or]: [
+        { blocker_id: a, blocked_id: b },
+        { blocker_id: b, blocked_id: a },
+      ],
+    },
+    attributes: ["id"],
+  });
+  return !!row;
 }

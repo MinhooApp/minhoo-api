@@ -10,11 +10,16 @@ import {
 export const sendMessage = async (req: Request, res: Response) => {
   const { userId, message } = req.body;
   try {
-    const response: any = await repository.initNewChat(
-      req.userId,
-      userId,
-      message
-    );
+    const flag = await repository.validateBlock(req.userId, userId);
+
+    if (flag) {
+      return formatResponse({
+        res: res,
+        success: false,
+        message: "User not fount",
+      });
+    }
+    await repository.initNewChat(req.userId, userId, message);
     const messages = await repository.getChatByUser(req.userId, userId);
     const lastMessage = messages.reduce(
       (max, msg) => (msg.id > max.id ? msg : max),
