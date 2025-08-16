@@ -8,7 +8,7 @@ import {
 export const gets = async (req: Request, res: Response) => {
   try {
     const { page = 0, size = 10 } = req.query;
-    const posts = await repository.gets(page, size, req.userId);
+    const posts = await repository.gets(page, size);
 
     return formatResponse({
       res: res,
