@@ -32,41 +32,36 @@ export const all = async () => {
   return post;
 };
 
-export const gets = async (page: any = 0, size: any = 10, meId?: any) => {
-  const option = { limit: +size, offset: +page * +size };
-
-  const me = Number(meId);
-  const andConds: any[] = [];
-
-  // Aplica el filtro solo si meId es válido
-  if (Number.isFinite(me)) {
-    andConds.push(
-      Sequelize.literal(`
-        NOT EXISTS (
-          SELECT 1
-          FROM \`user_blocks\` ub
-          WHERE
-            (ub.blocker_id = ${me} AND ub.blocked_id = \`post\`.\`userId\`)
-            OR
-            (ub.blocker_id = \`post\`.\`userId\` AND ub.blocked_id = ${me})
-        )
-      `)
-    );
-  }
-
-  const posts = await Post.findAndCountAll({
+export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
+  let option = {
+    limit: +size,
+    offset: +page * +size,
+  };
+  const post = await Post.findAndCountAll({
     where: {
       is_delete: false,
-      ...(andConds.length ? { [Op.and]: andConds } : {}),
+
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`post\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`post\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+      ],
     },
     ...option,
     include: postInclude,
+    replacements: { meId },
     order: [["created_date", "DESC"]],
     attributes: { exclude: excludeKeys },
-    subQuery: false, // asegura que el alias base `post` exista en el FROM
   });
 
-  return posts;
+  return post;
 };
 /*export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
   const option = { limit: +size, offset: +page * +size };
