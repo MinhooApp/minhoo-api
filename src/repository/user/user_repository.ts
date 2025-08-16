@@ -30,15 +30,29 @@ export const users = async (page: any = 0, size: any = 10) => {
   return users;
 };
 
-export const get = async (id: any) => {
+export const get = async (id: any, meId: any = -1) => {
   const user = await User.findOne({
-    where: { id: id },
+    where: {
+      id: id,
+      [Op.and]: [
+        Sequelize.literal(`
+                  NOT EXISTS (
+                    SELECT 1
+                    FROM user_blocks ub
+                    WHERE
+                      (ub.blocker_id = :meId AND ub.blocked_id = :id)
+                      OR
+                      (ub.blocker_id =:id AND ub.blocked_id = :meId)
+                  )
+                `),
+      ],
+    },
     include: [
       ...userIncludes,
       {
         model: Post,
         as: "posts",
-        where: { is_delete: false },
+
         required: false,
         include: [
           {
@@ -51,6 +65,7 @@ export const get = async (id: any) => {
         ],
       },
     ],
+    replacements: { meId, id },
     order: [[{ model: Post, as: "posts" }, "created_date", "DESC"]],
   });
   return user;

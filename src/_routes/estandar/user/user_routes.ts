@@ -19,7 +19,7 @@ router.get("/", TokenValidation(), gets);
 router.post("/follow", TokenValidation(), follow);
 router.get("/follows/:id?", TokenOptional(), follows);
 router.get("/followers/:id?", TokenOptional(), followers);
-router.get("/one/:id?", get);
+router.get("/one/:id?", TokenOptional(), get);
 router.get("/myData", TokenValidation(), myData);
 router.get("/alert", TokenValidation(), activeAlerts);
 router.get("/share/:id", async (req, res) => {
