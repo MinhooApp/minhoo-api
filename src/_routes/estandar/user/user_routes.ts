@@ -1,4 +1,5 @@
 import Router from "express";
+import TokenOptional from "../../../libs/middlewares/optional_jwt";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
 import path from "path";
 import fs from "fs/promises";
@@ -16,8 +17,8 @@ import {
 } from "../../../useCases/user/_controller/controller";
 router.get("/", TokenValidation(), gets);
 router.post("/follow", TokenValidation(), follow);
-router.get("/follows/:id?", follows);
-router.get("/followers/:id?", followers);
+router.get("/follows/:id?", TokenOptional(), follows);
+router.get("/followers/:id?", TokenOptional(), followers);
 router.get("/one/:id?", get);
 router.get("/myData", TokenValidation(), myData);
 router.get("/alert", TokenValidation(), activeAlerts);

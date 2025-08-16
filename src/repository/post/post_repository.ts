@@ -32,22 +32,20 @@ export const all = async () => {
   return post;
 };
 export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
-  const option = { limit: +size, offset: +page * +size };
+  const limit = Number(size) || 10;
+  const offset = (Number(page) || 0) * limit;
 
   const andConds: any[] = [];
   const me = Number(meId);
   if (Number.isFinite(me)) {
     andConds.push(
       Sequelize.literal(`
-        NOT EXISTS (
-          SELECT 1
-          FROM user_blocks ub
-          WHERE
-            (ub.blocker_id = ${me} AND ub.blocked_id = \`post\`.\`userId\`)
-            OR
-            (ub.blocker_id = \`post\`.\`userId\` AND ub.blocked_id = ${me})
-        )
-      `)
+      NOT EXISTS (
+        SELECT 1 FROM user_blocks ub
+        WHERE (ub.blocker_id = ${me} AND ub.blocked_id = \`post\`.\`userId\`)
+           OR (ub.blocker_id = \`post\`.\`userId\` AND ub.blocked_id = ${me})
+      )
+    `)
     );
   }
 
@@ -56,15 +54,20 @@ export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
       is_delete: false,
       ...(andConds.length ? { [Op.and]: andConds } : {}),
     },
-    ...option,
-    include: postInclude,
+    limit,
+    offset,
+    include: postInclude, // Asegúrate de NO tener limit aquí; si lo necesitas, usa separate:true
     order: [["created_date", "DESC"]],
     attributes: { exclude: excludeKeys },
-    subQuery: false,
+    distinct: true,
+    col: "post.id",
+    // quita subQuery: false a menos que sepas que lo necesitas
+    logging: console.log, // temporalmente para ver si hay un LIMIT 20
   });
 
   return posts;
 };
+
 // /
 export const getOne = async (id: any, meId: any) => {
   const post = await Post.findOne({

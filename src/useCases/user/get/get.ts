@@ -48,7 +48,7 @@ export const myData = async (req: Request, res: Response) => {
 export const follows = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const follows = await repository.follows(id ?? req.userId);
+    const follows = await repository.follows(id ?? req.userId, req.userId);
 
     return formatResponse({ res: res, success: true, body: { follows } });
   } catch (error) {
@@ -59,7 +59,7 @@ export const follows = async (req: Request, res: Response) => {
 export const followers = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const followers = await repository.followers(id ?? req.userId);
+    const followers = await repository.followers(id ?? req.userId, req.userId);
     return formatResponse({ res: res, success: true, body: { followers } });
   } catch (error) {
     console.log(error);
