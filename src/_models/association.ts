@@ -18,6 +18,7 @@ import StatusService from "./status/statusService";
 import Service_Worker from "./service/service_worker";
 import Verification from "./verification/verification";
 import Notification from "./notification/notification";
+import UserBlock from "./block/block";
 const ver = Verification;
 console.log(ver.toString());
 
@@ -185,3 +186,12 @@ Notification.belongsTo(Offer, { as: "offer", foreignKey: "offerId" });
 // Asociación Notification con Service
 Service.hasMany(Notification, { as: "notifications", foreignKey: "serviceId" });
 Notification.belongsTo(Service, { as: "service", foreignKey: "serviceId" });
+
+// Asociation User Bloc
+// user.model.js
+User.hasMany(UserBlock, { foreignKey: "blocker_id", as: "blocksMade" });
+User.hasMany(UserBlock, { foreignKey: "blocked_id", as: "blocksReceived" });
+
+// block.model.js
+UserBlock.belongsTo(User, { foreignKey: "blocker_id", as: "blocker" });
+UserBlock.belongsTo(User, { foreignKey: "blocked_id", as: "blocked" });

@@ -2,6 +2,8 @@ import Post from "../../_models/post/post";
 import Like from "../../_models/like/like";
 import { postInclude } from "./post_include";
 import MediaPost from "../../_models/post/media_post";
+import { Op, Sequelize } from "sequelize";
+import sequelize from "sequelize/types/sequelize";
 const excludeKeys = ["createdAt", "updatedAt"];
 
 export const add = async (body: any) => {
@@ -29,41 +31,107 @@ export const all = async () => {
   });
   return post;
 };
-export const gets = async (page: any = 0, size: any = 10) => {
-  let option = {
-    limit: +size,
-    offset: +page * +size,
-  };
-  const post = await Post.findAndCountAll({
-    where: { is_delete: false },
+export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
+  const option = { limit: +size, offset: +page * +size };
+
+  const andConds: any[] = [];
+  const me = Number(meId);
+  if (Number.isFinite(me)) {
+    andConds.push(
+      Sequelize.literal(`
+        NOT EXISTS (
+          SELECT 1
+          FROM user_blocks ub
+          WHERE
+            (ub.blocker_id = ${me} AND ub.blocked_id = \`post\`.\`userId\`)
+            OR
+            (ub.blocker_id = \`post\`.\`userId\` AND ub.blocked_id = ${me})
+        )
+      `)
+    );
+  }
+
+  const posts = await Post.findAndCountAll({
+    where: {
+      is_delete: false,
+      ...(andConds.length ? { [Op.and]: andConds } : {}),
+    },
     ...option,
     include: postInclude,
-
     order: [["created_date", "DESC"]],
     attributes: { exclude: excludeKeys },
+    subQuery: false,
   });
 
-  return post;
+  return posts;
 };
 // /
-export const getOne = async (id: any) => {
-  const comment = await Post.findOne({
-    where: { id: id },
+export const getOne = async (id: any, meId: any) => {
+  const post = await Post.findOne({
+    where: {
+      id: id,
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`post\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`post\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+      ],
+    },
+    replacements: { meId },
     include: postInclude,
     attributes: { exclude: excludeKeys },
   });
-  return comment;
+  return post;
 };
-export const get = async (id: any) => {
+export const get = async (id: any, meId: any = -1) => {
   const post = await Post.findOne({
-    where: { id: id, is_delete: false },
+    where: {
+      id: id,
+      is_delete: false,
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`post\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`post\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+      ],
+    },
+    replacements: { meId },
     include: postInclude,
   });
   return post;
 };
-export const getOneByUser = async (id: any, userId: any) => {
+export const getOneByUser = async (id: any, userId: any, meId: any = -1) => {
   const post = await Post.findOne({
-    where: { id: id, userId: userId, is_delete: false },
+    where: {
+      id: id,
+      userId: userId,
+      is_delete: false,
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`post\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`post\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+      ],
+    },
+    replacements: { meId },
     include: postInclude,
   });
   return post;

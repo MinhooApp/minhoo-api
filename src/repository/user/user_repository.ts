@@ -1,11 +1,12 @@
 import User from "../../_models/user/user";
+import UserBLock from "../../_models/block/block";
 import Post from "../../_models/post/post";
 import { userIncludes } from "./user_include";
 import MediaPost from "../../_models/post/media_post";
 import Worker from "../../_models/worker/worker";
 import Follower from "../../_models/follower/follower";
 import Category from "../../_models/category/category";
-import { Op } from "sequelize";
+import { Op, Sequelize } from "sequelize";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 export const gets = async () => {
@@ -78,10 +79,24 @@ export const deleteuser = async () => {
   return user;
 };
 
-export const follows = async (id: any) => {
+export const follows = async (id: any, meId: any = -1) => {
   const follows = await Follower.findAll({
     attributes: ["id", "userId", "followerId"],
-    where: { followerId: id },
+    where: {
+      followerId: id,
+      [Op.and]: [
+        Sequelize.literal(`
+                  NOT EXISTS (
+                    SELECT 1
+                    FROM user_blocks ub
+                    WHERE
+                      (ub.blocker_id = :meId AND ub.blocked_id = \`follower\`.\`userId\`)
+                      OR
+                      (ub.blocker_id = \`follower\`.\`userId\` AND ub.blocked_id = :meId)
+                  )
+                `),
+      ],
+    },
     include: [
       {
         model: User,
@@ -141,14 +156,29 @@ export const follows = async (id: any) => {
         ],
       },
     ],
+    replacements: { meId },
   });
 
   return follows;
 };
-export const followers = async (id: any) => {
+export const followers = async (id: any, meId: any = -1) => {
   const followers = await Follower.findAll({
     attributes: ["id", "userId", "followerId"],
-    where: { userId: id },
+    where: {
+      userId: id,
+      [Op.and]: [
+        Sequelize.literal(`
+                  NOT EXISTS (
+                    SELECT 1
+                    FROM user_blocks ub
+                    WHERE
+                      (ub.blocker_id = :meId AND ub.blocked_id = \`follower\`.\`followerId\`)
+                      OR
+                      (ub.blocker_id = \`follower\`.\`followerId\` AND ub.blocked_id = :meId)
+                  )
+                `),
+      ],
+    },
     include: [
       {
         model: User,
@@ -208,6 +238,7 @@ export const followers = async (id: any) => {
         ],
       },
     ],
+    replacements: { meId },
   });
   return followers;
 };
@@ -238,4 +269,50 @@ export const findNewPhone = async (phone: string) => {
     },
   });
   return user;
+};
+
+export const block_user = async (blocker_id: any, blocked_id: any) => {
+  const flag = await UserBLock.findOne({
+    where: {
+      blocker_id,
+      blocked_id,
+    },
+  });
+
+  if (flag) {
+    return {
+      success: true,
+      message: "the user has already been blocked previously",
+    };
+  }
+
+  await UserBLock.create({
+    blocker_id,
+    blocked_id,
+  });
+
+  return {
+    success: true,
+    message: "the user has been successfully blocked",
+  };
+};
+
+export const unblock_user = async (blocker_id: any, blocked_id: any) => {
+  const data = await UserBLock.findOne({
+    where: { blocker_id, blocked_id },
+  });
+
+  if (!data) {
+    return {
+      success: true,
+      message: "the user is not blocked",
+    };
+  }
+
+  await data.destroy();
+
+  return {
+    success: true,
+    message: "the user has been successfully unblocked",
+  };
 };

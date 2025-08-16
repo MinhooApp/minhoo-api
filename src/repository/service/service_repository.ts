@@ -1,5 +1,5 @@
 import { worker } from "./../../useCases/worker/get/get";
-import { Op } from "sequelize";
+import { Op, Sequelize } from "sequelize";
 import Offer from "../../_models/offer/offer";
 import Service from "../../_models/service/service";
 import { serviceInclude } from "./service_includes";
@@ -81,13 +81,33 @@ export const onGoing = async (userId?: number) => {
     return service;
   }
 };
-export const getsOnGoing = async (page: any = 0, size: any = 10) => {
+export const getsOnGoing = async (
+  page: any = 0,
+  size: any = 10,
+  meId: any = -1
+) => {
   let option = {
     limit: +size,
     offset: +page * +size,
   };
   const services = await Service.findAndCountAll({
-    where: { is_available: true, statusId: 1 },
+    where: {
+      is_available: true,
+      statusId: 1,
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`service\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+      ],
+    },
+    replacements: { meId },
     ...option,
     include: serviceInclude,
 
@@ -97,7 +117,7 @@ export const getsOnGoing = async (page: any = 0, size: any = 10) => {
 
   return services;
 };
-export const onGoingWorkers = async (workerId: number) => {
+export const onGoingWorkers = async (workerId: number, meId: any) => {
   const service = await Service.findAll({
     where: {
       is_available: true,
@@ -112,15 +132,28 @@ export const onGoingWorkers = async (workerId: number) => {
         where: {
           workerId: workerId,
           canceled: false,
+          [Op.and]: [
+            Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`service\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+          ],
         },
         required: true,
       },
     ],
+    replacements: { meId },
     order: [["service_date", "DESC"]],
   });
   return service;
 };
-export const onGoingCanceledWorkers = async (workerId: number) => {
+export const onGoingCanceledWorkers = async (workerId: number, meId: any) => {
   const service = await Service.findAll({
     where: {
       statusId: 5,
@@ -133,15 +166,29 @@ export const onGoingCanceledWorkers = async (workerId: number) => {
         as: "offers",
         where: {
           workerId: workerId,
+          [Op.and]: [
+            Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`service\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+          ],
         },
+
         required: true,
       },
     ],
+    replacements: { meId },
     order: [["service_date", "DESC"]],
   });
   return service;
 };
-export const historyWorkers = async (workerId: number) => {
+export const historyWorkers = async (workerId: number, meId: any) => {
   const service = await Service.findAll({
     where: {
       is_available: true,
@@ -160,10 +207,23 @@ export const historyWorkers = async (workerId: number) => {
         where: {
           workerId: workerId,
           accepted: true,
+          [Op.and]: [
+            Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`service\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+          ],
         },
         required: true,
       },
     ],
+    replacements: { meId },
     order: [["service_date", "DESC"]],
   });
   return service;

@@ -17,15 +17,31 @@ export const gets = async () => {
   return worker;
 };
 
-export const workers = async (page: any, size: any) => {
+export const workers = async (page: any, size: any, meId: any = -1) => {
   const option = {
     limit: +size,
     offset: +page * +size,
   };
 
   const workers = await Worker.findAndCountAll({
-    where: { available: true, visible: true },
+    where: {
+      available: true,
+      visible: true,
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`worker\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`worker\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+      ],
+    },
     ...option,
+    replacements: { meId },
     include: workerIncludes,
     attributes: { exclude: excludeKeys },
     order: Sequelize.literal("RAND()"), // Ordenar aleatoriamente usando literal
@@ -57,10 +73,25 @@ export const visibleProfile = async (id: any, body: any) => {
   const ressponse = await workerTemp?.update(body);
   return ressponse;
 };
-export const worker = async (id: any) => {
+export const worker = async (id: any, meId: any = -1) => {
   const worker = await Worker.findOne({
-    where: { userId: id, available: 1 },
-
+    where: {
+      userId: id,
+      available: true,
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`worker\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`worker\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
+      ],
+    },
+    replacements: { meId },
     include: workerIncludes,
     attributes: { exclude: excludeKeys },
   });

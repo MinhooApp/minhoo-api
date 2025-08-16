@@ -40,7 +40,7 @@ export const onGoing = async (req: Request, res: Response) => {
 export const getsOnGoing = async (req: Request, res: Response) => {
   try {
     const { page = 0, size = 10 } = req.query;
-    const services = await repository.getsOnGoing(page, size);
+    const services = await repository.getsOnGoing(page, size, req.userId);
     return formatResponse({
       res: res,
       success: true,
@@ -58,7 +58,7 @@ export const getsOnGoing = async (req: Request, res: Response) => {
 
 export const onGoingWorkers = async (req: Request, res: Response) => {
   try {
-    const services = await repository.onGoingWorkers(req.workerId);
+    const services = await repository.onGoingWorkers(req.workerId, req.userId);
     return formatResponse({ res: res, success: true, body: { services } });
   } catch (error: any) {
     console.log(error.toString());
@@ -68,7 +68,10 @@ export const onGoingWorkers = async (req: Request, res: Response) => {
 
 export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
   try {
-    const services = await repository.onGoingCanceledWorkers(req.workerId);
+    const services = await repository.onGoingCanceledWorkers(
+      req.workerId,
+      req.userId
+    );
     return formatResponse({ res: res, success: true, body: { services } });
   } catch (error: any) {
     console.log(error.toString());
@@ -77,7 +80,7 @@ export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
 };
 export const historyWorkers = async (req: Request, res: Response) => {
   try {
-    const services = await repository.historyWorkers(req.workerId);
+    const services = await repository.historyWorkers(req.workerId, req.userId);
     return formatResponse({ res: res, success: true, body: { services } });
   } catch (error: any) {
     console.log(error.toString());

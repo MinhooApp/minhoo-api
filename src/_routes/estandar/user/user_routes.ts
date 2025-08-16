@@ -11,11 +11,13 @@ import {
   follows,
   followers,
   activeAlerts,
+  block_user,
+  unblock_user,
 } from "../../../useCases/user/_controller/controller";
 router.get("/", TokenValidation(), gets);
 router.post("/follow", TokenValidation(), follow);
-router.get("/follows/:id?", TokenValidation(), follows);
-router.get("/followers/:id?", TokenValidation(), followers);
+router.get("/follows/:id?", follows);
+router.get("/followers/:id?", followers);
 router.get("/one/:id?", get);
 router.get("/myData", TokenValidation(), myData);
 router.get("/alert", TokenValidation(), activeAlerts);
@@ -48,4 +50,7 @@ router.get("/share/:id", async (req, res) => {
     res.status(500).send("Internal Server Error");
   }
 });
+
+router.delete("/block/:blocked_id", TokenValidation(), block_user);
+router.patch("/unblock/:blocked_id", TokenValidation(), unblock_user);
 export default router;
