@@ -11,7 +11,6 @@ export const followIncludes = (meId: any = -1): Includeable[] => {
   const me = Number(meId);
   const hasViewer = Number.isInteger(me) && me > 0;
 
-  // WHERE para followers (quiénes me siguen)
   const followersWhere = hasViewer
     ? {
         [Op.and]: [
@@ -20,16 +19,15 @@ export const followIncludes = (meId: any = -1): Includeable[] => {
               SELECT 1
               FROM \`user_blocks\` ub
               WHERE
-                (ub.blocker_id = ${me} AND ub.blocked_id = \`user->followers\`.\`followerId\`)
+                (ub.blocker_id = ${me} AND ub.blocked_id = \`followers\`.\`followerId\`)
                 OR
-                (ub.blocker_id = \`user->followers\`.\`followerId\` AND ub.blocked_id = ${me})
+                (ub.blocker_id = \`followers\`.\`followerId\` AND ub.blocked_id = ${me})
             )
           `),
         ],
       }
     : undefined;
 
-  // WHERE para followings (a quiénes sigo)
   const followingsWhere = hasViewer
     ? {
         [Op.and]: [
@@ -38,9 +36,9 @@ export const followIncludes = (meId: any = -1): Includeable[] => {
               SELECT 1
               FROM \`user_blocks\` ub
               WHERE
-                (ub.blocker_id = ${me} AND ub.blocked_id = \`user->followings\`.\`userId\`)
+                (ub.blocker_id = ${me} AND ub.blocked_id = \`followings\`.\`userId\`)
                 OR
-                (ub.blocker_id = \`user->followings\`.\`userId\` AND ub.blocked_id = ${me})
+                (ub.blocker_id = \`followings\`.\`userId\` AND ub.blocked_id = ${me})
             )
           `),
         ],
@@ -52,7 +50,7 @@ export const followIncludes = (meId: any = -1): Includeable[] => {
       model: Follower,
       as: "followers",
       attributes: ["followerId"],
-      required: false, // mantiene LEFT JOIN
+      required: false, // LEFT JOIN
       ...(followersWhere ? { where: followersWhere } : {}),
       include: [
         {
@@ -61,13 +59,12 @@ export const followIncludes = (meId: any = -1): Includeable[] => {
           attributes: ["id", "name", "last_name", "image_profil"],
         },
       ],
-      // optional: separate: true, // si esta lista te multiplica filas en listados grandes
     },
     {
       model: Follower,
       as: "followings",
       attributes: ["userId"],
-      required: false,
+      required: false, // LEFT JOIN
       ...(followingsWhere ? { where: followingsWhere } : {}),
       include: [
         {
@@ -76,7 +73,6 @@ export const followIncludes = (meId: any = -1): Includeable[] => {
           attributes: ["id", "name", "last_name", "image_profil"],
         },
       ],
-      // optional: separate: true,
     },
   ];
 };
