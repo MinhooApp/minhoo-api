@@ -18,7 +18,7 @@ const galeryInclude: Includeable[] = [
 const userInclude: Includeable = {
   model: User,
   as: "user",
-  include: [...followIncludes, ...galeryInclude, ...userIncludes],
+  include: [...followIncludes(), ...galeryInclude, ...userIncludes()],
   attributes: [
     "id",
     "name",
