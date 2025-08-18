@@ -12,7 +12,7 @@ const excludeKeys = ["createdAt", "updatedAt", "password"];
 export const gets = async () => {
   const user = await User.findAll({
     where: { available: true },
-    include: userIncludes,
+    include: userIncludes(),
   });
   return user;
 };
@@ -25,7 +25,7 @@ export const users = async (page: any = 0, size: any = 10) => {
   const users = await User.findAndCountAll({
     where: { available: 1 },
     ...option,
-    include: userIncludes,
+    include: userIncludes(),
   });
   return users;
 };
@@ -49,7 +49,8 @@ export const get = async (id: any, meId: any = -1) => {
       ],
     },
     include: [
-      ...userIncludes,
+      ...userIncludes(meId),
+
       {
         model: Post,
         as: "posts",
@@ -75,7 +76,7 @@ export const get = async (id: any, meId: any = -1) => {
 export const update = async (id: any, body: any) => {
   const userTemp = await User.findOne({
     where: { id: id },
-    include: userIncludes,
+    include: userIncludes(),
   });
   const user = await userTemp?.update(body);
   return [user];
@@ -84,7 +85,7 @@ export const update = async (id: any, body: any) => {
 export const activeAlerts = async (id: any) => {
   const userTemp = await User.findOne({
     where: { id: id },
-    include: userIncludes,
+    include: userIncludes(),
   });
   const user = await userTemp?.update({ alert: !userTemp!.alert });
   return user;
