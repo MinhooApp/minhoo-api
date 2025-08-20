@@ -139,6 +139,7 @@ Service.belongsTo(StatusService, { as: "status", foreignKey: "statusId" });
 // En el modelo Chat_User
 Chat_User.belongsTo(User, { foreignKey: "userId" });
 Chat_User.belongsTo(Chat, { foreignKey: "chatId" });
+
 // En el modelo Chat
 Chat.belongsToMany(User, {
   through: Chat_User,

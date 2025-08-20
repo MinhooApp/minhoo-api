@@ -1,4 +1,4 @@
-import { Op } from "sequelize";
+import { Op, Sequelize } from "sequelize";
 import Chat from "../../_models/chat/chat";
 import User from "../../_models/user/user";
 import sequelize from "../../_db/connection";
@@ -168,36 +168,49 @@ export const getChatByUser = async (currentUserId: any, otherUserId: any) => {
   return messages;
 };
 
-export const getUserChats = async (currentUserId: any) => {
+export const getUserChats = async (currentUserId: number, meId: any = -1) => {
+  const me = Number(meId);
+
+  const userWhere: any = {
+    id: { [Op.ne]: currentUserId }, // excluir al usuario actual
+  };
+
+  // Aplica filtro de bloqueos solo si meId es válido
+  if (Number.isFinite(me)) {
+    userWhere[Op.and] = [
+      Sequelize.literal(`
+        NOT EXISTS (
+          SELECT 1
+          FROM \`user_blocks\` ub
+          WHERE
+            (ub.blocker_id = ${me} AND ub.blocked_id = \`Chat->users\`.\`id\`)
+            OR
+            (ub.blocker_id = \`Chat->users\`.\`id\` AND ub.blocked_id = ${me})
+        )
+      `),
+    ];
+  }
+
   const chats = await Chat_User.findAll({
-    where: {
-      userId: currentUserId,
-    },
+    where: { userId: currentUserId },
     include: [
       {
         model: Chat,
         where: {
-          deletedBy: {
-            [Op.not]: [-1, currentUserId], // Excluir -1 y currentUserId
-          },
+          deletedBy: { [Op.not]: [-1, currentUserId] },
         },
         include: [
           {
             model: User,
             as: "users",
-            where: {
-              id: {
-                [Op.ne]: currentUserId, // Excluir al usuario actual
-              },
-            },
-            through: {
-              attributes: [], // No incluir atributos de la tabla intermedia
-            },
+            where: userWhere, // <<--- aquí va el NOT EXISTS con alias `Chat->users`
+            through: { attributes: [] },
+            required: true, // asegura que exista “el otro” usuario tras filtrar bloqueos
           },
           {
             model: Message,
             as: "messages",
-            required: false, // LEFT JOIN para incluir chats sin mensajes
+            required: false,
             order: [["date", "DESC"]],
             limit: 1,
           },
@@ -206,7 +219,7 @@ export const getUserChats = async (currentUserId: any) => {
     ],
   });
 
-  // Ordenar los chats por la fecha del último mensaje
+  // Ordena por última fecha de mensaje
   chats.sort((a: any, b: any) => {
     const dateA = a.Chat.messages[0]?.date || 0;
     const dateB = b.Chat.messages[0]?.date || 0;
@@ -215,7 +228,6 @@ export const getUserChats = async (currentUserId: any) => {
 
   return chats;
 };
-
 export const deleteChatByMessages = async (chatId: any, currentUserId: any) => {
   // Actualiza la entrada de Message para marcar los mensajes como eliminados por el usuario actual
   await Message.update(

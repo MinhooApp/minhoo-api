@@ -6,7 +6,7 @@ import {
 } from "../_module/module";
 export const myChats = async (req: Request, res: Response) => {
   try {
-    const chats = await repository.getUserChats(req.userId);
+    const chats = await repository.getUserChats(req.userId, req.userId);
     return formatResponse({
       res: res,
       success: true,
