@@ -7,6 +7,7 @@ import Message from "../../_models/chat/message";
 import Service from "../../_models/service/service";
 import MediaPost from "../../_models/post/media_post";
 import Notification from "../../_models/notification/notification";
+import { Op, Sequelize } from "sequelize";
 const excludeKeys = ["createdAt ", "updatedAt ", "password "];
 export const add = async (body: any) => {
   const notification = await Notification.create(body);
@@ -22,7 +23,22 @@ export const gets = async () => {
 
 export const myNotifications = async (id: number) => {
   const notification = await Notification.findAll({
-    where: { userId: id, deleted: false },
+    where: {
+      userId: id,
+      deleted: false,
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :id AND ub.blocked_id = \`notification\`.\`interactorId\`)
+              OR
+              (ub.blocker_id = \`notification\`.\`interactorId\` AND ub.blocked_id = :id)
+          )
+        `),
+      ],
+    },
     include: [
       {
         model: User,
@@ -75,6 +91,7 @@ export const myNotifications = async (id: number) => {
         attributes: ["id", "senderId", "text"],
       },
     ],
+    replacements: { id },
     order: [["notification_date", "DESC"]],
   });
   return notification;
