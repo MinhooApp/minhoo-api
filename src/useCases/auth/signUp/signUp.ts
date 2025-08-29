@@ -26,7 +26,7 @@ export const signUp = async (req: Request, res: Response) => {
       // Configuración de subida de archivos
       const upload = uploadFile({
         route: "/uploads/images/user/profile",
-        file: "image_profile",
+        file: "image_profil",
         maxFiles: 1, // Cambiar según la cantidad máxima de archivos que quieres permitir
         is_img: true,
       });
@@ -78,7 +78,7 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
   const validateEmail = await repository.findByEmail(email);
 
   if (validateEmail) {
-    if (files && files.image_profile) {
+    if (files && files.image_profil) {
       try {
         if (req.body.delete !== "profile.png") {
           trash = PROFILE_IMAGE_FOLDER + req.body.delete;
@@ -86,7 +86,7 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
             if (err) console.error(err);
           });
         }
-        fs.unlink(files.image_profile[0].path, (err: any) => {
+        fs.unlink(files.image_profil[0].path, (err: any) => {
           if (err) console.error(err);
         });
       } catch (error: any) {
@@ -103,8 +103,8 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
   }
 
   try {
-    if (files && files.image_profile) {
-      req.body.image_profile = files.image_profile[0].path.replace(
+    if (files && files.image_profil) {
+      req.body.image_profil = files.image_profil[0].path.replace(
         "src\\public\\",
         "\\"
       );
