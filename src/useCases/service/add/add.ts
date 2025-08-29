@@ -26,7 +26,7 @@ export const add = async (req: Request, res: Response) => {
     socket.emit("services", service);
     sendPushToMultipleUsers(
       "New Service Posted",
-      "Go GO GO",
+      "  ",
       "newService",
       service.id,
       tokens
