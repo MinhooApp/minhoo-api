@@ -10,6 +10,7 @@ export const TypeNotificationEnum = [
   "follow",
   "message",
   "requestCanceled",
+  "newService",
 ] as const;
 
 export type TypeNotification = (typeof TypeNotificationEnum)[number];

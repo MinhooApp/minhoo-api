@@ -56,6 +56,8 @@ export const sendPushToSingleUser = async (
 export const sendPushToMultipleUsers = async (
   title: string,
   body: string,
+  type: TypeNotification,
+  id: any,
   tokens: string[]
 ) => {
   console.log("📣 Enviando notificaciones push a múltiples usuarios");
@@ -69,7 +71,8 @@ export const sendPushToMultipleUsers = async (
     data: {
       title,
       body,
-      idnotificationlog: "4",
+      notificationId: id.toString(),
+      type,
     },
     android: {
       priority: "high",

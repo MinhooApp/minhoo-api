@@ -4,7 +4,7 @@ import {
   formatResponse,
   repository,
 } from "../_module/module";
-
+import admin from "firebase-admin";
 export const workers = async (req: Request, res: Response) => {
   try {
     const { page = 0, size = 5 } = req.query;
@@ -35,6 +35,23 @@ export const worker = async (req: Request, res: Response) => {
       success: true,
       body: {
         worker: worker,
+      },
+    });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
+export const ids = async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const ids: any = await repository.tokensByNewService(id);
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        ids: ids,
       },
     });
   } catch (error) {

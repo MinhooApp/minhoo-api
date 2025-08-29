@@ -98,35 +98,36 @@ export const worker = async (id: any, meId: any = -1) => {
   return worker;
 };
 
-export const tokensByNewService = async (
-  userId: number,
-  categoryId: number
-) => {
-  const tokens = await Worker.findAll({
-    where: {
-      alert: true, // Filtrar por el campo alert en la tabla Worker
-      userId: { [Op.ne]: userId }, // userId diferente de 1
-    },
+export const tokensByNewService = async (categoryId: any) => {
+  const rows = await Worker.findAll({
     include: [
       {
         model: Category,
-        where: {
-          id: categoryId,
-        },
+        attributes: [],
         required: true,
+        where: {
+          [Op.or]: [{ id: categoryId }, { name: "all" }],
+        },
+        through: { attributes: [] }, // oculta columnas de la tabla pivote
       },
       {
         model: User,
         as: "personal_data",
-        attributes: ["uuid"], // Aquí especificas que solo quieres la columna uuid
+        attributes: ["uuid"],
+        required: true,
+        where: { alert: true }, // <- AHORA en User
       },
     ],
-    attributes: [], // Esto asegura que no se devuelva ningún otro atributo del modelo Worker*/
+    attributes: [], // no retornar columnas de Worker
+
+    subQuery: false, // mejor JOIN en includes
   });
-  const uuids = tokens.map((worker) => worker.personal_data.uuid);
+
+  const uuids = Array.from(
+    new Set(rows.map((w: any) => w.personal_data?.uuid).filter(Boolean))
+  );
   return uuids;
 };
-
 export const deleteImageProfil = async (id: any) => {
   return await User.update(
     { image_profil: "\\uploads\\images\\user\\profile\\profile.png" },

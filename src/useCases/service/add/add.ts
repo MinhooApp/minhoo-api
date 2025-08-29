@@ -13,7 +13,6 @@ const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 export const add = async (req: Request, res: Response) => {
   try {
     const tokens: string[] = await sendNotificationByNewService(
-      req.userId,
       req.body.categoryId
     );
 
@@ -25,7 +24,13 @@ export const add = async (req: Request, res: Response) => {
 
     ////////Emit the service/////
     socket.emit("services", service);
-    sendPushToMultipleUsers("New Service Posted", "Go GO GO", tokens);
+    sendPushToMultipleUsers(
+      "New Service Posted",
+      "Go GO GO",
+      "newService",
+      service.id,
+      tokens
+    );
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
@@ -124,12 +129,8 @@ export const searchAddress = async (req: Request, res: Response) => {
   }
 };
 
-const sendNotificationByNewService = async (
-  userId: number,
-  categoryId: number
-) => {
+const sendNotificationByNewService = async (categoryId: number) => {
   const tokens: string[] = await workerRepository.tokensByNewService(
-    userId,
     categoryId
   );
   return tokens;
