@@ -46,7 +46,7 @@ export const worker = async (req: Request, res: Response) => {
 export const ids = async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
-    const ids: any = await repository.tokensByNewService(id);
+    const ids: any = await repository.tokensByNewService(id, req.userId);
     return formatResponse({
       res: res,
       success: true,

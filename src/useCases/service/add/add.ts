@@ -13,7 +13,8 @@ const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 export const add = async (req: Request, res: Response) => {
   try {
     const tokens: string[] = await sendNotificationByNewService(
-      req.body.categoryId
+      req.body.categoryId,
+      req.userId
     );
 
     //
@@ -129,9 +130,13 @@ export const searchAddress = async (req: Request, res: Response) => {
   }
 };
 
-const sendNotificationByNewService = async (categoryId: number) => {
+const sendNotificationByNewService = async (
+  categoryId: number,
+  userId: any
+) => {
   const tokens: string[] = await workerRepository.tokensByNewService(
-    categoryId
+    categoryId,
+    userId
   );
   return tokens;
 };

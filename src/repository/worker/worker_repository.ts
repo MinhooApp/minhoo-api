@@ -98,7 +98,7 @@ export const worker = async (id: any, meId: any = -1) => {
   return worker;
 };
 
-export const tokensByNewService = async (categoryId: any) => {
+export const tokensByNewService = async (categoryId: any, meId: any) => {
   const rows = await Worker.findAll({
     include: [
       {
@@ -115,7 +115,10 @@ export const tokensByNewService = async (categoryId: any) => {
         as: "personal_data",
         attributes: ["uuid"],
         required: true,
-        where: { alert: true }, // <- AHORA en User
+        where: {
+          alert: true,
+          id: { [Op.ne]: meId },
+        },
       },
     ],
     attributes: [], // no retornar columnas de Worker
