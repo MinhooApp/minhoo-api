@@ -32,7 +32,7 @@ router.get("/share/:id", async (req, res) => {
   const deepLink = `minhoo://profile/${userId}`;
   const fallbackAndroid =
     "https://play.google.com/store/apps/details?id=aud.minhoo.io";
-  const fallbackIOS = "https://apps.apple.com/app/id123456789";
+  const fallbackIOS = "https://apps.apple.com/app/6748967902";
   const fallbackIOSTestFlight = "https://testflight.apple.com/join/46uzBSsa";
   const fallback = isAndroid ? fallbackAndroid : fallbackIOSTestFlight;
 

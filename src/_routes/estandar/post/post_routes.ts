@@ -30,7 +30,7 @@ router.get("/share/:id", async (req, res) => {
   const deepLink = `minhoo://post/${postId}`;
   const fallbackAndroid =
     "https://play.google.com/store/apps/details?id=aud.minhoo.io";
-  const fallbackIOS = "https://apps.apple.com/app/id123456789";
+  const fallbackIOS = "https://apps.apple.com/app/6748967902";
   const fallback = isAndroid ? fallbackAndroid : fallbackIOS;
 
   // Ajusta esta ruta si tu archivo está en otra ubicación
