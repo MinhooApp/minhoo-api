@@ -39,6 +39,9 @@ export const history = async (userId?: number) => {
           {
             statusId: 1,
           },
+          {
+            statusId: 5,
+          },
         ],
       },
       include: serviceInclude,
@@ -58,6 +61,18 @@ export const history = async (userId?: number) => {
     });
     return service;
   }
+};
+export const historyCanceled = async (userId: number) => {
+  const service = await Service.findAll({
+    where: {
+      userId: userId,
+
+      statusId: 5,
+    },
+    include: serviceInclude,
+    order: [["service_date", "DESC"]],
+  });
+  return service;
 };
 export const onGoing = async (userId?: number) => {
   if (userId) {

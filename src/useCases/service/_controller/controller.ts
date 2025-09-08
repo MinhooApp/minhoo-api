@@ -11,6 +11,7 @@ import {
   onGoingWorkers,
   onGoingCanceledWorkers,
   historyWorkers,
+  myHistoryCanceled,
 } from "../get/get";
 export {
   add,
@@ -28,4 +29,5 @@ export {
   finalized,
   deleteService,
   sendTestNotification,
+  myHistoryCanceled,
 };

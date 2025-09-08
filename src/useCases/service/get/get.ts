@@ -109,6 +109,16 @@ export const myHistory = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
+
+export const myHistoryCanceled = async (req: Request, res: Response) => {
+  try {
+    const services = await repository.history(req.userId);
+    return formatResponse({ res: res, success: true, body: { services } });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
 export const history = async (req: Request, res: Response) => {
   try {
     const services = await repository.history();
