@@ -34,15 +34,7 @@ export const history = async (userId?: number) => {
     const service = await Service.findAll({
       where: {
         userId: userId,
-
-        [Op.not]: [
-          {
-            statusId: 1,
-          },
-          {
-            statusId: 5,
-          },
-        ],
+        statusId: { [Op.notIn]: [1, 5] },
       },
       include: serviceInclude,
       order: [["service_date", "DESC"]],
@@ -51,31 +43,33 @@ export const history = async (userId?: number) => {
   } else {
     const service = await Service.findAll({
       where: {
-        [Op.not]: [
-          {
-            statusId: 1,
-          },
-          {
-            statusId: 5,
-          },
-        ],
+        statusId: { [Op.notIn]: [1, 5] },
       },
       order: [["service_date", "DESC"]],
     });
     return service;
   }
 };
-export const historyCanceled = async (userId: number) => {
-  const service = await Service.findAll({
-    where: {
-      userId: userId,
-
-      statusId: 5,
-    },
-    include: serviceInclude,
-    order: [["service_date", "DESC"]],
-  });
-  return service;
+export const historyCanceled = async (userId?: number) => {
+  if (userId != undefined) {
+    const service = await Service.findAll({
+      where: {
+        userId: userId,
+        statusId: 5,
+      },
+      include: serviceInclude,
+      order: [["service_date", "DESC"]],
+    });
+    return service;
+  } else {
+    const service = await Service.findAll({
+      where: {
+        statusId: 5,
+      },
+      order: [["service_date", "DESC"]],
+    });
+    return service;
+  }
 };
 export const onGoing = async (userId?: number) => {
   if (userId) {
