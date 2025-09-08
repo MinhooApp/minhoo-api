@@ -55,6 +55,9 @@ export const history = async (userId?: number) => {
           {
             statusId: 1,
           },
+          {
+            statusId: 5,
+          },
         ],
       },
       order: [["service_date", "DESC"]],
