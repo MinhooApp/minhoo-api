@@ -71,12 +71,11 @@ export const update = async (req: Request, res: Response) => {
     try {
       const worker = await repository.worker((req as any).userId);
 
-      if (fileObj?.path) {
-        filePath = (fileObj.path as string).replace("src\\public\\", "\\");
-        if (req.body.delete && req.body.delete !== "profile.png") {
-          trash = PROFILE_IMAGE_FOLDER + req.body.delete;
-          fs.unlink(trash, (e: any) => e && console.error(e));
-        }
+      if (fileObj?.filename) {
+        filePath = path.join(
+          "\\uploads\\images\\user\\profile",
+          fileObj.filename
+        );
       }
 
       // ---- Body User ----
