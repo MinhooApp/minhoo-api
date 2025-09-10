@@ -19,41 +19,50 @@ const PROFILE_IMAGE_FOLDER = path.join(
 const now: any = new Date(new Date().toUTCString());
 export const signUp = async (req: Request, res: Response) => {
   try {
-    // Si el contenido es JSON, omite la subida de archivos
-    if (req.is("application/json")) {
+    const isMultipart = !!req.is("multipart/form-data");
+
+    // No es multipart (JSON o x-www-form-urlencoded): procesa sin archivo
+    if (!isMultipart) {
       await processSignUp(req, res, null);
-    } else {
-      // Configuración de subida de archivos
-      const upload = uploadFile({
-        route: "/uploads/images/user/profile",
-        file: "image_profil",
-        maxFiles: 1,
-        is_img: true,
-      });
-
-      upload(req, res, async function (err) {
-        if (err) {
-          return formatResponse({
-            res,
-            success: false,
-            code: 500,
-            message: "Error uploading file",
-          });
-        }
-
-        // Normalizamos: puede ser req.file o req.files.image_profil[0]
-        const filesAny: any = (req as any).files || {};
-        const fileSingle: any = (req as any).file || null;
-        const fileObj = fileSingle ?? filesAny?.image_profil?.[0] ?? null;
-
-        // Si no hay archivo, se pasa null
-        await processSignUp(
-          req,
-          res,
-          fileObj ? { image_profil: fileObj } : null
-        );
-      });
+      return;
     }
+
+    // Multipart: configura subida (tu helper usa .single("image_profil") o similar)
+    const upload = uploadFile({
+      route: "/uploads/images/user/profile",
+      file: "image_profil",
+      maxFiles: 1,
+      is_img: true,
+    });
+
+    upload(req, res, async (err: any) => {
+      if (err) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 500,
+          message: err?.message || "Error uploading file",
+        });
+      }
+
+      // Si llega el campo como texto vacío, trátalo como si no existiera
+      if ((req.body as any)?.image_profil === "")
+        delete (req.body as any).image_profil;
+      if ((req.body as any)?.image_profile === "")
+        delete (req.body as any).image_profile;
+
+      // Normaliza el archivo (puede venir en req.file o en req.files[...][0])
+      const filesAny: any = (req as any).files || {};
+      const fileSingle: any = (req as any).file || null;
+      const fileObj =
+        fileSingle ??
+        filesAny?.image_profil?.[0] ??
+        filesAny?.image_profile?.[0] ??
+        null;
+
+      // Si no hay archivo real (o vino vacío), pásalo como null
+      await processSignUp(req, res, fileObj ? fileObj : null);
+    });
   } catch (error: any) {
     return formatResponse({
       res,
