@@ -17,7 +17,7 @@ const PROFILE_IMAGE_FOLDER = path.join(
 export const update = async (req: Request, res: Response) => {
   var upload = uploadFile({
     route: "/uploads/images/user/profile",
-    file: "image_profile",
+    file: "image_profil",
     maxFiles: 1, // Cambiar según la cantidad máxima de archivos que quieres permitir
     is_img: true,
   });
