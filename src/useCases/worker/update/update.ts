@@ -17,7 +17,7 @@ const PROFILE_IMAGE_FOLDER = path.join(
 export const update = async (req: Request, res: Response) => {
   var upload = uploadFile({
     route: "/uploads/images/user/profile",
-    file: "image_profil",
+    file: "image_profile",
     maxFiles: 1, // Cambiar según la cantidad máxima de archivos que quieres permitir
     is_img: true,
   });
@@ -35,7 +35,7 @@ export const update = async (req: Request, res: Response) => {
         files.image_profil != null &&
         files.image_profil.length > 0
       ) {
-        filePath = files.image_profile[0].path.replace("src\\public\\", "\\");
+        filePath = files.image_profil[0].path.replace("src\\public\\", "\\");
         mediaUrls.push(filePath);
         if (req.body.delete != "profile.png") {
           trash = PROFILE_IMAGE_FOLDER + req.body.delete;
