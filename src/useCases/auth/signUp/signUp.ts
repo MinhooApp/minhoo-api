@@ -27,7 +27,7 @@ export const signUp = async (req: Request, res: Response) => {
       const upload = uploadFile({
         route: "/uploads/images/user/profile",
         file: "image_profil",
-        maxFiles: 1, // Cambiar según la cantidad máxima de archivos que quieres permitir
+        maxFiles: 1,
         is_img: true,
       });
 
@@ -36,13 +36,22 @@ export const signUp = async (req: Request, res: Response) => {
           return formatResponse({
             res,
             success: false,
-            code: 500, //
+            code: 500,
             message: "Error uploading file",
           });
         }
 
-        const files = req.files as any;
-        await processSignUp(req, res, files);
+        // Normalizamos: puede ser req.file o req.files.image_profil[0]
+        const filesAny: any = (req as any).files || {};
+        const fileSingle: any = (req as any).file || null;
+        const fileObj = fileSingle ?? filesAny?.image_profil?.[0] ?? null;
+
+        // Si no hay archivo, se pasa null
+        await processSignUp(
+          req,
+          res,
+          fileObj ? { image_profil: fileObj } : null
+        );
       });
     }
   } catch (error: any) {
