@@ -9,110 +9,131 @@ import {
   path,
   authRepository,
 } from "../_module/module";
+import multer from "multer";
 const PUBLIC_FOLDER = path.join(__dirname, "../../../../src/public");
 const PROFILE_IMAGE_FOLDER = path.join(
   PUBLIC_FOLDER,
   "uploads/images/user/profile/"
 );
-export const update = async (req: Request, res: Response) => {
-  var upload = uploadFile({
-    route: "/uploads/images/user/profile",
-    file: "image_profile",
-    maxFiles: 1, // Cambiar según la cantidad máxima de archivos que quieres permitir
-    is_img: true,
-  });
 
-  upload(req, res, async function (err) {
-    var files: any = [];
-    const mediaUrls: any = [];
-    files = req.files;
-    var trash = "";
-    var filePath = "";
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, PROFILE_IMAGE_FOLDER),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname || "");
+    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
+  },
+});
+
+const uploadEither = multer({
+  storage,
+  limits: { files: 1, fileSize: 8 * 1024 * 1024 }, // ajusta si quieres
+}).fields([
+  { name: "image_profile", maxCount: 1 },
+  { name: "image_profil", maxCount: 1 },
+]);
+
+export const update = async (req: Request, res: Response) => {
+  // 1) Parseo ÚNICO (acepta image_profile o image_profil)
+  uploadEither(req, res, async (err: any) => {
+    if (err) {
+      console.error(err);
+      return formatResponse({
+        res,
+        success: false,
+        message: err?.message ?? err,
+      });
+    }
+
+    const filesAny: any = (req as any).files || {};
+    const arrProfile: any[] = filesAny.image_profile ?? [];
+    const arrProfil: any[] = filesAny.image_profil ?? [];
+    const singleFile = (req as any).file; // por si en algún otro lado llamas .single()
+
+    // No permitir ambos campos ni más de 1 archivo total
+    const total =
+      (singleFile ? 1 : 0) +
+      (arrProfile?.length || 0) +
+      (arrProfil?.length || 0);
+    if ((arrProfile.length > 0 && arrProfil.length > 0) || total > 1) {
+      return formatResponse({
+        res,
+        success: false,
+        message:
+          "Solo se permite 1 archivo con el campo image_profile O image_profil.",
+      });
+    }
+
+    // 2) Toma el archivo (si viene)
+    const fileObj = singleFile ?? arrProfile[0] ?? arrProfil[0];
+    let filePath = "";
+    let trash = "";
+
     try {
-      const worker = await repository.worker(req.userId);
-      if (
-        files &&
-        files.image_profil != null &&
-        files.image_profil.length > 0
-      ) {
-        filePath = files.image_profil[0].path.replace("src\\public\\", "\\");
-        mediaUrls.push(filePath);
-        if (req.body.delete != "profile.png") {
+      const worker = await repository.worker((req as any).userId);
+
+      if (fileObj?.path) {
+        filePath = (fileObj.path as string).replace("src\\public\\", "\\");
+        if (req.body.delete && req.body.delete !== "profile.png") {
           trash = PROFILE_IMAGE_FOLDER + req.body.delete;
-          fs.unlink(trash, (err: any) => {
-            if (err) {
-              console.error(err);
-            }
-          });
+          fs.unlink(trash, (e: any) => e && console.error(e));
         }
       }
-      /////Body to update user data/////////////
-      const bodyUser = {
+
+      // ---- Body User ----
+      const bodyUser: any = {
         name: req.body.name,
         last_name: req.body.last_name,
-        dialing_code: "+" + req.body.dialing_code.replace("+", ""),
+        dialing_code: "+" + (req.body.dialing_code || "").replace("+", ""),
         iso_code: req.body.iso_code,
         phone: req.body.phone,
+        // Mantén image_profil como en tu BD
         image_profil:
           req.body.delete_image === true || req.body.delete_image === "true"
             ? "\\uploads\\images\\user\\profile\\profile.png"
-            : filePath && filePath !== ""
-            ? filePath
-            : undefined,
+            : filePath || undefined,
       };
 
-      /////Body to update worker data/////////////
-      var bodyWorker = {
+      // ---- Body Worker ----
+      const bodyWorker: any = {
         planId: worker?.planId,
         about: req.body.about,
         categories: req.body.skills,
-        userId: req.userId,
+        userId: (req as any).userId,
       };
 
-      //update user//
-      await uRepository.update(req.userId, bodyUser);
-      const userTemp = await uRepository.get(req.userId);
+      await uRepository.update((req as any).userId, bodyUser);
+      const userTemp = await uRepository.get((req as any).userId);
 
-      //update worker
-      if (worker != null) {
+      if (worker) {
         await repository.update(worker.id, bodyWorker);
       } else {
         bodyWorker.planId = 1;
-        var roles = [];
-        const workertTemp = await repository.add(bodyWorker);
-        for (var i = 0; userTemp?.roles.lenght < i; i++) {
-          roles.push(userTemp?.roles[i].d);
-        }
-
+        const workerTemp = await repository.add(bodyWorker);
+        const roles = (userTemp?.roles ?? []).map((r: any) => r.id);
         await authRepository.saveToken({
           userId: userTemp?.get("id"),
           uuid: userTemp?.get("uuid"),
-          workerId: workertTemp?.get("id"),
-          roles: roles,
+          workerId: workerTemp?.get("id"),
+          roles,
         });
       }
-      const user = await uRepository.get(req.userId);
 
+      const user = await uRepository.get((req as any).userId);
+      return formatResponse({ res, success: true, body: { user } });
+    } catch (error: any) {
+      // Limpieza si falló
+      const toDelete: any[] = [
+        ...((filesAny.image_profile as any[]) ?? []),
+        ...((filesAny.image_profil as any[]) ?? []),
+      ];
+      if ((req as any).file) toDelete.push((req as any).file);
+      for (const f of toDelete) if (f?.path) fs.unlink(f.path, () => {});
+      console.error(error);
       return formatResponse({
-        res: res,
-        success: true,
-        body: { user: user },
+        res,
+        success: false,
+        message: error?.message ?? error,
       });
-    } catch (error) {
-      if (files.length > 0) {
-        console.log("ELIMINANDO");
-        // Eliminar los archivos si hay algún error
-        for (let i = 0; i < files.length; i++) {
-          const filePath = files[i].path;
-          fs.unlink(filePath, (err: any) => {
-            if (err) {
-              console.error(err);
-            }
-          });
-        }
-      }
-      console.log(error);
-      return formatResponse({ res: res, success: false, message: error });
     }
   });
 };
