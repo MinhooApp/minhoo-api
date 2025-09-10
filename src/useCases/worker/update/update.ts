@@ -32,8 +32,8 @@ export const update = async (req: Request, res: Response) => {
       const worker = await repository.worker(req.userId);
       if (
         files &&
-        files.image_profile != null &&
-        files.image_profile.length > 0
+        files.image_profil != null &&
+        files.image_profil.length > 0
       ) {
         filePath = files.image_profile[0].path.replace("src\\public\\", "\\");
         mediaUrls.push(filePath);
