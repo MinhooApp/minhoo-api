@@ -113,7 +113,7 @@ export const myHistory = async (req: Request, res: Response) => {
     return formatResponse({
       res,
       success: true,
-      body: { services, canceled: "asas" },
+      body: { services, canceled: req.params.canceled },
     });
   } catch (error) {
     console.error(error);
