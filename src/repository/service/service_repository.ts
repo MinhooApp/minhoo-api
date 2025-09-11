@@ -34,7 +34,7 @@ export const history = async (userId?: number) => {
     const service = await Service.findAll({
       where: {
         userId: userId,
-        statusId: { [Op.notIn]: [1, 5] },
+        statusId: { [Op.notIn]: [1] },
       },
       include: serviceInclude,
       order: [["service_date", "DESC"]],
