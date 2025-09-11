@@ -102,13 +102,13 @@ export const get = async (req: Request, res: Response) => {
 
 export const myHistory = async (req: Request, res: Response) => {
   try {
-    const services = await repository.history(req.userId);
     const canceled = req.params.canceled;
+    const services = await repository.history(req.userId, canceled);
 
     return formatResponse({
       res: res,
       success: true,
-      body: { services, canceled },
+      body: { services },
     });
   } catch (error) {
     console.log(error);
