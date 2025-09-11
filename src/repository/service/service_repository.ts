@@ -29,7 +29,7 @@ export const gets = async () => {
   return service;
 };
 
-export const history = async (userId?: number, canceled: any = true) => {
+export const history = async (userId?: number, canceled = true) => {
   if (userId != undefined) {
     const service = await Service.findAll({
       where: {

@@ -99,20 +99,29 @@ export const get = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
-
 export const myHistory = async (req: Request, res: Response) => {
   try {
-    const canceled = req.params.canceled;
+    let canceled: boolean | undefined = undefined;
+
+    if (req.params.canceled !== undefined) {
+      const val = req.params.canceled.toLowerCase();
+      canceled = val === "true" || val === "1";
+    }
+
     const services = await repository.history(req.userId, canceled);
 
     return formatResponse({
-      res: res,
+      res,
       success: true,
       body: { services },
     });
   } catch (error) {
-    console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
+    console.error(error);
+    return formatResponse({
+      res,
+      success: false,
+      message: error instanceof Error ? error.message : String(error),
+    });
   }
 };
 
