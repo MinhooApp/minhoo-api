@@ -29,12 +29,12 @@ export const gets = async () => {
   return service;
 };
 
-export const history = async (userId?: number) => {
+export const history = async (userId?: number, canceled = true) => {
   if (userId != undefined) {
     const service = await Service.findAll({
       where: {
         userId: userId,
-        statusId: { [Op.notIn]: [1] },
+        statusId: { [Op.notIn]: canceled ? [1] : [1, 5] },
       },
       include: serviceInclude,
       order: [["service_date", "DESC"]],
