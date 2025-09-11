@@ -105,7 +105,7 @@ export const myHistory = async (req: Request, res: Response) => {
 
     if (req.params.canceled !== undefined) {
       const val = req.params.canceled.toLowerCase();
-      canceled = val === "true" || val === "1";
+      canceled = val === "false" || val === "0";
     }
 
     const services = await repository.history(req.userId, canceled);
