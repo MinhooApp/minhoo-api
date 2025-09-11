@@ -5,16 +5,15 @@ import {
   repository,
 } from "../_module/module";
 
-function toBool(input: unknown, defaultVal = false): boolean {
+function toBool(input: unknown, defaultVal = true): boolean {
   if (input === undefined || input === null) return defaultVal;
   const s = String(Array.isArray(input) ? input[0] : input)
     .trim()
     .toLowerCase();
   if (["true", "1", "yes", "y"].includes(s)) return true;
   if (["false", "0", "no", "n"].includes(s)) return false;
-  return defaultVal; // cualquier otro valor → usa el default
+  return defaultVal; // cualquier otro valor extraño → usa el default
 }
-
 ////////////////////////Get all services//////////////////////
 export const gets = async (req: Request, res: Response) => {
   try {
@@ -109,11 +108,11 @@ export const get = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
+
 export const myHistory = async (req: Request, res: Response) => {
   try {
-    // lee de query con default "false", luego parsea a boolean
-    const { canceled = "false" } = req.query as Record<string, unknown>;
-    const canceledBool = toBool(canceled, false);
+    const { canceled } = req.query as Record<string, unknown>;
+    const canceledBool = toBool(canceled, true); // 👈 default ahora es true
 
     const services = await repository.history(req.userId, canceledBool);
 
