@@ -5,6 +5,16 @@ import {
   repository,
 } from "../_module/module";
 
+function toBool(input: unknown, defaultVal = false): boolean {
+  if (input === undefined || input === null) return defaultVal;
+  const s = String(Array.isArray(input) ? input[0] : input)
+    .trim()
+    .toLowerCase();
+  if (["true", "1", "yes", "y"].includes(s)) return true;
+  if (["false", "0", "no", "n"].includes(s)) return false;
+  return defaultVal; // cualquier otro valor → usa el default
+}
+
 ////////////////////////Get all services//////////////////////
 export const gets = async (req: Request, res: Response) => {
   try {
@@ -101,19 +111,16 @@ export const get = async (req: Request, res: Response) => {
 };
 export const myHistory = async (req: Request, res: Response) => {
   try {
-    let canceled: boolean | undefined = undefined;
+    // lee de query con default "false", luego parsea a boolean
+    const { canceled = "false" } = req.query as Record<string, unknown>;
+    const canceledBool = toBool(canceled, false);
 
-    if (req.params.canceled !== undefined) {
-      const val = req.params.canceled.toLowerCase();
-      canceled = val === "false" || val === "0";
-    }
-
-    const services = await repository.history(req.userId, canceled);
+    const services = await repository.history(req.userId, canceledBool);
 
     return formatResponse({
       res,
       success: true,
-      body: { services, canceled: req.params.canceled },
+      body: { services, canceled: canceledBool },
     });
   } catch (error) {
     console.error(error);
