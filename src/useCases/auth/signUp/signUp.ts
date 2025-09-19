@@ -16,18 +16,70 @@ const PROFILE_IMAGE_FOLDER = path.join(
   PUBLIC_FOLDER,
   "uploads/images/user/profile/"
 );
+
+// signUp.ts
 const now: any = new Date(new Date().toUTCString());
+
+/**
+ * I normalize the uploaded file into a path that your DB can store.
+ * Works for: Multer diskStorage (destination/filename/path) and multer-s3 (location).
+ */
+function resolveUploadedImage(
+  file: any,
+  req: Request,
+  staticBase = "/uploads"
+) {
+  // Prefer explicit URL from S3-like providers
+  if (file?.location) {
+    // Example: multer-s3 puts the final public URL in location
+    return { url: file.location, relative: null };
+  }
+
+  // Multer disk: typical fields are destination, filename, path
+  // Build a POSIX-like public path your app serves, e.g. /uploads/images/user/profile/xxx.jpg
+  const filename = file?.filename ?? file?.originalname ?? null;
+  const destination = file?.destination ?? "";
+  const pathFromDisk = file?.path ?? "";
+
+  // Try to map disk path into a public URL under staticBase
+  // Example: if destination = "<project>/public/uploads/images/user/profile"
+  // and you serve `public` as static, then remove everything before `/uploads`.
+  let relativeFromDisk = null;
+  if (typeof pathFromDisk === "string" && pathFromDisk.includes(staticBase)) {
+    // pathFromDisk might be "C:\app\public\uploads\images\user\profile\file.jpg"
+    relativeFromDisk = pathFromDisk.substring(pathFromDisk.indexOf(staticBase));
+  } else if (destination && filename) {
+    // Fallback: try to reconstruct using route folder and filename
+    // You use route: "/uploads/images/user/profile"
+    const normDest = destination.replace(/\\/g, "/");
+    const idx = normDest.indexOf(staticBase);
+    if (idx >= 0) {
+      const base = normDest.substring(idx);
+      relativeFromDisk = `${base.replace(/\/+$/, "")}/${filename}`;
+    }
+  }
+
+  // Ensure forward slashes for URLs
+  if (relativeFromDisk) {
+    relativeFromDisk = relativeFromDisk.replace(/\\/g, "/");
+    const fullUrl = `${req.protocol}://${req.get("host")}${relativeFromDisk}`;
+    return { url: fullUrl, relative: relativeFromDisk };
+  }
+
+  // Last resort: return filename only (not ideal for DB)
+  return { url: null, relative: filename };
+}
+
 export const signUp = async (req: Request, res: Response) => {
   try {
     const isMultipart = !!req.is("multipart/form-data");
 
-    // No es multipart (JSON o x-www-form-urlencoded): procesa sin archivo
     if (!isMultipart) {
       await processSignUp(req, res, null);
       return;
     }
 
-    // Multipart: configura subida (tu helper usa .single("image_profil") o similar)
+    // Your helper is configured to receive "image_profil" as the field name
     const upload = uploadFile({
       route: "/uploads/images/user/profile",
       file: "image_profil",
@@ -45,13 +97,13 @@ export const signUp = async (req: Request, res: Response) => {
         });
       }
 
-      // Si llega el campo como texto vacío, trátalo como si no existiera
+      // Remove empty text fields if they arrive as empty strings
       if ((req.body as any)?.image_profil === "")
         delete (req.body as any).image_profil;
       if ((req.body as any)?.image_profile === "")
         delete (req.body as any).image_profile;
 
-      // Normaliza el archivo (puede venir en req.file o en req.files[...][0])
+      // Normalize the file object from different shapes
       const filesAny: any = (req as any).files || {};
       const fileSingle: any = (req as any).file || null;
       const fileObj =
@@ -60,7 +112,18 @@ export const signUp = async (req: Request, res: Response) => {
         filesAny?.image_profile?.[0] ??
         null;
 
-      // Si no hay archivo real (o vino vacío), pásalo como null
+      // If a file exists, resolve a storable path/URL and assign it to the body
+      if (fileObj) {
+        const resolved = resolveUploadedImage(fileObj, req, "/uploads");
+
+        // I set the canonical field your backend expects
+        // Option 1: store a full URL (good if you read it from clients directly)
+        (req.body as any).image_profil = resolved.url ?? resolved.relative;
+
+        // Optionally keep a mirror for "image_profile" for backwards compatibility
+        (req.body as any).image_profile = (req.body as any).image_profil;
+      }
+
       await processSignUp(req, res, fileObj ? fileObj : null);
     });
   } catch (error: any) {
