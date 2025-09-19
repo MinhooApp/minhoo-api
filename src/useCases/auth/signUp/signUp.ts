@@ -116,14 +116,12 @@ export const signUp = async (req: Request, res: Response) => {
       if (fileObj) {
         const resolved = resolveUploadedImage(fileObj, req, "/uploads");
 
-        // I set the canonical field your backend expects
-        // Option 1: store a full URL (good if you read it from clients directly)
-        (req.body as any).image_profil = resolved.url ?? resolved.relative;
+        // I save only the relative path, without protocol/host
+        (req.body as any).image_profil = resolved.relative ?? null;
 
-        // Optionally keep a mirror for "image_profile" for backwards compatibility
+        // Optional mirror for image_profile
         (req.body as any).image_profile = (req.body as any).image_profil;
       }
-
       await processSignUp(req, res, fileObj ? fileObj : null);
     });
   } catch (error: any) {
