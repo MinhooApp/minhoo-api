@@ -20,15 +20,13 @@ export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
         ? String(req.query.urlToken)
         : undefined;
 
+      // I normalize token reading (Authorization header or urlToken)
       if (!token || !token.startsWith("Bearer ")) {
         if (urlToken) {
           token = urlToken;
         } else {
           return res.status(401).json({
-            header: {
-              success: false,
-              authenticated: false,
-            },
+            header: { success: false, authenticated: false },
             messages: ["Access denied, invalid token format"],
           });
         }
@@ -37,6 +35,7 @@ export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
       }
 
       try {
+        // I verify the JWT signature and expiration
         const { userId, roles, workerId } = jwt.verify(
           token,
           process.env.SECRETORPRIVATEKEY || "tokenTest"
@@ -45,54 +44,48 @@ export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
         req.userId = userId;
         req.workerId = workerId;
 
+        // Role validation
         if (allowedRoles && !roles.some((r) => allowedRoles.includes(r))) {
           return res.status(403).json({
-            header: {
-              success: false,
-              authenticated: true,
-            },
+            header: { success: false, authenticated: true },
             messages: ["Access denied, role not allowed"],
           });
         }
 
+        // I fetch the user and check token match
         const user = await User.findOne({
-          where: {
-            id: userId,
-          },
+          where: { id: userId, available: true },
         });
 
         if (!user) {
-          return res.status(401).json({
-            header: {
-              success: false,
-              authenticated: false,
-            },
-            messages: ["Access denied, User not found"],
+          return res.status(408).json({
+            header: { success: false, authenticated: false },
+            messages: ["Access denied, token revoked or not recognized"],
           });
         }
 
-        if (!user.available) {
-          return res.status(401).json({
-            header: {
-              success: false,
-              authenticated: false,
-            },
-            messages: ["Access denied, User not available"],
+        // 🔹 Key point: I ensure the token from the request matches the one stored in DB
+        if (user.auth_token !== token) {
+          return res.status(408).json({
+            header: { success: false, authenticated: false },
+            messages: ["Access denied, token revoked or not recognized"],
           });
         }
 
+        // If everything is fine, I let the request continue
         next();
       } catch (error) {
         return res.status(401).json({
-          header: {
-            success: false,
-            authenticated: false,
-          },
-          messages: ["Access denied, invalid token"],
+          header: { success: false, authenticated: false },
+          messages: ["Access denied, invalid or expired token"],
         });
       }
     } catch (error) {
-      console.log(error);
+      console.error(error);
+      return res.status(500).json({
+        header: { success: false, authenticated: false },
+        messages: ["Internal server error"],
+      });
     }
   };
 };

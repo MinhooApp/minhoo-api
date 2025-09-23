@@ -1,4 +1,4 @@
-import { login, changePass } from "../login/login";
+import { login, changePass, validateSesion } from "../login/login";
 import { validateRestorePassword } from "../signUp/signUp";
 import {
   validateEmail,
@@ -18,4 +18,5 @@ export {
   validateRestorePassword,
   restorePassword,
   validatePhone,
+  validateSesion,
 };

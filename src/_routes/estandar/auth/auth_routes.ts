@@ -9,6 +9,7 @@ import {
   restorePassword,
   validatePhone,
   changePass,
+  validateSesion,
 } from "../../../useCases/auth/_controller/controller";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
 const router = Router();
@@ -22,4 +23,5 @@ router.post("/restore/validate", validateRestorePassword);
 router.post("/restore", restorePassword);
 router.patch("/change_pass", TokenValidation(), changePass);
 router.post("/phone/validate", validatePhone);
+router.get("/session/validate", TokenValidation(), validateSesion);
 export default router;

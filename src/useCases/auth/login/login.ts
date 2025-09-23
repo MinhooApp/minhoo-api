@@ -107,4 +107,9 @@ export const changePass = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
+export const validateSesion = async (req: Request, res: Response) => {
+  try {
+    return formatResponse({ res: res, success: true });
+  } catch (error) {}
+};
 //
