@@ -1,16 +1,13 @@
 import { uRepository } from "useCases/auth/_module/module";
 import { findById } from "../../../repository/auth/auth_repository";
 import {
-  //
   Request,
   Response,
   formatResponse,
   repository,
   sendNotification,
   socket,
-  sendEmail,
   sendEmailToMany,
-  workerRepository,
 } from "../_module/module";
 export const deleteService = async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -54,50 +51,6 @@ export const deleteService = async (req: Request, res: Response) => {
     res: res,
     success: true,
     message: "Service deleted successfully",
-    body: workers,
+    body: tempService,
   });
 };
-
-/*export const removeWorker = async (req: Request, res: Response) => {
-  const { workerId } = req.body;
-  const { serviceId } = req.params;
-  try {
-    const workerTemp = await repository.removeWorker(serviceId, workerId);
-    const workerData = await workerRepository.worker(workerId);
-    //SEND EMAIL
-    const emailParams = {
-      subject: "Offer Removed",
-      email: workerData!.personal_data.email,
-      htmlPath: "./src/public/html/email/offer_canceled_by_client_email.html",
-      from: "Minhoo App",
-      replacements: [
-        {
-          code: "@@name",
-          name: `${workerData!.personal_data.name} ${
-            workerData!.personal_data.last_name
-          }`,
-        },
-      ],
-    };
-    await sendNotification({
-      userId: workerData!.personal_data.id,
-      interactorId: req.userId,
-      serviceId: parseInt(serviceId),
-      type: "applicationRemoved",
-      message: `${workerData!.personal_data.name} ${
-        workerData!.personal_data.last_name
-      } has canceled your application.`,
-    });
-    sendEmail(emailParams);
-
-    // emito para notificar a todos los usuarios viendo el servicio
-    const offer = {
-      serviceId: serviceId,
-    };
-    socket.emit("offers", offer);
-    return formatResponse({ res: res, success: true, body: workerTemp });
-  } catch (error) {
-    console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
-  }
-};*/

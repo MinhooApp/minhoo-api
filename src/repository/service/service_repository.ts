@@ -249,7 +249,7 @@ export const get = async (id: any) => {
 };
 export const getByUser = async (id: any, userId: any) => {
   const service = await Service.findOne({
-    where: { id: id, userId: userId },
+    where: { id: id },
     include: serviceInclude,
     order: [["service_date", "DESC"]],
   });
