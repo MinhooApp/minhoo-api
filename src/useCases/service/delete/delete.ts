@@ -1,5 +1,3 @@
-import { uRepository } from "useCases/auth/_module/module";
-import { findById } from "../../../repository/auth/auth_repository";
 import {
   Request,
   Response,
@@ -43,14 +41,15 @@ export const deleteService = async (req: Request, res: Response) => {
   };
 
   await repository.deleteservice(id);
+  const response = await repository.getByUser(id, req.userId);
   sendEmailToMany(emailParams);
 
   ////////Emit the service/////
-  socket.emit("services", tempService);
+  socket.emit("services", response);
   return formatResponse({
     res: res,
     success: true,
     message: "Service deleted successfully",
-    body: tempService,
+    body: response,
   });
 };
