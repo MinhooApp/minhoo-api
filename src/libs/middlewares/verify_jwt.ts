@@ -25,7 +25,7 @@ export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
         if (urlToken) {
           token = urlToken;
         } else {
-          return res.status(408).json({
+          return res.status(401).json({
             header: { success: false, authenticated: false },
             messages: ["Access denied, invalid token format"],
           });
