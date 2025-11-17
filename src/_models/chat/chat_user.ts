@@ -1,0 +1,31 @@
+
+import {
+    DataTypes, Model
+} from 'sequelize';
+import sequelize from '../../_db/connection';
+
+class Chat_User extends Model {
+    [x: string
+    ]: any;
+}
+Chat_User.init(
+    {
+        userId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+        },
+        chatId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+        },
+
+    },
+    {
+        sequelize,
+        modelName: 'chat_user',
+        tableName: "chat_user"
+
+    }
+);
+
+export default Chat_User;

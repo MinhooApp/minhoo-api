@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+<body>
+    <h1>PROHIBIDO</h1>
+
+    <button id="btnEnviar">ENVIAR</button>
+    <script type="module">
+        const btnEnviar = document.querySelector("#btnEnviar");
+        import { io } from 'https://cdn.socket.io/4.7.5/socket.io.esm.min.js';
+  
+        const socket = io();
+
+       socket.on("test", (data) => {
+            console.log(data)
+        });
+        btnEnviar.addEventListener('click', () => {
+         
+        socket.emit('test', "data");
+               
+            });
+    </script>
+</body>
+</html>
