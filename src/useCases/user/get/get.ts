@@ -29,7 +29,7 @@ export const get = async (req: Request, res: Response) => {
 
   try {
     const user = await repository.get(id, req.userId);
-    return formatResponse({ res: res, success: true, body: { user: user } });
+    return formatResponse({ res: res, success: true, body: { user } });
   } catch (error) {
     console.log(req.userId);
     return formatResponse({ res: res, success: false, message: error });
@@ -39,7 +39,7 @@ export const get = async (req: Request, res: Response) => {
 export const myData = async (req: Request, res: Response) => {
   try {
     const user = await repository.get(req.userId);
-    return formatResponse({ res: res, success: true, body: { user: user } });
+    return formatResponse({ res: res, success: true, body: { user } });
   } catch (error) {
     console.log(req.userId);
     return formatResponse({ res: res, success: false, message: error });
@@ -73,42 +73,51 @@ export const validatePhone = async (req: Request, res: Response) => {
   const { phone, dialing_code } = req.body;
 
   if (!phone) {
-    return formatResponse({
-      res,
-      success: false,
-      message: "Phone is required",
-    });
+    return formatResponse({ res, success: false, message: "Phone is required" });
   }
   if (!dialing_code) {
-    return formatResponse({
-      res,
-      success: false,
-      message: "Dialing Code is required",
-    });
+    return formatResponse({ res, success: false, message: "Dialing Code is required" });
   }
 
   try {
     const user = await repository.findByPhone(req.userId, phone, dialing_code);
 
-    if (user) {
-      return formatResponse({
-        res,
-        success: true,
-        body: { already_exists: true },
-      });
-    } else {
-      return formatResponse({
-        res,
-        success: true,
-        body: { already_exists: false },
-      });
-    }
-  } catch (error) {
-    console.error("Error in validatePhone:", error);
     return formatResponse({
       res,
-      success: false,
-      message: "Internal server error",
+      success: true,
+      body: { already_exists: !!user },
     });
+  } catch (error) {
+    console.error("Error in validatePhone:", error);
+    return formatResponse({ res, success: false, message: "Internal server error" });
+  }
+};
+
+/**
+ * ✅ NUEVO: Lista de usuarios que YO bloqueé
+ * Ruta: GET /user/blocked
+ * Requiere TokenValidation()
+ */
+export const get_blocked_users = async (req: Request, res: Response) => {
+  try {
+    // ✅ si no existe en repo, fallará aquí (mejor mensaje)
+    if (typeof (repository as any).get_blocked_users !== "function") {
+      return formatResponse({
+        res,
+        success: false,
+        message: "repository.get_blocked_users is not implemented",
+      });
+    }
+
+    const users = await repository.get_blocked_users(req.userId);
+
+    return formatResponse({
+      res,
+      success: true,
+      body: { users },
+    });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res, success: false, message: error });
   }
 };

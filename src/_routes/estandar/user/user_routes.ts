@@ -1,9 +1,10 @@
 import Router from "express";
 import TokenOptional from "../../../libs/middlewares/optional_jwt";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
-import path from "path";
 import fs from "fs/promises";
+
 const router = Router();
+
 import {
   get,
   gets,
@@ -14,7 +15,10 @@ import {
   activeAlerts,
   block_user,
   unblock_user,
+  // ✅ NUEVO (asegúrate de exportarlo desde tu controller)
+  get_blocked_users,
 } from "../../../useCases/user/_controller/controller";
+
 router.get("/", TokenValidation(), gets);
 router.post("/follow", TokenValidation(), follow);
 router.get("/follows/:id?", TokenOptional(), follows);
@@ -22,6 +26,13 @@ router.get("/followers/:id?", TokenOptional(), followers);
 router.get("/one/:id?", TokenOptional(), get);
 router.get("/myData", TokenValidation(), myData);
 router.get("/alert", TokenValidation(), activeAlerts);
+
+/**
+ * ✅ NUEVO: LISTAR MIS BLOQUEADOS (para el front)
+ * GET /user/blocked
+ */
+router.get("/blocked", TokenValidation(), get_blocked_users);
+
 router.get("/share/:id", async (req, res) => {
   const userId = req.params.id;
 
@@ -51,6 +62,45 @@ router.get("/share/:id", async (req, res) => {
   }
 });
 
+/**
+ * ✅ BLOCK / UNBLOCK (robusto para cualquier front)
+ *
+ * - Block:
+ *   DELETE /user/block/:blocked_id
+ *
+ * - Unblock:
+ *   PATCH  /user/unblock/:blocked_id
+ *   DELETE /user/unblock/:blocked_id
+ *
+ * Nota: Mantengo tus rutas exactamente como las tienes, solo documentadas.
+ */
 router.delete("/block/:blocked_id", TokenValidation(), block_user);
+
+// Clientes nuevos (PATCH)
 router.patch("/unblock/:blocked_id", TokenValidation(), unblock_user);
+
+// Clientes viejos (DELETE)
+router.delete("/unblock/:blocked_id", TokenValidation(), unblock_user);
+
+/**
+ * ✅ LEGACY: /delete/:id/:flag
+ * flag = 0 -> bloquear
+ * flag = 1 -> desbloquear
+ */
+router.delete("/delete/:id/:flag", TokenValidation(), (req: any, res: any) => {
+  const { id, flag } = req.params;
+
+  // Normalizamos el nombre del parámetro para tus controladores actuales
+  req.params.blocked_id = id;
+
+  if (flag === "0") return block_user(req, res);
+  if (flag === "1") return unblock_user(req, res);
+
+  return res.status(400).json({
+    header: { success: false },
+    messages: ["flag must be '0' (block) or '1' (unblock)"],
+  });
+});
+
 export default router;
+

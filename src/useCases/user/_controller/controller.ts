@@ -1,4 +1,3 @@
-import { update } from "./../../../repository/follower/follower_repository";
 import { follow } from "../add/add";
 import { block_user, unblock_user } from "../delete/delete";
 import {
@@ -8,8 +7,10 @@ import {
   myData,
   follows,
   followers,
+  get_blocked_users, // ✅ NUEVO
 } from "../get/get";
 import { activeAlerts } from "../update/update";
+
 export {
   get,
   gets,
@@ -21,4 +22,5 @@ export {
   activeAlerts,
   block_user,
   unblock_user,
+  get_blocked_users, // ✅ NUEVO
 };

@@ -2,6 +2,7 @@ import User from "../../_models/user/user";
 import Service from "../../_models/service/service";
 import Category from "../../_models/category/category";
 import { Op, Sequelize } from "sequelize";
+
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 const serviceInclude = [
@@ -16,13 +17,13 @@ const serviceInclude = [
     attributes: { exclude: excludeKeys },
   },
 ];
+
 export const add = async (body: any) => {
   const service = await Service.create(body);
-  const response = await Service.findByPk(
-    service.id,
-
-    { include: serviceInclude, attributes: { exclude: excludeKeys } }
-  );
+  const response = await Service.findByPk(service.id, {
+    include: serviceInclude,
+    attributes: { exclude: excludeKeys },
+  });
   return response;
 };
 
@@ -43,12 +44,29 @@ export const gets = async (meId: any = -1) => {
         `),
       ],
     },
+
+    // ✅ incluye y exclude igual que en add (más consistente)
+    include: serviceInclude,
+    attributes: { exclude: excludeKeys },
+
+    // ✅ CLAVE: más nuevo → más antiguo (mezcla on-site + freelance)
+    order: [
+      ["createdAt", "DESC"],
+      ["id", "DESC"], // desempate
+    ],
+
     replacements: { meId },
   });
+
   return service;
 };
+
 export const get = async (id: any) => {
-  const service = await Service.findOne({ where: { id: id } });
+  const service = await Service.findOne({
+    where: { id: id },
+    include: serviceInclude,
+    attributes: { exclude: excludeKeys },
+  });
   return service;
 };
 

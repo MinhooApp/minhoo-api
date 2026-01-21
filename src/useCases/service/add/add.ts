@@ -9,7 +9,39 @@ import {
   sendPushToMultipleUsers,
   sendNotification,
 } from "../_module/module";
+
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+
+function toPlain<T>(data: T): T {
+  return JSON.parse(JSON.stringify(data));
+}
+
+function normalizeCurrency(body: any) {
+  // acepta snake_case y camelCase
+  const code = body.currencyCode ?? body.currency_code;
+  const prefix = body.currencyPrefix ?? body.currency_prefix;
+
+  // guarda en ambos para no romper nada
+  if (code) {
+    body.currencyCode = code;
+    body.currency_code = code;
+  }
+  if (prefix) {
+    body.currencyPrefix = prefix;
+    body.currency_prefix = prefix;
+  }
+
+  // fallback legacy: si no mandan moneda, mantenemos compatibilidad (AU$)
+  if (!body.currencyCode && !body.currency_code) {
+    body.currencyCode = "AUD";
+    body.currency_code = "AUD";
+  }
+  if (!body.currencyPrefix && !body.currency_prefix) {
+    body.currencyPrefix = "AU$";
+    body.currency_prefix = "AU$";
+  }
+}
+
 export const add = async (req: Request, res: Response) => {
   try {
     const tokens: string[] = await sendNotificationByNewService(
@@ -17,25 +49,36 @@ export const add = async (req: Request, res: Response) => {
       req.userId
     );
 
-    //
     const now = new Date(new Date().toUTCString());
     req.body.userId = req.userId;
     req.body.service_date = now;
+
+    // ✅ moneda backward compatible
+    normalizeCurrency(req.body);
+
     const service: any = await repository.add(req.body);
 
-    ////////Emit the service/////
-    socket.emit("services", service);
+    // ✅ evita circular JSON
+    const safeService = toPlain(service);
+
+    socket.emit("services", safeService);
     sendPushToMultipleUsers(
       "New Service Posted",
       "  ",
       "newService",
-      service.id,
+      safeService.id,
       tokens
     );
-    return formatResponse({ res: res, success: true, body: { service } });
-  } catch (error) {
+
+    return formatResponse({ res: res, success: true, body: { service: safeService } });
+  } catch (error: any) {
     console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
+    // ojo: no devuelvas error crudo si tiene cosas no serializables
+    return formatResponse({
+      res: res,
+      success: false,
+      message: error?.message ?? String(error),
+    });
   }
 };
 
@@ -61,10 +104,7 @@ const getPlaceDetails = async (place_id: string) => {
       throw new Error("Error al obtener detalles del lugar");
     }
   } catch (error: any) {
-    console.error(
-      "Error en la solicitud de detalles del lugar:",
-      error.message
-    );
+    console.error("Error en la solicitud de detalles del lugar:", error.message);
     return null;
   }
 };
@@ -94,19 +134,18 @@ export const searchAddress = async (req: Request, res: Response) => {
     if (autocompleteResponse.data.status === "OK") {
       const predictions = autocompleteResponse.data.predictions;
 
-      // Obtener detalles para cada lugar
       const detailsPromises = predictions.map((prediction: any) =>
         getPlaceDetails(prediction.place_id)
       );
 
       const detailedResults = await Promise.all(detailsPromises);
 
-      // Combinar las sugerencias con las coordenadas
       const results = predictions.map((prediction: any, index: number) => ({
         description: prediction.description,
         place_id: prediction.place_id,
-        ...detailedResults[index], // Incluye las coordenadas si están disponibles
+        ...detailedResults[index],
       }));
+
       return formatResponse({
         res: res,
         success: true,
@@ -130,10 +169,7 @@ export const searchAddress = async (req: Request, res: Response) => {
   }
 };
 
-const sendNotificationByNewService = async (
-  categoryId: number,
-  userId: any
-) => {
+const sendNotificationByNewService = async (categoryId: number, userId: any) => {
   const tokens: string[] = await workerRepository.tokensByNewService(
     categoryId,
     userId
@@ -151,12 +187,18 @@ export const sendTestNotification = async (req: Request, res: Response) => {
       type: req.body.type,
       message: req.body.message,
     });
+
     return formatResponse({
       res: res,
       success: true,
       body: { response: "ok" },
     });
-  } catch (error) {
+  } catch (error: any) {
     console.log(error);
+    return formatResponse({
+      res: res,
+      success: false,
+      message: error?.message ?? String(error),
+    });
   }
 };

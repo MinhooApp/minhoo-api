@@ -1,3 +1,4 @@
+// C:\api\minhoo_api\src\libs\middlewares\verify_jwt.ts
 import { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import User from "../../_models/user/user";
@@ -8,80 +9,123 @@ export interface IPayload {
   uid: string;
   name: string;
   username: string;
-  roles: number[];
+  roles: number[];     // array de roles
   token: string;
+  exp?: number;
+  iat?: number;
 }
 
-export const TokenValidation = (allowedRoles?: number[]): RequestHandler => {
+/**
+ * Validación “tolerante” + bloqueo por cuenta deshabilitada:
+ * - 401 solo si la firma del token es inválida, no existe, o está revocado.
+ * - Gracia de expiración (7 días por defecto).
+ * - Si la DB falla, no forzamos logout (modo degradado).
+ * - Si el usuario está deshabilitado -> 403 siempre.
+ */
+export const TokenValidation = (
+  allowedRoles?: number[],
+  graceDays = 7
+): RequestHandler => {
+  const GRACE_MS = graceDays * 24 * 60 * 60 * 1000;
+
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      let token: string | undefined = req.header("Authorization");
-      const urlToken = req.query.urlToken
-        ? String(req.query.urlToken)
-        : undefined;
+      // 0) Obtener token (header o ?urlToken=...)
+      let header = req.header("Authorization");
+      const urlToken = req.query.urlToken ? String(req.query.urlToken) : undefined;
+      if (!header && urlToken) header = `Bearer ${urlToken}`;
 
-      // I normalize token reading (Authorization header or urlToken)
-      if (!token || !token.startsWith("Bearer ")) {
-        if (urlToken) {
-          token = urlToken;
-        } else {
-          return res.status(401).json({
-            header: { success: false, authenticated: false },
-            messages: ["Access denied, invalid token format"],
-          });
-        }
-      } else {
-        token = token.split(" ")[1];
+      if (!header || !header.startsWith("Bearer ")) {
+        return res.status(401).json({
+          header: { success: false, authenticated: false },
+          messages: ["Access denied, token missing"],
+        });
       }
 
+      const token = header.split(" ")[1];
+
+      // 1) Verificar firma; si expiró, aplicar gracia
+      let payload: IPayload | null = null;
       try {
-        // I verify the JWT signature and expiration
-        const { userId, roles, workerId } = jwt.verify(
+        payload = jwt.verify(
           token,
           process.env.SECRETORPRIVATEKEY || "tokenTest"
         ) as IPayload;
-
-        req.userId = userId;
-        req.workerId = workerId;
-
-        // Role validation
-        if (allowedRoles && !roles.some((r) => allowedRoles.includes(r))) {
-          return res.status(403).json({
-            header: { success: false, authenticated: true },
-            messages: ["Access denied, role not allowed"],
+      } catch (_err) {
+        const decoded = jwt.decode(token) as IPayload | null;
+        if (!decoded || !decoded.exp) {
+          return res.status(401).json({
+            header: { success: false, authenticated: false },
+            messages: ["Access denied, invalid token"],
           });
         }
+        const expMs = decoded.exp * 1000;
+        const now = Date.now();
+        if (now - expMs <= GRACE_MS) {
+          payload = decoded; // aceptamos dentro del período de gracia
+        } else {
+          return res.status(401).json({
+            header: { success: false, authenticated: false },
+            messages: ["Access denied, token expired"],
+          });
+        }
+      }
 
-        // I fetch the user and check token match
+      const { userId, roles, workerId } = payload!;
+
+      // 2) Cargar usuario y aplicar reglas de seguridad
+      try {
         const user = await User.findOne({
           where: { id: userId, available: true },
+          attributes: ["id", "disabled", "available", "auth_token", "role"],
         });
 
         if (!user) {
-          return res.status(408).json({
+          return res.status(401).json({
             header: { success: false, authenticated: false },
-            messages: ["Access denied, token revoked or not recognized"],
+            messages: ["Access denied, user not found"],
           });
         }
 
-        // 🔹 Key point: I ensure the token from the request matches the one stored in DB
-        if (user.auth_token !== token) {
-          return res.status(408).json({
+        // Token revocado (no coincide con el guardado)
+        if ((user as any).auth_token && (user as any).auth_token !== token) {
+          return res.status(401).json({
             header: { success: false, authenticated: false },
-            messages: ["Access denied, token revoked or not recognized"],
+            messages: ["Access denied, token revoked"],
           });
         }
 
-        // If everything is fine, I let the request continue
-        next();
-      } catch (error) {
-        return res.status(401).json({
-          header: { success: false, authenticated: false },
-          messages: ["Access denied, invalid or expired token"],
+        // Cuenta deshabilitada por admin
+        if ((user as any).disabled === true || (user as any).available === false) {
+          return res.status(403).json({
+            header: { success: false, authenticated: true },
+            messages: ["This account has been disabled by an administrator"],
+          });
+        }
+
+        // Exponer rol “legacy” si otros middlewares lo usan
+        (req as any).userRole = (user as any).role ?? undefined;
+      } catch (_dbErr) {
+        // DB caída / intermitente → no romper sesión
+        (req as any).authDegraded = true;
+      }
+
+      // 3) Filtro de roles si la ruta lo pidió
+      if (allowedRoles && !roles?.some((r) => allowedRoles.includes(r))) {
+        return res.status(403).json({
+          header: { success: false, authenticated: true },
+          messages: ["Access denied, role not allowed"],
         });
       }
+
+      // 4) Contexto para el resto de middlewares/controladores
+      (req as any).roles = roles;
+      (req as any).userId = userId;
+      (req as any).workerId = workerId;
+
+      return next();
     } catch (error) {
-      console.error(error);
+      console.error("Auth middleware error:", error);
       return res.status(500).json({
         header: { success: false, authenticated: false },
         messages: ["Internal server error"],

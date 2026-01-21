@@ -1,161 +1,141 @@
-import { worker } from "./../../useCases/worker/get/get";
 import { Op, Sequelize } from "sequelize";
 import Offer from "../../_models/offer/offer";
 import Service from "../../_models/service/service";
 import { serviceInclude } from "./service_includes";
 import Service_Worker from "../../_models/service/service_worker";
-import { workerIncludes } from "repository/worker/worker_includes";
 import Worker from "../../_models/worker/worker";
 import User from "../../_models/user/user";
-import { finalized } from "../../useCases/service/update/update";
+
 const excludeKeys = ["createdAt", "updatedAt", "password"];
+
+const notBlockedLiteral = () =>
+  Sequelize.literal(`
+    NOT EXISTS (
+      SELECT 1
+      FROM user_blocks ub
+      WHERE
+        (ub.blocker_id = :meId AND ub.blocked_id = \`service\`.\`userId\`)
+        OR
+        (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = :meId)
+    )
+  `);
+
+const pagination = (page: any = 0, size: any = 10) => {
+  const limit = Number(size);
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 10;
+
+  const p = Number(page);
+  const safePage = Number.isFinite(p) && p >= 0 ? p : 0;
+
+  return { limit: safeLimit, offset: safePage * safeLimit };
+};
 
 export const add = async (body: any) => {
   const service = await Service.create(body);
-  const response = await Service.findByPk(
-    service.id,
-
-    { include: serviceInclude, attributes: { exclude: excludeKeys } }
-  );
-  return response;
+  return Service.findByPk(service.id, {
+    include: serviceInclude,
+    attributes: { exclude: excludeKeys },
+  });
 };
 
 export const gets = async () => {
-  const service = await Service.findAll({
+  return Service.findAll({
     where: { is_available: true },
     include: serviceInclude,
     order: [["service_date", "DESC"]],
   });
-  return service;
 };
 
 export const history = async (userId?: number, canceled = true) => {
   if (userId != undefined) {
-    const service = await Service.findAll({
+    return Service.findAll({
       where: {
-        userId: userId,
+        userId,
         statusId: { [Op.notIn]: canceled ? [1] : [1, 5] },
       },
       include: serviceInclude,
       order: [["service_date", "DESC"]],
     });
-    return service;
-  } else {
-    const service = await Service.findAll({
-      where: {
-        statusId: { [Op.notIn]: [1, 5] },
-      },
-      order: [["service_date", "DESC"]],
-    });
-    return service;
   }
+
+  return Service.findAll({
+    where: { statusId: { [Op.notIn]: [1, 5] } },
+    include: serviceInclude,
+    order: [["service_date", "DESC"]],
+  });
 };
+
 export const historyCanceled = async (userId?: number) => {
   if (userId != undefined) {
-    const service = await Service.findAll({
-      where: {
-        userId: userId,
-        statusId: 5,
-      },
+    return Service.findAll({
+      where: { userId, statusId: 5 },
       include: serviceInclude,
       order: [["service_date", "DESC"]],
     });
-    return service;
-  } else {
-    const service = await Service.findAll({
-      where: {
-        statusId: 5,
-      },
-      order: [["service_date", "DESC"]],
-    });
-    return service;
   }
+
+  return Service.findAll({
+    where: { statusId: 5 },
+    include: serviceInclude,
+    order: [["service_date", "DESC"]],
+  });
 };
+
 export const onGoing = async (userId?: number) => {
   if (userId) {
-    const service = await Service.findAll({
-      where: {
-        is_available: true,
-        statusId: 1,
-        userId: userId,
-      },
-
+    return Service.findAll({
+      where: { is_available: true, statusId: 1, userId },
       include: serviceInclude,
       order: [["service_date", "DESC"]],
     });
-    return service;
-  } else {
-    const service = await Service.findAll({
-      where: { is_available: true, statusId: 1 },
-      include: serviceInclude,
-      order: [["service_date", "DESC"]],
-    });
-    return service;
   }
+
+  return Service.findAll({
+    where: { is_available: true, statusId: 1 },
+    include: serviceInclude,
+    order: [["service_date", "DESC"]],
+  });
 };
+
 export const getsOnGoing = async (
   page: any = 0,
   size: any = 10,
   meId: any = -1
 ) => {
-  let option = {
-    limit: +size,
-    offset: +page * +size,
-  };
-  const services = await Service.findAndCountAll({
+  const { limit, offset } = pagination(page, size);
+
+  return Service.findAndCountAll({
     where: {
       is_available: true,
       statusId: 1,
-      [Op.and]: [
-        Sequelize.literal(`
-          NOT EXISTS (
-            SELECT 1
-            FROM user_blocks ub
-            WHERE
-              (ub.blocker_id = :meId AND ub.blocked_id = \`service\`.\`userId\`)
-              OR
-              (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = :meId)
-          )
-        `),
-      ],
+      [Op.and]: [notBlockedLiteral()],
     },
     replacements: { meId },
-    ...option,
+    limit,
+    offset,
     include: serviceInclude,
-
     order: [["service_date", "DESC"]],
     attributes: { exclude: excludeKeys },
   });
-
-  return services;
 };
+
+/**
+ * Worker - Servicios donde el worker está participando (aplicó),
+ * no cancelado/removed (para que no aparezca “pegado”).
+ */
 export const onGoingWorkers = async (workerId: number, meId: any) => {
-  const service = await Service.findAll({
-    where: {
-      is_available: true,
-      statusId: 1,
-    },
-
+  return Service.findAll({
+    where: { is_available: true, statusId: 1 },
     include: [
       ...serviceInclude,
       {
         model: Offer,
         as: "offers",
         where: {
-          workerId: workerId,
+          workerId,
           canceled: false,
-          [Op.and]: [
-            Sequelize.literal(`
-          NOT EXISTS (
-            SELECT 1
-            FROM user_blocks ub
-            WHERE
-              (ub.blocker_id = :meId AND ub.blocked_id = \`service\`.\`userId\`)
-              OR
-              (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = :meId)
-          )
-        `),
-          ],
+          removed: false,
+          [Op.and]: [notBlockedLiteral()],
         },
         required: true,
       },
@@ -163,74 +143,50 @@ export const onGoingWorkers = async (workerId: number, meId: any) => {
     replacements: { meId },
     order: [["service_date", "DESC"]],
   });
-  return service;
 };
+
+/**
+ * Worker - Cancelados (para historial / pestaña cancelados)
+ */
 export const onGoingCanceledWorkers = async (workerId: number, meId: any) => {
-  const service = await Service.findAll({
-    where: {
-      statusId: 5,
-    },
-
+  return Service.findAll({
+    where: { statusId: 5 },
     include: [
       ...serviceInclude,
       {
         model: Offer,
         as: "offers",
         where: {
-          workerId: workerId,
-          [Op.and]: [
-            Sequelize.literal(`
-          NOT EXISTS (
-            SELECT 1
-            FROM user_blocks ub
-            WHERE
-              (ub.blocker_id = :meId AND ub.blocked_id = \`service\`.\`userId\`)
-              OR
-              (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = :meId)
-          )
-        `),
-          ],
+          workerId,
+          [Op.and]: [notBlockedLiteral()],
         },
-
         required: true,
       },
     ],
     replacements: { meId },
     order: [["service_date", "DESC"]],
   });
-  return service;
 };
+
+/**
+ * ✅ Worker - Accepted:
+ * IMPORTANTE: accepted true PERO canceled/removed false.
+ * Si no haces esto, un accepted-canceled se “cuela” como Accepted.
+ */
 export const historyWorkers = async (workerId: number, meId: any) => {
-  const service = await Service.findAll({
-    where: {
-      is_available: true,
-      /*[Op.not]: [
-        {
-          //statusId: 1,
-        },
-      ],*/
-    },
-
+  return Service.findAll({
+    where: { is_available: true },
     include: [
       ...serviceInclude,
       {
         model: Offer,
         as: "offers",
         where: {
-          workerId: workerId,
+          workerId,
           accepted: true,
-          [Op.and]: [
-            Sequelize.literal(`
-          NOT EXISTS (
-            SELECT 1
-            FROM user_blocks ub
-            WHERE
-              (ub.blocker_id = :meId AND ub.blocked_id = \`service\`.\`userId\`)
-              OR
-              (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = :meId)
-          )
-        `),
-          ],
+          canceled: false,
+          removed: false,
+          [Op.and]: [notBlockedLiteral()],
         },
         required: true,
       },
@@ -238,47 +194,45 @@ export const historyWorkers = async (workerId: number, meId: any) => {
     replacements: { meId },
     order: [["service_date", "DESC"]],
   });
-  return service;
 };
+
 export const get = async (id: any) => {
-  const service = await Service.findOne({
-    where: { id: id },
+  return Service.findOne({
+    where: { id },
     include: serviceInclude,
   });
-  return service;
 };
+
 export const getByUser = async (id: any, userId: any) => {
-  const service = await Service.findOne({
-    where: { id: id },
+  return Service.findOne({
+    where: { id, userId },
     include: serviceInclude,
     order: [["service_date", "DESC"]],
   });
-  return service;
 };
 
+/**
+ * ✅ Workers asignados al servicio (Accepted del lado del cliente):
+ * Filtra canceled:false y removed:false sí o sí.
+ */
 export const workersByService = async (id: any, userId: any) => {
   const service = await Service.findOne({
-    where: {
-      id: id,
-    },
+    where: { id },
     include: [
       {
         model: Offer,
         as: "offers",
         where: {
           accepted: true,
+          canceled: false,
+          removed: false,
         },
         required: true,
         include: [
           {
             model: Worker,
             as: "offerer",
-            include: [
-              {
-                model: User,
-                as: "personal_data",
-              },
-            ],
+            include: [{ model: User, as: "personal_data" }],
           },
         ],
       },
@@ -286,71 +240,109 @@ export const workersByService = async (id: any, userId: any) => {
     order: [["service_date", "DESC"]],
   });
 
-  if (!service || !service.offers) return [];
+  if (!service || !(service as any).offers) return [];
 
-  const offerers = service.offers
-    .map((offer: any) => offer.offerer)
-    .filter((offerer: any) => !!offerer); // por si acaso
-
-  return offerers;
+  const offers = (service as any).offers as any[];
+  return offers.map((o) => o.offerer).filter(Boolean);
 };
 
 export const update = async (id: any, body: any) => {
   const serviceTemp = await Service.findByPk(id);
   const service = await serviceTemp?.update(body);
   return [service];
-}; //
+};
+
 export const assignWorker = async (
   workerId: any,
   request: Service,
   assigend: boolean
 ) => {
-  // const serviceTemp = await Service.findByPk(id,);
-
   await request.addWorker(workerId, { through: { removed: false } });
+
   if (assigend) {
     await request.update({ statusId: 2 });
   }
-  const service = await Service_Worker.findOne({
-    where: { serviceId: request.id, workerId: workerId },
-  });
-  return service;
-};
-export const removeWorker = async (serviceId: any, workerId: any) => {
-  // const serviceTemp = await Service.findByPk(id,);
-  const temp = await Service_Worker.findOne({
-    where: { serviceId: serviceId, workerId: workerId },
-  });
-  const worker = temp?.update({ removed: true, canceled: false });
 
-  return worker;
+  return Service_Worker.findOne({
+    where: { serviceId: request.id, workerId },
+  });
 };
+
+export const removeWorker = async (serviceId: any, workerId: any) => {
+  const temp = await Service_Worker.findOne({
+    where: { serviceId, workerId },
+  });
+
+  return temp?.update({ removed: true, canceled: false });
+};
+
 export const finalizedService = async (id: any) => {
   const serviceTemp = await Service.findByPk(id);
   await serviceTemp!.update({ statusId: 2 });
-  const service = await Service.findOne({
-    where: { id: id },
+
+  return Service.findOne({
+    where: { id },
     include: serviceInclude,
   });
-  return service;
 };
+
+/**
+ * ✅ FIX:
+ * Si el worker cancela (aunque estaba accepted),
+ * pasa a canceled:true y accepted:false.
+ * Además fuerza updatedAt para que el front refresque siempre.
+ */
 export const cancelWorker = async (
   serviceId: any,
   workerId: any,
   removed: boolean
 ) => {
-  // const serviceTemp = await Service.findByPk(id,);
-  const temp = await Offer.findOne({
-    where: { serviceId: serviceId, workerId: workerId },
-  });
-  const worker = temp?.update({ removed: removed, canceled: true });
+  const [affected] = await Offer.update(
+    {
+      removed,
+      canceled: true,
+      accepted: false, // 👈 clave
+      updatedAt: Sequelize.literal("CURRENT_TIMESTAMP"),
+    },
+    { where: { serviceId, workerId } }
+  );
 
-  return worker;
+  if (!affected) {
+    return Offer.create({
+      serviceId,
+      workerId,
+      removed,
+      canceled: true,
+      accepted: false,
+    });
+  }
+
+  return Offer.findOne({ where: { serviceId, workerId } });
+};
+
+/**
+ * ✅ Re-aplicar:
+ * SIEMPRE vuelve a Applicants => accepted:false, canceled:false, removed:false
+ * aunque antes haya estado accepted y haya cancelado.
+ */
+export const reApplyWorker = async (
+  serviceId: number,
+  workerId: number,
+  data?: { price?: number; message?: string }
+) => {
+  await Offer.upsert({
+    serviceId,
+    workerId,
+    accepted: false,  // 👈 applicants
+    canceled: false,  // 👈 reabre postulación
+    removed: false,
+    ...(data ?? {}),
+    updatedAt: Sequelize.literal("CURRENT_TIMESTAMP") as any,
+  } as any);
+
+  return Offer.findOne({ where: { serviceId, workerId } });
 };
 
 export const deleteservice = async (id: any) => {
-  await Service.update(
-    { is_available: false, statusId: 5 },
-    { where: { id: id } }
-  );
+  await Service.update({ is_available: false, statusId: 5 }, { where: { id } });
 };

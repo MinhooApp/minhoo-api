@@ -11,35 +11,68 @@ import {
 
 export const acceptOffer = async (req: Request, res: Response) => {
   const { offerId } = req.params;
-  // const { serviceId, workerId, } = req.body;
+
   try {
     const offer = await repository.get(offerId);
-    if (offer == null) {
+    if (!offer) {
       return formatResponse({
-        res: res,
+        res,
         success: false,
         message: "Offer not found.",
         code: 400,
       });
     }
-    const tempService = await serviceRepository.get(offer!.serviceId);
-    const workers: any[] = tempService!.workers;
 
-    const filteredWorkersActives = workers.filter((worker) => {
-      return worker.service_worker.removed == false;
-    });
-    //return formatResponse({ res: res, success: true, body: filteredWorkersActives! });
-    if (tempService!.userId != req.userId) {
+    const tempService = await serviceRepository.get(offer.serviceId);
+    if (!tempService) {
       return formatResponse({
-        res: res,
+        res,
         success: false,
         message: "Service not found.",
         code: 400,
       });
     }
-    if (filteredWorkersActives.length >= tempService!.places) {
+
+    // ✅ Solo el dueño del servicio
+    if (tempService.userId != req.userId) {
       return formatResponse({
-        res: res,
+        res,
+        success: false,
+        message: "Service not found.",
+        code: 400,
+      });
+    }
+
+    // ✅ SOLO SI SERVICIO ACTIVO (regla definitiva)
+    if (tempService.statusId != 1 || tempService.is_available != true) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Service is not active.",
+        code: 400,
+      });
+    }
+
+    // ✅ Si la offer está cancelada por cliente o worker, NO se puede aceptar
+    // Solo se puede aceptar si el worker vuelve a postularse (add re-activa)
+    if (offer.canceled === true || offer.removed === true) {
+      return formatResponse({
+        res,
+        success: false,
+        message:
+          "This application was canceled. The worker must apply again to be accepted.",
+        code: 400,
+      });
+    }
+
+    const workers: any[] = tempService.workers ?? [];
+    const filteredWorkersActives = workers.filter((worker) => {
+      return worker.service_worker?.removed == false;
+    });
+
+    if (filteredWorkersActives.length >= tempService.places) {
+      return formatResponse({
+        res,
         success: false,
         message: "The spaces available for service are complete.",
         code: 400,
@@ -47,14 +80,18 @@ export const acceptOffer = async (req: Request, res: Response) => {
     }
 
     const assigned: boolean =
-      filteredWorkersActives.length + 1 >= tempService!.places;
-    await serviceRepository.assignWorker(
-      offer!.workerId,
-      tempService!,
-      assigned
-    );
-    await repository.update(offerId, { accepted: true });
-    const service = await serviceRepository.get(offer!.serviceId);
+      filteredWorkersActives.length + 1 >= tempService.places;
+
+    await serviceRepository.assignWorker(offer.workerId, tempService, assigned);
+
+    // ✅ update consistente (limpia flags)
+    await repository.update(offerId, {
+      accepted: true,
+      canceled: false,
+      removed: false,
+    });
+
+    const service = await serviceRepository.get(offer.serviceId);
 
     await sendNotification({
       userId: offer.offerer.userId,
@@ -65,7 +102,6 @@ export const acceptOffer = async (req: Request, res: Response) => {
       message: `has accepted your job offer!`,
     });
 
-    //SEND EMAIL
     const emailParams = {
       subject: "Offer Accepted",
       email: offer.offerer.personal_data.email,
@@ -78,39 +114,70 @@ export const acceptOffer = async (req: Request, res: Response) => {
       ],
     };
     sendEmail(emailParams);
-    // emito para notificar a todos los usuarios viendo el servicio
-    socket.emit("offers", offer);
-    return formatResponse({ res: res, success: true, body: { service } });
+
+    // ✅ emitir para refresco rápido (mejor enviar serviceId)
+    socket.emit("offers", { serviceId: offer.serviceId });
+
+    return formatResponse({ res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
+    return formatResponse({ res, success: false, message: error });
   }
 };
 
 export const cancelOffer = async (req: Request, res: Response) => {
   const { offerId } = req.params;
-  // const { serviceId, workerId, } = req.body;
+
   try {
     const offer = await repository.get(offerId);
-    if (offer == null) {
+    if (!offer) {
       return formatResponse({
-        res: res,
-        success: false, //
+        res,
+        success: false,
         message: "Offer not found.",
         code: 400,
       });
     }
 
-    //cancel offer from worker////
+    const tempService = await serviceRepository.get(offer.serviceId);
+    if (!tempService) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Service not found.",
+        code: 400,
+      });
+    }
+
+    // ✅ SOLO SI SERVICIO ACTIVO (regla definitiva)
+    if (tempService.statusId != 1 || tempService.is_available != true) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Service is not active.",
+        code: 400,
+      });
+    }
+
+    // ✅ worker cancela su postulación / o cancela estando aceptado
+    // 1) quitarlo de workers
     await serviceRepository.removeWorker(offer.serviceId, req.workerId);
-    await serviceRepository.cancelWorker(offer!.serviceId, req.workerId, false);
-    await repository.update(offerId, { accepted: false, canceled: true });
 
-    const service = await serviceRepository.get(offer!.serviceId);
+    // 2) 🔥 IMPORTANTÍSIMO: liberar el estado “aceptado/asignado” del service
+    // para que si el worker reaplica vuelva a Applicants y NO quede como Accepted.
+    await serviceRepository.cancelWorker(offer.serviceId, req.workerId, true);
 
-    socket.emit("offers", offer);
+    // ✅ update consistente
+    await repository.update(offerId, {
+      accepted: false,
+      canceled: true,
+      removed: false,
+    });
 
-    //SEND EMAIL
+    const service = await serviceRepository.get(offer.serviceId);
+
+    socket.emit("offers", { serviceId: offer.serviceId });
+
     const emailParams = {
       subject: "Application canceled",
       email: service!.client.email,
@@ -122,7 +189,7 @@ export const cancelOffer = async (req: Request, res: Response) => {
         },
       ],
     };
-    //
+
     await sendNotification({
       userId: service!.userId,
       interactorId: req.userId,
@@ -131,10 +198,14 @@ export const cancelOffer = async (req: Request, res: Response) => {
       type: "applicationCanceled",
       message: `Application canceled`,
     });
+
     sendEmail(emailParams);
-    return formatResponse({ res: res, success: true, body: { service } });
+
+    return formatResponse({ res, success: true, body: { service } });
   } catch (error) {
     console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
+    return formatResponse({ res, success: false, message: error });
   }
 };
+
+

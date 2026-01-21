@@ -7,50 +7,58 @@ import Worker from "../../_models/worker/worker";
 import Follower from "../../_models/follower/follower";
 import Category from "../../_models/category/category";
 import { Op, Sequelize } from "sequelize";
+
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
+/**
+ * ✅ Helper seguro: bloqueo bidireccional A<->B
+ * - Usa replacements para NO romper SQL
+ * - No depende de alias raros
+ */
+const notBlockedBetweenMeAndTarget = () =>
+  Sequelize.literal(`
+    NOT EXISTS (
+      SELECT 1
+      FROM user_blocks ub
+      WHERE
+        (ub.blocker_id = :meId AND ub.blocked_id = :id)
+        OR
+        (ub.blocker_id = :id AND ub.blocked_id = :meId)
+    )
+  `);
+
+/* 🔹 Lista de todos los usuarios activos (no deshabilitados por la empresa) */
 export const gets = async () => {
   const user = await User.findAll({
-    where: { available: true },
+    where: { available: true, disabled: false },
     include: userIncludes(),
   });
   return user;
 };
 
+/* 🔹 Paginación de usuarios visibles */
 export const users = async (page: any = 0, size: any = 10) => {
-  let option = {
-    limit: +size,
-    offset: +page * +size,
-  };
+  const option = { limit: +size, offset: +page * +size };
   const users = await User.findAndCountAll({
-    where: { available: 1 },
+    where: { available: 1, disabled: false },
     ...option,
     include: userIncludes(),
   });
   return users;
 };
 
+/* 🔹 Perfil de usuario (solo si no está deshabilitado globalmente)
+   ✅ NO rompemos posts (quitamos el filtro user_id/userId)
+*/
 export const get = async (id: any, meId: any = -1) => {
   const user = await User.findOne({
     where: {
-      id: id,
-
-      [Op.and]: [
-        Sequelize.literal(`
-                  NOT EXISTS (
-                    SELECT 1
-                    FROM user_blocks ub
-                    WHERE
-                      (ub.blocker_id = :meId AND ub.blocked_id = :id)
-                      OR
-                      (ub.blocker_id =:id AND ub.blocked_id = :meId)
-                  )
-                `),
-      ],
+      id,
+      disabled: false,
+      [Op.and]: [notBlockedBetweenMeAndTarget()],
     },
     include: [
       ...userIncludes(meId),
-
       {
         model: Post,
         as: "posts",
@@ -61,7 +69,7 @@ export const get = async (id: any, meId: any = -1) => {
             model: MediaPost,
             as: "post_media",
             attributes: ["url", "is_img"],
-            separate: true, // Importante para ordenar internamente
+            separate: true,
             order: [["createdAt", "ASC"]],
           },
         ],
@@ -70,32 +78,37 @@ export const get = async (id: any, meId: any = -1) => {
     replacements: { meId, id },
     order: [[{ model: Post, as: "posts" }, "created_date", "DESC"]],
   });
+
   return user;
 };
 
+/* 🔹 Actualiza datos de usuario */
 export const update = async (id: any, body: any) => {
   const userTemp = await User.findOne({
-    where: { id: id },
+    where: { id },
     include: userIncludes(),
   });
   const user = await userTemp?.update(body);
   return [user];
 };
 
+/* 🔹 Activa/desactiva alertas personales */
 export const activeAlerts = async (id: any) => {
   const userTemp = await User.findOne({
-    where: { id: id },
+    where: { id },
     include: userIncludes(),
   });
   const user = await userTemp?.update({ alert: !userTemp!.alert });
   return user;
 };
 
+/* 🔹 Elimina lógicamente usuarios disponibles (placeholder) */
 export const deleteuser = async () => {
   const user = await User.update({}, { where: { available: 1 } });
   return user;
 };
 
+/* 🔹 Usuarios que sigue (seguimientos) */
 export const follows = async (id: any, meId: any = -1) => {
   const follows = await Follower.findAll({
     attributes: ["id", "userId", "followerId"],
@@ -103,29 +116,23 @@ export const follows = async (id: any, meId: any = -1) => {
       followerId: id,
       [Op.and]: [
         Sequelize.literal(`
-                  NOT EXISTS (
-                    SELECT 1
-                    FROM user_blocks ub
-                    WHERE
-                      (ub.blocker_id = :meId AND ub.blocked_id = \`follower\`.\`userId\`)
-                      OR
-                      (ub.blocker_id = \`follower\`.\`userId\` AND ub.blocked_id = :meId)
-                  )
-                `),
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`follower\`.\`userId\`)
+              OR
+              (ub.blocker_id = \`follower\`.\`userId\` AND ub.blocked_id = :meId)
+          )
+        `),
       ],
     },
     include: [
       {
         model: User,
         as: "following_data",
-        attributes: [
-          "id",
-          "name",
-          "last_name",
-          "image_profil",
-          "verified",
-          "rate",
-        ],
+        attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+        where: { disabled: false },
         include: [
           {
             model: Worker,
@@ -141,35 +148,12 @@ export const follows = async (id: any, meId: any = -1) => {
               {
                 model: User,
                 as: "personal_data",
-                attributes: [
-                  "id",
-                  "name",
-                  "last_name",
-                  "image_profil",
-                  "verified",
-                  "rate",
-                ],
+                attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
               },
             ],
           },
-          {
-            model: Follower,
-            as: "followers",
-            //where: Sequelize.literal("`user->followers`.`userId`="),
-            attributes: [
-              "followerId", // Incluir el ID en la cláusula GROUP BY
-            ],
-            required: false,
-          },
-          {
-            model: Follower,
-            as: "followings",
-            // where: Sequelize.literal("`followings`.`followerId`= user.id"),
-            attributes: [
-              "userId", // Incluir el ID en la cláusula GROUP BY
-            ],
-            required: false,
-          },
+          { model: Follower, as: "followers", attributes: ["followerId"], required: false },
+          { model: Follower, as: "followings", attributes: ["userId"], required: false },
         ],
       },
     ],
@@ -178,6 +162,8 @@ export const follows = async (id: any, meId: any = -1) => {
 
   return follows;
 };
+
+/* 🔹 Seguidores */
 export const followers = async (id: any, meId: any = -1) => {
   const followers = await Follower.findAll({
     attributes: ["id", "userId", "followerId"],
@@ -185,29 +171,23 @@ export const followers = async (id: any, meId: any = -1) => {
       userId: id,
       [Op.and]: [
         Sequelize.literal(`
-                  NOT EXISTS (
-                    SELECT 1
-                    FROM user_blocks ub
-                    WHERE
-                      (ub.blocker_id = :meId AND ub.blocked_id = \`follower\`.\`followerId\`)
-                      OR
-                      (ub.blocker_id = \`follower\`.\`followerId\` AND ub.blocked_id = :meId)
-                  )
-                `),
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :meId AND ub.blocked_id = \`follower\`.\`followerId\`)
+              OR
+              (ub.blocker_id = \`follower\`.\`followerId\` AND ub.blocked_id = :meId)
+          )
+        `),
       ],
     },
     include: [
       {
         model: User,
         as: "follower_data",
-        attributes: [
-          "id",
-          "name",
-          "last_name",
-          "image_profil",
-          "verified",
-          "rate",
-        ],
+        attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+        where: { disabled: false },
         include: [
           {
             model: Worker,
@@ -223,113 +203,128 @@ export const followers = async (id: any, meId: any = -1) => {
               {
                 model: User,
                 as: "personal_data",
-                attributes: [
-                  "id",
-                  "name",
-                  "last_name",
-                  "image_profil",
-                  "verified",
-                  "rate",
-                ],
+                attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
               },
             ],
           },
-          {
-            model: Follower,
-            as: "followers",
-            //where: Sequelize.literal("`user->followers`.`userId`="),
-            attributes: [
-              "followerId", // Incluir el ID en la cláusula GROUP BY
-            ],
-            required: false,
-          },
-          {
-            model: Follower,
-            as: "followings",
-            // where: Sequelize.literal("`followings`.`followerId`= user.id"),
-            attributes: [
-              "userId", // Incluir el ID en la cláusula GROUP BY
-            ],
-            required: false,
-          },
+          { model: Follower, as: "followers", attributes: ["followerId"], required: false },
+          { model: Follower, as: "followings", attributes: ["userId"], required: false },
         ],
       },
     ],
     replacements: { meId },
   });
+
   return followers;
 };
 
+/* 🔹 Devuelve el UUID si el usuario tiene alertas activas */
 export const getUuid = async (id: number) => {
-  const user = await User.findOne({ where: { id: id, alert: true } });
-  //const uuid = user?.map((user) => user!.uuid);
+  const user = await User.findOne({ where: { id, alert: true } });
   return user?.uuid;
 };
-export const findByPhone = async (
-  id: number,
-  phone: string,
-  dialing_code: string
-) => {
+
+/* 🔹 Verifica duplicado por teléfono */
+export const findByPhone = async (id: number, phone: string, dialing_code: string) => {
   const user = await User.findOne({
-    where: {
-      id: { [Op.ne]: id }, // id distinto al recibido
-      phone,
-      //  dialing_code,
-    },
+    where: { id: { [Op.ne]: id }, phone },
   });
   return user;
 };
+
 export const findNewPhone = async (phone: string) => {
-  const user = await User.findOne({
-    where: {
-      phone,
-    },
-  });
+  const user = await User.findOne({ where: { phone } });
   return user;
 };
 
+/* 🔹 Bloqueo entre usuarios (tipo Instagram) */
 export const block_user = async (blocker_id: any, blocked_id: any) => {
-  const flag = await UserBLock.findOne({
-    where: {
-      blocker_id,
-      blocked_id,
-    },
-  });
-
-  if (flag) {
-    return {
-      success: true,
-      message: "the user has already been blocked previously",
-    };
+  // ✅ seguridad: no bloquearse a sí mismo
+  if (Number(blocker_id) === Number(blocked_id)) {
+    return { success: false, message: "you cannot block yourself" };
   }
 
-  await UserBLock.create({
-    blocker_id,
-    blocked_id,
-  });
+  // ✅ opcional: no bloquear usuarios deshabilitados globalmente
+  const target = await User.findOne({ where: { id: blocked_id, disabled: false } });
+  if (!target) {
+    return { success: false, message: "target user not found" };
+  }
 
-  return {
-    success: true,
-    message: "the user has been successfully blocked",
-  };
+  const flag = await UserBLock.findOne({ where: { blocker_id, blocked_id } });
+
+  if (flag) {
+    return { success: true, message: "the user has already been blocked previously" };
+  }
+
+  await UserBLock.create({ blocker_id, blocked_id });
+  return { success: true, message: "the user has been successfully blocked" };
 };
 
+/* 🔹 Desbloqueo entre usuarios */
 export const unblock_user = async (blocker_id: any, blocked_id: any) => {
-  const data = await UserBLock.findOne({
-    where: { blocker_id, blocked_id },
-  });
+  const data = await UserBLock.findOne({ where: { blocker_id, blocked_id } });
 
   if (!data) {
-    return {
-      success: true,
-      message: "the user is not blocked",
-    };
+    return { success: true, message: "the user is not blocked" };
   }
 
   await data.destroy();
+  return { success: true, message: "the user has been successfully unblocked" };
+};
 
-  return {
-    success: true,
-    message: "the user has been successfully unblocked",
-  };
+/* ✅ NUEVO: Lista de usuarios que YO bloqueé (para el front) */
+export const get_blocked_users = async (blocker_id: any) => {
+  const blocks = await UserBLock.findAll({
+    where: { blocker_id },
+    attributes: ["blocked_id", "createdAt"],
+    order: [["createdAt", "DESC"]],
+  });
+
+  const ids = blocks
+    .map((b: any) => Number(b.blocked_id))
+    .filter((id: any) => Number.isFinite(id));
+
+  if (ids.length === 0) return [];
+
+  const users = await User.findAll({
+    where: { id: ids, disabled: false },
+    attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+  });
+
+  // mantener orden del bloqueo (createdAt DESC)
+  const orderMap = new Map(ids.map((id: number, idx: number) => [id, idx]));
+  users.sort((a: any, b: any) => (orderMap.get(a.id) ?? 999999) - (orderMap.get(b.id) ?? 999999));
+
+  return users;
+};
+
+/* ✅ OPCIONAL: Usuarios que me bloquearon */
+export const get_users_who_blocked_me = async (blocked_id: any) => {
+  const blocks = await UserBLock.findAll({
+    where: { blocked_id },
+    attributes: ["blocker_id", "createdAt"],
+    order: [["createdAt", "DESC"]],
+  });
+
+  const ids = blocks
+    .map((b: any) => Number(b.blocker_id))
+    .filter((id: any) => Number.isFinite(id));
+
+  if (ids.length === 0) return [];
+
+  const users = await User.findAll({
+    where: { id: ids, disabled: false },
+    attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+  });
+
+  const orderMap = new Map(ids.map((id: number, idx: number) => [id, idx]));
+  users.sort((a: any, b: any) => (orderMap.get(a.id) ?? 999999) - (orderMap.get(b.id) ?? 999999));
+
+  return users;
+};
+
+/* 🔹 Bloqueo global a nivel empresa (solo admin) */
+export const admin_set_disabled = async (id: number, disabled: boolean) => {
+  const [affected] = await User.update({ disabled }, { where: { id } });
+  return affected ? { id, disabled } : { id, disabled, notFound: true };
 };

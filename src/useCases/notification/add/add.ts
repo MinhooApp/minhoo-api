@@ -5,6 +5,7 @@ import {
   userRepository,
   socket,
 } from "../_module/module";
+
 interface SendNotificationParams {
   userId: number;
   interactorId?: number;
@@ -15,24 +16,26 @@ interface SendNotificationParams {
   notification_date?: Date;
   type: TypeNotification;
   message: string;
-  likerId?: number; // ID del usuario que dio el "like" (opcional)
-  commentId?: number; // ID del comentario (opcional)
-  messageId?: number; // ID del mensaje (opcional)
+
+  likerId?: number;
+  commentId?: number;
+  messageId?: number;
+
+  // ✅ NUEVO: nombre del que dispara la notificación (chat)
+  senderName?: string;
 }
 
 export const sendNotification = async (
   params: SendNotificationParams
 ): Promise<void> => {
   try {
-    // Verificar si userId e interactorId son diferentes
+    // si es el mismo usuario, puedes evitar notificar (si quieres)
     if (params.userId === params.interactorId) {
-      // Si son iguales, no hacer nada y salir de la función
-      //  return;
+      // return;
     }
 
     const now = new Date(new Date().toUTCString());
 
-    // Crear la notificación a partir de los parámetros
     const notificationData = {
       userId: params.userId,
       interactorId: params.interactorId,
@@ -41,27 +44,45 @@ export const sendNotification = async (
       offerId: params.offerId,
       type: params.type,
       message: params.message,
-      likerId: params.likerId, // ID del usuario que dio el "like"
-      commentId: params.commentId, // ID del comentario
-      messageId: params.messageId, // ID del mensaje
+      likerId: params.likerId,
+      commentId: params.commentId,
+      messageId: params.messageId,
       notification_date: now,
-      read: false, // Asumimos que la notificación no está leída al momento de su creación
+      read: false,
     };
 
-    // Agregar la notificación a la base de datos usando el repositorio
     const notification = await repository.add(notificationData);
     const uuid = await userRepository.getUuid(params.userId);
+
     socket.emit("notification", notification);
+
+    // ✅ Para chat: queremos que se vea el nombre en la barra de notificaciones
+    const pushTitle =
+      params.type === "message"
+        ? (params.senderName?.trim() || "Nuevo mensaje")
+        : "Minhoo news";
+
+    const pushBody = params.message;
+
+    // ✅ data extra para Flutter (foreground)
+    const extraData = {
+      senderName: params.senderName ?? "",     // Flutter lo usa como title
+      senderId: params.interactorId ?? "",     // para filtrar/suprimir
+      // opcional:
+      messageId: params.messageId ?? "",
+    };
+
     sendPushToSingleUser(
-      "Minhoo news",
-      params.message,
+      pushTitle,
+      pushBody,
       uuid,
       params.type,
-      getFirstAvailableId(notificationData)! // <- puede devolver undefined
+      getFirstAvailableId(notificationData),
+      extraData
     );
   } catch (error) {
     console.error("Error al enviar la notificación:", error);
-    throw error; // Puedes lanzar el error o manejarlo según tu lógica de manejo de errores
+    throw error;
   }
 };
 

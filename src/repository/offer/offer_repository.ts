@@ -1,14 +1,35 @@
 import { Op, Sequelize } from "sequelize";
 import Offer from "../../_models/offer/offer";
 import { offerInclude } from "./offer_includes";
+
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 export const add = async (body: any) => {
-  const temp = await Offer.findOne({
+  // ✅ Si existe una offer previa para (serviceId, workerId),
+  // la reactivamos como Applicant:
+  // - sale de Cancelled
+  // - vuelve a Applicants
+  const existing = await Offer.findOne({
     where: { serviceId: body.serviceId, workerId: body.workerId },
   });
-  await temp?.destroy();
-  const offer = await Offer.create(body);
+
+  if (existing) {
+    const updated = await existing.update({
+      ...body,
+      accepted: false,
+      canceled: false,
+      removed: false,
+    });
+    return updated;
+  }
+
+  // ✅ Nueva postulación
+  const offer = await Offer.create({
+    ...body,
+    accepted: false,
+    canceled: false,
+    removed: false,
+  });
 
   return offer;
 };
@@ -22,11 +43,17 @@ export const gets = async () => {
   });
   return offer;
 };
+
 export const getsByService = async (serviceId: any) => {
+  // ✅ CLAVE DEL FLUJO:
+  // - NO filtrar canceled/removed aquí.
+  // - Porque este endpoint alimenta Applicants / Accepted / Cancelled.
+  // - El frontend decide en cuál pestaña cae cada offer.
   const offer = await Offer.findAll({
     where: {
       serviceId: serviceId,
-      canceled: false,
+
+      // ✅ Mantengo tu filtro de bloqueados (correcto)
       [Op.and]: [
         Sequelize.literal(`
           NOT EXISTS (
@@ -46,11 +73,14 @@ export const getsByService = async (serviceId: any) => {
     attributes: { exclude: excludeKeys },
     order: [["offer_date", "DESC"]],
   });
+
   return offer;
 };
+
 export const get = async (id: any) => {
+  // ✅ No filtramos canceled/removed para que pueda verse en historial/detalle
   const offer = await Offer.findOne({
-    where: { id: id, canceled: false },
+    where: { id: id },
     include: offerInclude,
     attributes: { exclude: excludeKeys },
     order: [["offer_date", "DESC"]],
@@ -65,7 +95,17 @@ export const update = async (id: any, body: any) => {
 };
 
 export const deleteoffer = async (id: any) => {
+  // ✅ NO destruir.
+  // En tu flujo "cliente cancela" debe mover a Cancelled:
+  // removed=true (y accepted=false)
   const offerTemp = await Offer.findByPk(id);
+  if (!offerTemp) return null;
 
-  await offerTemp?.destroy();
+  const updated = await offerTemp.update({
+    accepted: false,
+    removed: true,
+    canceled: false, // opcional; Cancelled lo definimos por removed || canceled
+  });
+
+  return updated;
 };
