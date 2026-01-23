@@ -134,13 +134,18 @@ export const sendMessage = async (req: Request, res: Response) => {
     // title final con ID arriba
     const senderName = buildSenderTitle(senderId, fullName || "Nuevo mensaje");
 
+    const rawPreview = (message ?? "").toString().trim();
+    const snippet =
+      rawPreview.length > 60 ? `${rawPreview.slice(0, 60)}...` : rawPreview;
+    const notificationBody = snippet || "You have a new message";
+
     // ✅ enviar push
     await sendNotification({
       userId,                  // receptor
       interactorId: senderId,   // senderId
       messageId: lastMessage.id,
       type: "message",
-      message: "wrote you a new message",
+      message: notificationBody,
       senderName,              // 👈 title = "ID: X\nNombre Apellido"
     });
 

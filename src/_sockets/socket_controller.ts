@@ -5,6 +5,7 @@ import Service from "../_models/service/service";
 import Message from "../_models/chat/message";
 import Notification from "_models/notification/notification";
 import { Op } from "sequelize";
+import { sendNotification } from "../useCases/notification/add/add";
 
 type ChatStatus = "sent" | "delivered" | "read";
 
@@ -192,6 +193,7 @@ export const socketController = (socket: Socket) => {
       if (!msg) return;
 
       const current = normalizeReactions(msg.reactions);
+      let shouldNotify = false;
 
       // Detectar emoji previo del usuario
       let prevEmoji: string | null = null;
@@ -216,6 +218,7 @@ export const socketController = (socket: Socket) => {
         const list = current[emoji] ?? [];
         addUnique(list, userId);
         current[emoji] = list;
+        shouldNotify = true;
       }
 
       // ✅ Guardar limpio (JSON)
@@ -228,6 +231,24 @@ export const socketController = (socket: Socket) => {
         emoji,
         reactions: current,
       });
+
+      if (shouldNotify && msg.senderId && msg.senderId !== userId) {
+        const rawPreview = (msg.text ?? "").toString().trim();
+        const snippet =
+          rawPreview.length > 60 ? `${rawPreview.slice(0, 60)}...` : rawPreview;
+        const notificationBody = snippet
+          ? `Reacted ${emoji} to: ${snippet}`
+          : `Reacted ${emoji} to your message`;
+
+        await sendNotification({
+          userId: msg.senderId,
+          interactorId: userId,
+          messageId,
+          type: "message",
+          message: notificationBody,
+          senderName: `ID: ${userId}`,
+        });
+      }
     } catch (e) {
       console.log("❌ chat:reaction error", e);
     }

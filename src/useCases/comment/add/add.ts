@@ -33,13 +33,18 @@ export const add = async (req: Request, res: Response) => {
         const comment = await repository.add(req.body);
         const post = await postRepository.get(req.body.postId);
 
+        const rawPreview = (req.body.comment ?? "").toString().trim();
+        const snippet =
+          rawPreview.length > 60 ? `${rawPreview.slice(0, 60)}...` : rawPreview;
+        const notificationBody = snippet || "You have a new comment";
+
         await sendNotification({
           userId: post?.userId,
           interactorId: req.userId,
           postId: post?.id,
           commentId: comment.id,
           type: "comment",
-          message: `Commented: ${req.body.comment}`,
+          message: notificationBody,
         });
         return formatResponse({ res: res, success: true, body: { post } });
       } catch (error: any) {
