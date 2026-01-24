@@ -328,3 +328,9 @@ export const admin_set_disabled = async (id: number, disabled: boolean) => {
   const [affected] = await User.update({ disabled }, { where: { id } });
   return affected ? { id, disabled } : { id, disabled, notFound: true };
 };
+
+export const activeUser = async (id: any) => {
+  const user = await User.findOne({ where: { id } });
+  if (!user) return null;
+  return user.update({ available: true, disabled: false });
+};

@@ -32,6 +32,13 @@ export const add = async (req: Request, res: Response) => {
         req.body.userId = req.userId;
         const comment = await repository.add(req.body);
         const post = await postRepository.get(req.body.postId);
+        if (!comment) {
+          return formatResponse({
+            res: res,
+            success: false,
+            message: "Comment not created",
+          });
+        }
 
         const rawPreview = (req.body.comment ?? "").toString().trim();
         const snippet =

@@ -98,7 +98,14 @@ export const getUserByMessage = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const response = await repository.getSenderByMessageId(id);
-    const user = response!.sender;
+    const user = (response as any)?.sender ?? null;
+    if (!user) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "User not found",
+      });
+    }
     return formatResponse({
       res,
       success: true,

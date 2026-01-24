@@ -1,4 +1,4 @@
-import { Op, Sequelize } from "sequelize";
+﻿import { Op, Sequelize } from "sequelize";
 import Chat from "../../_models/chat/chat";
 import User from "../../_models/user/user";
 import sequelize from "../../_db/connection";
@@ -31,7 +31,7 @@ export const update = async (id: any, body: any) => {
 };
 
 /**
- * Valida si hay un bloqueo entre dos usuarios (en cualquier dirección).
+ * Valida si hay un bloqueo entre dos usuarios (en cualquier direcciÃ³n).
  */
 export const validateBlock = async (user_A: number, user_B: number): Promise<boolean> => {
   const block = await UserBlock.findOne({
@@ -48,7 +48,7 @@ export const validateBlock = async (user_A: number, user_B: number): Promise<boo
 };
 
 /**
- * ✅ INIT CHAT
+ * âœ… INIT CHAT
  * - Si hay bloqueo => no crear chat/mensaje (devuelve null)
  * - replyToMessageId opcional (no rompe)
  */
@@ -85,7 +85,7 @@ export const initNewChat = async (
   } else {
     chatId = existingChat[0].chatId;
 
-    // Reactivar si está eliminado
+    // Reactivar si estÃ¡ eliminado
     chat = await Chat.findByPk(chatId);
     if (chat && existingChat[0].deletedBy !== 0) {
       await chat.update({ deletedBy: 0 });
@@ -105,12 +105,12 @@ export const initNewChat = async (
 };
 
 /**
- * ✅ GET CHAT MESSAGES (FIX CRÍTICO)
- * Regla correcta de visibilidad según tu semántica:
- * - visible si deletedBy = 0 (nadie borró)
- * - visible si deletedBy = me (lo borró el otro, o “borrado para 1” según tu lógica)
+ * âœ… GET CHAT MESSAGES (FIX CRÃTICO)
+ * Regla correcta de visibilidad segÃºn tu semÃ¡ntica:
+ * - visible si deletedBy = 0 (nadie borrÃ³)
+ * - visible si deletedBy = me (lo borrÃ³ el otro, o â€œborrado para 1â€ segÃºn tu lÃ³gica)
  * - NO mostrar si deletedBy = -1 (borrado para ambos)
- * - NO mostrar si deletedBy = other (borrado por mí)
+ * - NO mostrar si deletedBy = other (borrado por mÃ­)
  */
 export const getChatMessages = async (chatId: any, currentUserId: any) => {
   const me = Number(currentUserId);
@@ -119,7 +119,7 @@ export const getChatMessages = async (chatId: any, currentUserId: any) => {
     order: [["date", "DESC"]],
     where: {
       chatId,
-      deletedBy: { [Op.in]: [0, me] }, // ✅ FIX: nunca traer -1
+      deletedBy: { [Op.in]: [0, me] }, // âœ… FIX: nunca traer -1
     },
     include: [
       {
@@ -157,11 +157,11 @@ export const getSenderByMessageId = async (messageId: any) => {
 };
 
 /**
- * ✅ GET CHAT BY USER (FIX CRÍTICO)
+ * âœ… GET CHAT BY USER (FIX CRÃTICO)
  * - bloqueados => []
  * - chat visible si Chat.deletedBy IN (0, me)
  * - mensajes visibles si Message.deletedBy IN (0, me)
- * - paginación por id < beforeMessageId
+ * - paginaciÃ³n por id < beforeMessageId
  */
 export const getChatByUser = async (
   currentUserId: any,
@@ -178,7 +178,7 @@ export const getChatByUser = async (
 
   const chatId = existingChat[0].chatId;
 
-  // ✅ FIX: chat visible si deletedBy = 0 o = me (NO -1)
+  // âœ… FIX: chat visible si deletedBy = 0 o = me (NO -1)
   const chat = await Chat.findOne({
     where: {
       id: chatId,
@@ -193,7 +193,7 @@ export const getChatByUser = async (
 
   const where: any = {
     chatId,
-    deletedBy: { [Op.in]: [0, me] }, // ✅ FIX: mensajes visibles
+    deletedBy: { [Op.in]: [0, me] }, // âœ… FIX: mensajes visibles
   };
 
   if (Number.isFinite(beforeMessageId as any) && (beforeMessageId as number) > 0) {
@@ -219,14 +219,14 @@ export const getChatByUser = async (
 };
 
 /**
- * ✅ GET USER CHATS (LISTA)
+ * âœ… GET USER CHATS (LISTA)
  * Objetivo:
  * - no mostrar chats eliminados para ambos (-1)
- * - no mostrar chats eliminados para mí (si tu semántica así lo requiere)
+ * - no mostrar chats eliminados para mÃ­ (si tu semÃ¡ntica asÃ­ lo requiere)
  * - no mostrar usuarios bloqueados (en ambos sentidos)
  *
  * FIXES:
- * - usa deletedBy IN (0, currentUserId) en Chat (misma lógica del resto)
+ * - usa deletedBy IN (0, currentUserId) en Chat (misma lÃ³gica del resto)
  * - filtra bloqueos con replacements (sin interpolar me en string)
  */
 export const getUserChats = async (currentUserId: number, meId: any = -1) => {
@@ -235,7 +235,7 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
 
   const useBlockFilter = Number.isFinite(me) && me > 0;
 
-  // Este where se aplica al “otro usuario” dentro del chat
+  // Este where se aplica al â€œotro usuarioâ€ dentro del chat
   const userWhere: any = {
     id: { [Op.ne]: uid },
   };
@@ -256,11 +256,19 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
   }
 
   const chats = await Chat_User.findAll({
+    attributes: [
+      "userId",
+      "chatId",
+      "pinnedAt",
+      "pinnedOrder",
+      "createdAt",
+      "updatedAt",
+    ],
     where: { userId: uid },
     include: [
       {
         model: Chat,
-        // ✅ FIX: chat visible si deletedBy = 0 o = uid (NO -1)
+        // âœ… FIX: chat visible si deletedBy = 0 o = uid (NO -1)
         where: {
           deletedBy: { [Op.in]: [0, uid] },
         },
@@ -276,7 +284,7 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
             model: Message,
             as: "messages",
             required: false,
-            // ✅ solo el último mensaje visible para mí
+            // âœ… solo el Ãºltimo mensaje visible para mÃ­
             where: {
               deletedBy: { [Op.in]: [0, uid] },
             },
@@ -299,12 +307,49 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
         ],
       },
     ],
-    // ✅ replacements solo si usamos filtro
+    // âœ… replacements solo si usamos filtro
     ...(useBlockFilter ? { replacements: { me } } : {}),
   });
 
-  // ordenar por fecha del último mensaje
+  const pinnedRows = await Chat_User.findAll({
+    attributes: ["chatId", "pinnedAt", "pinnedOrder"],
+    where: { userId: uid },
+    raw: true,
+  });
+  const pinnedByChatId = new Map<
+    number,
+    { pinnedAt: Date | null; pinnedOrder: number | null }
+  >();
+  for (const row of pinnedRows as any[]) {
+    const chatId = Number(row.chatId);
+    if (!Number.isFinite(chatId)) continue;
+    pinnedByChatId.set(chatId, {
+      pinnedAt: row.pinnedAt ?? null,
+      pinnedOrder: row.pinnedOrder ?? null,
+    });
+  }
+  for (const chat of chats as any[]) {
+    const chatId = Number(chat.chatId ?? chat.get?.("chatId"));
+    if (!Number.isFinite(chatId)) continue;
+    const pinned = pinnedByChatId.get(chatId);
+    if (!pinned) continue;
+    if (typeof chat.setDataValue === "function") {
+      chat.setDataValue("pinnedAt", pinned.pinnedAt);
+      chat.setDataValue("pinnedOrder", pinned.pinnedOrder);
+    }
+    chat.pinnedAt = pinned.pinnedAt;
+    chat.pinnedOrder = pinned.pinnedOrder;
+  }
+
+  // ordenar por pin + fecha del último mensaje
   chats.sort((a: any, b: any) => {
+    const pinA = a.pinnedAt ? new Date(a.pinnedAt).getTime() : 0;
+    const pinB = b.pinnedAt ? new Date(b.pinnedAt).getTime() : 0;
+
+    if (pinA && !pinB) return -1;
+    if (!pinA && pinB) return 1;
+    if (pinA && pinB && pinA !== pinB) return pinB - pinA;
+
     const dateA = a.Chat?.messages?.[0]?.date || 0;
     const dateB = b.Chat?.messages?.[0]?.date || 0;
     return dateB - dateA;
@@ -313,6 +358,25 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
   return chats;
 };
 
+export const setChatPinned = async ({
+  userId,
+  chatId,
+  pinned,
+}: {
+  userId: number;
+  chatId: number;
+  pinned: boolean;
+}) => {
+  const row = await Chat_User.findOne({ where: { userId, chatId } });
+  if (!row) return null;
+
+  const payload = pinned
+    ? { pinnedAt: new Date(), pinnedOrder: null }
+    : { pinnedAt: null, pinnedOrder: null };
+
+  await row.update(payload);
+  return row;
+};
 export const deleteChatByMessages = async (chatId: any, currentUserId: any) => {
   const uid = Number(currentUserId);
 
@@ -361,7 +425,7 @@ export const deleteChat = async (chatId: any, currentUserId: any) => {
 };
 
 // =======================================================
-// ✅ STATUS HELPERS (no rompen)
+// âœ… STATUS HELPERS (no rompen)
 // =======================================================
 
 export const updateMessageStatus = async ({
@@ -436,3 +500,6 @@ async function isBlockedEitherWay(a: number, b: number): Promise<boolean> {
 
   return !!row;
 }
+
+
+

@@ -18,6 +18,14 @@ Chat_User.init(
             type: DataTypes.INTEGER,
             allowNull: false,
         },
+        pinnedAt: {
+            type: DataTypes.DATE,
+            allowNull: true,
+        },
+        pinnedOrder: {
+            type: DataTypes.INTEGER,
+            allowNull: true,
+        },
 
     },
     {

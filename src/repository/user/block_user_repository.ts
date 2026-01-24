@@ -1,69 +1,48 @@
-// src/repository/user/block_user_repository.ts
-
-// ✅ AJUSTA ESTE IMPORT según tu proyecto (prisma/db)
-import { db } from "../../_db"; // <-- cámbialo al que uses
+import { Op } from "sequelize";
+import UserBlock from "../../_models/block/block";
 
 export class BlockUserRepository {
-  /**
-   * Crear bloqueo: blockerId bloquea a blockedId
-   * Debe ser idempotente: si ya existe, no falla.
-   */
   static async blockUser(blockerId: number, blockedId: number) {
     if (blockerId === blockedId) {
       throw new Error("You cannot block yourself");
     }
 
-    // si ya existe, no duplicar
-    const exists = await db.user_block.findFirst({
+    const exists = await UserBlock.findOne({
       where: { blocker_id: blockerId, blocked_id: blockedId },
     });
 
     if (exists) return exists;
 
-    return db.user_block.create({
-      data: {
-        blocker_id: blockerId,
-        blocked_id: blockedId,
-      },
+    return UserBlock.create({
+      blocker_id: blockerId,
+      blocked_id: blockedId,
     });
   }
 
-  /**
-   * Desbloquear
-   */
   static async unblockUser(blockerId: number, blockedId: number) {
-    return db.user_block.deleteMany({
+    return UserBlock.destroy({
       where: { blocker_id: blockerId, blocked_id: blockedId },
     });
   }
 
-  /**
-   * Lista de IDs que ESTE usuario bloqueó
-   */
   static async getBlockedIdsByMe(userId: number): Promise<number[]> {
-    const rows = await db.user_block.findMany({
+    const rows = await UserBlock.findAll({
       where: { blocker_id: userId },
-      select: { blocked_id: true },
+      attributes: ["blocked_id"],
     });
 
-    return rows.map((r: any) => r.blocked_id);
+    return rows.map((r: any) => Number(r.blocked_id)).filter(Number.isFinite);
   }
 
-  /**
-   * Lista de IDs que ME bloquearon a mí
-   */
   static async getIdsWhoBlockedMe(userId: number): Promise<number[]> {
-    const rows = await db.user_block.findMany({
+    const rows = await UserBlock.findAll({
       where: { blocked_id: userId },
-      select: { blocker_id: true },
+      attributes: ["blocker_id"],
     });
 
-    return rows.map((r: any) => r.blocker_id);
+    return rows.map((r: any) => Number(r.blocker_id)).filter(Number.isFinite);
   }
 
-  /**
-   * IDs bloqueados en ambos sentidos: (yo bloqueé) + (me bloquearon)
-   */
   static async getAllBlockedIds(userId: number): Promise<number[]> {
     const [a, b] = await Promise.all([
       this.getBlockedIdsByMe(userId),
@@ -73,18 +52,15 @@ export class BlockUserRepository {
     return Array.from(new Set([...a, ...b]));
   }
 
-  /**
-   * Verifica si existe bloqueo en cualquier sentido entre dos users
-   */
   static async isBlockedEitherWay(userA: number, userB: number): Promise<boolean> {
-    const found = await db.user_block.findFirst({
+    const found = await UserBlock.findOne({
       where: {
-        OR: [
+        [Op.or]: [
           { blocker_id: userA, blocked_id: userB },
           { blocker_id: userB, blocked_id: userA },
         ],
       },
-      select: { id: true },
+      attributes: ["id"],
     });
 
     return !!found;
