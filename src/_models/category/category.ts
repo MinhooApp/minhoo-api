@@ -61,59 +61,60 @@ Category.afterSync(async () => {
       name: "Home Repairs & Maintenance",
       es_name: "Reparaciones y mantenimiento del hogar",
     },
-    {
-      id: 7,
-      name: "Yardwork & Landscaping",
-      es_name: "Jardinería y paisajismo",
-    },
+    { id: 7, name: "Yardwork & Landscaping", es_name: "Jardineria y paisajismo" },
     {
       id: 8,
       name: "Smart Home & Tech Installation",
-      es_name: "Instalación de tecnología inteligente",
+      es_name: "Instalacion de tecnologia inteligente",
     },
     {
       id: 9,
       name: "Virtual Assistance & Admin Tasks",
       es_name: "Asistencia virtual y tareas administrativas",
     },
-    {
-      id: 10,
-      name: "Beauty & Personal Care",
-      es_name: "Cuidado personal y belleza",
-    },
+    { id: 10, name: "Beauty & Personal Care", es_name: "Cuidado personal y belleza" },
     {
       id: 11,
       name: "Tech Support & Computer Help",
-      es_name: "Soporte técnico y ayuda con computadoras",
+      es_name: "Soporte tecnico y ayuda con computadoras",
+    },
+    { id: 12, name: "Personal Shopping & Errands", es_name: "Compras personales y recados" },
+    { id: 13, name: "Tutoring & Lessons", es_name: "Tutorias y clases" },
+    { id: 14, name: "Pet Care & Dog Walking", es_name: "Cuidado de mascotas y paseos de perros" },
+    { id: 15, name: "Event Help & Planning", es_name: "Ayuda y planificacion de eventos" },
+    { id: 16, name: "Home Organization", es_name: "Organizacion del hogar" },
+    { id: 17, name: "Creative & Design Services", es_name: "Creative & Design Services" },
+    { id: 18, name: "Marketing & Content Creation", es_name: "Marketing & Content Creation" },
+    { id: 19, name: "Photography & Video", es_name: "Photography & Video" },
+    { id: 20, name: "Language & Translation Services", es_name: "Language & Translation Services" },
+    { id: 21, name: "Childcare & Babysitting", es_name: "Childcare & Babysitting" },
+    { id: 22, name: "Caregiving & Assistance", es_name: "Caregiving & Assistance" },
+    {
+      id: 23,
+      name: "Health & Wellness (Non-medical)",
+      es_name: "Health & Wellness (Non-medical)",
     },
     {
-      id: 12,
-      name: "Personal Shopping & Errands",
-      es_name: "Compras personales y recados",
+      id: 24,
+      name: "Companionship & Social Support",
+      es_name: "Companionship & Social Support",
     },
-    { id: 13, name: "Tutoring & Lessons", es_name: "Tutorías y clases" },
-    {
-      id: 14,
-      name: "Pet Care & Dog Walking",
-      es_name: "Cuidado de mascotas y paseos de perros",
-    },
-    {
-      id: 15,
-      name: "Event Help & Planning",
-      es_name: "Ayuda y planificación de eventos",
-    },
-    { id: 16, name: "Home Organization", es_name: "Organización del hogar" },
-    { id: 17, name: "Others", es_name: "Otras" },
+    { id: 25, name: "Others", es_name: "Otras" },
+    { id: 26, name: "Freelancer", es_name: "Freelancer" },
+    { id: 27, name: "On Site", es_name: "En sitio" },
   ];
 
-  for (const category of categories) {
-    await Category.findOrCreate({
-      where: {
+  try {
+    for (const category of categories) {
+      await Category.upsert({
         id: category.id,
         name: category.name,
         es_name: category.es_name,
-      },
-    });
+        available: true,
+      });
+    }
+  } catch (error) {
+    console.error("Category seed failed:", error);
   }
 });
 

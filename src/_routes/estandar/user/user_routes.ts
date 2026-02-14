@@ -10,25 +10,55 @@ import {
   gets,
   myData,
   follow,
+  follow_by_id,
   follows,
   followers,
+  followers_v2,
+  following_v2,
+  relationship,
   activeAlerts,
   block_user,
   unblock_user,
-  // ✅ NUEVO (asegúrate de exportarlo desde tu controller)
+  remove_follower,
+  unfollow_by_id,
+  check_username,
+  get_username,
+  update_username,
+  delete_profile_image,
+  update_profile,
+  profile_completion,
+  update_visibility,
+  delete_account,
+  // âœ… NUEVO (asegÃºrate de exportarlo desde tu controller)
   get_blocked_users,
 } from "../../../useCases/user/_controller/controller";
 
 router.get("/", TokenValidation(), gets);
 router.post("/follow", TokenValidation(), follow);
+router.post("/:id/follow", TokenValidation(), follow_by_id);
+router.delete("/:id/follow", TokenValidation(), unfollow_by_id);
 router.get("/follows/:id?", TokenOptional(), follows);
 router.get("/followers/:id?", TokenOptional(), followers);
+router.get("/:id/followers", TokenOptional(), followers_v2);
+router.get("/:id/following", TokenOptional(), following_v2);
+router.get("/:id/relationship", TokenOptional(), relationship);
+router.get("/username/check", TokenOptional(), check_username);
+router.get("/username/:username", TokenOptional(), get_username);
 router.get("/one/:id?", TokenOptional(), get);
 router.get("/myData", TokenValidation(), myData);
 router.get("/alert", TokenValidation(), activeAlerts);
+router.get("/profile-completion", TokenValidation(), profile_completion);
+router.patch("/username", TokenValidation(), update_username);
+router.put("/profile", TokenValidation(), update_profile);
+router.put("/visibility", TokenValidation(), update_visibility);
+router.delete("/image", TokenValidation(), delete_profile_image);
+router.delete("/account", TokenValidation(), delete_account);
+router.delete("/follower/:followerId", TokenValidation(), remove_follower);
+router.post("/remove-follower", TokenValidation(), remove_follower);
+router.delete("/:id/follower", TokenValidation(), remove_follower);
 
 /**
- * ✅ NUEVO: LISTAR MIS BLOQUEADOS (para el front)
+ * âœ… NUEVO: LISTAR MIS BLOQUEADOS (para el front)
  * GET /user/blocked
  */
 router.get("/blocked", TokenValidation(), get_blocked_users);
@@ -57,13 +87,13 @@ router.get("/share/:id", async (req, res) => {
     res.setHeader("Content-Type", "text/html");
     res.send(html);
   } catch (error) {
-    console.error("❌ Error loading HTML file:", error);
+    console.error("âŒ Error loading HTML file:", error);
     res.status(500).send("Internal Server Error");
   }
 });
 
 /**
- * ✅ BLOCK / UNBLOCK (robusto para cualquier front)
+ * âœ… BLOCK / UNBLOCK (robusto para cualquier front)
  *
  * - Block:
  *   DELETE /user/block/:blocked_id
@@ -83,14 +113,14 @@ router.patch("/unblock/:blocked_id", TokenValidation(), unblock_user);
 router.delete("/unblock/:blocked_id", TokenValidation(), unblock_user);
 
 /**
- * ✅ LEGACY: /delete/:id/:flag
+ * âœ… LEGACY: /delete/:id/:flag
  * flag = 0 -> bloquear
  * flag = 1 -> desbloquear
  */
 router.delete("/delete/:id/:flag", TokenValidation(), (req: any, res: any) => {
   const { id, flag } = req.params;
 
-  // Normalizamos el nombre del parámetro para tus controladores actuales
+  // Normalizamos el nombre del parÃ¡metro para tus controladores actuales
   req.params.blocked_id = id;
 
   if (flag === "0") return block_user(req, res);
@@ -103,4 +133,3 @@ router.delete("/delete/:id/:flag", TokenValidation(), (req: any, res: any) => {
 });
 
 export default router;
-

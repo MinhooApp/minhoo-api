@@ -77,6 +77,63 @@ User.init(
       type: DataTypes.STRING,
       allowNull: true,
     },
+    username: {
+      type: DataTypes.STRING(30),
+      allowNull: true,
+      unique: true,
+    },
+    username_updated_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    job_category_ids: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    job_categories_labels: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    language_ids: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    language_codes: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    language_names: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    country_origin_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    country_origin_code: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    country_residence_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    state_residence_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    state_residence_code: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    city_residence_id: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    city_residence_name: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
 
     auth_token: {
       type: DataTypes.TEXT,
@@ -155,6 +212,35 @@ User.init(
           msg: "The alert 'available' can't be empty",
         },
       },
+    },
+    show_email: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+    },
+    show_phone: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+    },
+    show_languages: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+    },
+    show_location: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+    },
+    is_deleted: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+    deleted_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
     },
   },
   {

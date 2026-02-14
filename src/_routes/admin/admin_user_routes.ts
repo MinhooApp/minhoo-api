@@ -10,6 +10,7 @@ import EnsureAdmin from "../../libs/middlewares/ensure_admin";
 import {
   admin_disable_account,
   admin_enable_account,
+  admin_restore_account,
 } from "../../useCases/admin/users/admin_users";
 
 const router = Router();
@@ -37,6 +38,17 @@ router.delete(
   TokenValidation(),
   EnsureAdmin(),
   admin_enable_account
+);
+
+/**
+ * ✅ Reactiva una cuenta eliminada (soft delete).
+ * Endpoint: PATCH /api/v1/admin/users/:id/restore
+ */
+router.patch(
+  "/:id/restore",
+  TokenValidation(),
+  EnsureAdmin(),
+  admin_restore_account
 );
 
 export default router;

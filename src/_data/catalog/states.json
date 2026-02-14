@@ -1,0 +1,692 @@
+[
+  {
+    "id": 1,
+    "country_id": 36,
+    "name": "NSW"
+  },
+  {
+    "id": 2,
+    "country_id": 36,
+    "name": "VIC"
+  },
+  {
+    "id": 3,
+    "country_id": 36,
+    "name": "QLD"
+  },
+  {
+    "id": 4,
+    "country_id": 36,
+    "name": "SA"
+  },
+  {
+    "id": 5,
+    "country_id": 36,
+    "name": "WA"
+  },
+  {
+    "id": 6,
+    "country_id": 36,
+    "name": "TAS"
+  },
+  {
+    "id": 7,
+    "country_id": 36,
+    "name": "ACT"
+  },
+  {
+    "id": 8,
+    "country_id": 36,
+    "name": "NT"
+  },
+  {
+    "id": 9,
+    "country_id": 170,
+    "name": "Antioquia"
+  },
+  {
+    "id": 10,
+    "country_id": 170,
+    "name": "Cundinamarca"
+  },
+  {
+    "id": 11,
+    "country_id": 170,
+    "name": "Valle del Cauca"
+  },
+  {
+    "id": 12,
+    "country_id": 170,
+    "name": "Atlantico"
+  },
+  {
+    "id": 13,
+    "country_id": 170,
+    "name": "Bolivar"
+  },
+  {
+    "id": 14,
+    "country_id": 170,
+    "name": "Santander"
+  },
+  {
+    "id": 15,
+    "country_id": 170,
+    "name": "Norte de Santander"
+  },
+  {
+    "id": 16,
+    "country_id": 170,
+    "name": "Risaralda"
+  },
+  {
+    "id": 17,
+    "country_id": 170,
+    "name": "Quindio"
+  },
+  {
+    "id": 18,
+    "country_id": 170,
+    "name": "Tolima"
+  },
+  {
+    "id": 19,
+    "country_id": 170,
+    "name": "Huila"
+  },
+  {
+    "id": 20,
+    "country_id": 170,
+    "name": "Magdalena"
+  },
+  {
+    "id": 21,
+    "country_id": 170,
+    "name": "Meta"
+  },
+  {
+    "id": 22,
+    "country_id": 170,
+    "name": "Cesar"
+  },
+  {
+    "id": 23,
+    "country_id": 170,
+    "name": "Caldas"
+  },
+  {
+    "id": 24,
+    "country_id": 591,
+    "name": "Panama"
+  },
+  {
+    "id": 25,
+    "country_id": 591,
+    "name": "Panama Oeste"
+  },
+  {
+    "id": 26,
+    "country_id": 591,
+    "name": "Colon"
+  },
+  {
+    "id": 27,
+    "country_id": 591,
+    "name": "Chiriqui"
+  },
+  {
+    "id": 28,
+    "country_id": 591,
+    "name": "Veraguas"
+  },
+  {
+    "id": 29,
+    "country_id": 591,
+    "name": "Los Santos"
+  },
+  {
+    "id": 30,
+    "country_id": 591,
+    "name": "Herrera"
+  },
+  {
+    "id": 31,
+    "country_id": 591,
+    "name": "Cocle"
+  },
+  {
+    "id": 32,
+    "country_id": 591,
+    "name": "Bocas del Toro"
+  },
+  {
+    "id": 33,
+    "country_id": 591,
+    "name": "Darien"
+  },
+  {
+    "id": 34,
+    "country_id": 840,
+    "name": "AL",
+    "code": "AL"
+  },
+  {
+    "id": 35,
+    "country_id": 840,
+    "name": "AK",
+    "code": "AK"
+  },
+  {
+    "id": 36,
+    "country_id": 840,
+    "name": "AZ",
+    "code": "AZ"
+  },
+  {
+    "id": 37,
+    "country_id": 840,
+    "name": "AR",
+    "code": "AR"
+  },
+  {
+    "id": 38,
+    "country_id": 840,
+    "name": "CA",
+    "code": "CA"
+  },
+  {
+    "id": 39,
+    "country_id": 840,
+    "name": "CO",
+    "code": "CO"
+  },
+  {
+    "id": 40,
+    "country_id": 840,
+    "name": "CT",
+    "code": "CT"
+  },
+  {
+    "id": 41,
+    "country_id": 840,
+    "name": "DE",
+    "code": "DE"
+  },
+  {
+    "id": 42,
+    "country_id": 840,
+    "name": "FL",
+    "code": "FL"
+  },
+  {
+    "id": 43,
+    "country_id": 840,
+    "name": "GA",
+    "code": "GA"
+  },
+  {
+    "id": 44,
+    "country_id": 840,
+    "name": "HI",
+    "code": "HI"
+  },
+  {
+    "id": 45,
+    "country_id": 840,
+    "name": "ID",
+    "code": "ID"
+  },
+  {
+    "id": 46,
+    "country_id": 840,
+    "name": "IL",
+    "code": "IL"
+  },
+  {
+    "id": 47,
+    "country_id": 840,
+    "name": "IN",
+    "code": "IN"
+  },
+  {
+    "id": 48,
+    "country_id": 840,
+    "name": "IA",
+    "code": "IA"
+  },
+  {
+    "id": 49,
+    "country_id": 840,
+    "name": "KS",
+    "code": "KS"
+  },
+  {
+    "id": 50,
+    "country_id": 840,
+    "name": "KY",
+    "code": "KY"
+  },
+  {
+    "id": 51,
+    "country_id": 840,
+    "name": "LA",
+    "code": "LA"
+  },
+  {
+    "id": 52,
+    "country_id": 840,
+    "name": "ME",
+    "code": "ME"
+  },
+  {
+    "id": 53,
+    "country_id": 840,
+    "name": "MD",
+    "code": "MD"
+  },
+  {
+    "id": 54,
+    "country_id": 840,
+    "name": "MA",
+    "code": "MA"
+  },
+  {
+    "id": 55,
+    "country_id": 840,
+    "name": "MI",
+    "code": "MI"
+  },
+  {
+    "id": 56,
+    "country_id": 840,
+    "name": "MN",
+    "code": "MN"
+  },
+  {
+    "id": 57,
+    "country_id": 840,
+    "name": "MS",
+    "code": "MS"
+  },
+  {
+    "id": 58,
+    "country_id": 840,
+    "name": "MO",
+    "code": "MO"
+  },
+  {
+    "id": 59,
+    "country_id": 840,
+    "name": "MT",
+    "code": "MT"
+  },
+  {
+    "id": 60,
+    "country_id": 840,
+    "name": "NE",
+    "code": "NE"
+  },
+  {
+    "id": 61,
+    "country_id": 840,
+    "name": "NV",
+    "code": "NV"
+  },
+  {
+    "id": 62,
+    "country_id": 840,
+    "name": "NH",
+    "code": "NH"
+  },
+  {
+    "id": 63,
+    "country_id": 840,
+    "name": "NJ",
+    "code": "NJ"
+  },
+  {
+    "id": 64,
+    "country_id": 840,
+    "name": "NM",
+    "code": "NM"
+  },
+  {
+    "id": 65,
+    "country_id": 840,
+    "name": "NY",
+    "code": "NY"
+  },
+  {
+    "id": 66,
+    "country_id": 840,
+    "name": "NC",
+    "code": "NC"
+  },
+  {
+    "id": 67,
+    "country_id": 840,
+    "name": "ND",
+    "code": "ND"
+  },
+  {
+    "id": 68,
+    "country_id": 840,
+    "name": "OH",
+    "code": "OH"
+  },
+  {
+    "id": 69,
+    "country_id": 840,
+    "name": "OK",
+    "code": "OK"
+  },
+  {
+    "id": 70,
+    "country_id": 840,
+    "name": "OR",
+    "code": "OR"
+  },
+  {
+    "id": 71,
+    "country_id": 840,
+    "name": "PA",
+    "code": "PA"
+  },
+  {
+    "id": 72,
+    "country_id": 840,
+    "name": "RI",
+    "code": "RI"
+  },
+  {
+    "id": 73,
+    "country_id": 840,
+    "name": "SC",
+    "code": "SC"
+  },
+  {
+    "id": 74,
+    "country_id": 840,
+    "name": "SD",
+    "code": "SD"
+  },
+  {
+    "id": 75,
+    "country_id": 840,
+    "name": "TN",
+    "code": "TN"
+  },
+  {
+    "id": 76,
+    "country_id": 840,
+    "name": "TX",
+    "code": "TX"
+  },
+  {
+    "id": 77,
+    "country_id": 840,
+    "name": "UT",
+    "code": "UT"
+  },
+  {
+    "id": 78,
+    "country_id": 840,
+    "name": "VT",
+    "code": "VT"
+  },
+  {
+    "id": 79,
+    "country_id": 840,
+    "name": "VA",
+    "code": "VA"
+  },
+  {
+    "id": 80,
+    "country_id": 840,
+    "name": "WA",
+    "code": "WA"
+  },
+  {
+    "id": 81,
+    "country_id": 840,
+    "name": "WV",
+    "code": "WV"
+  },
+  {
+    "id": 82,
+    "country_id": 840,
+    "name": "WI",
+    "code": "WI"
+  },
+  {
+    "id": 83,
+    "country_id": 840,
+    "name": "WY",
+    "code": "WY"
+  },
+  {
+    "id": 84,
+    "country_id": 484,
+    "name": "CDMX"
+  },
+  {
+    "id": 85,
+    "country_id": 484,
+    "name": "Estado de Mexico"
+  },
+  {
+    "id": 86,
+    "country_id": 484,
+    "name": "Jalisco"
+  },
+  {
+    "id": 87,
+    "country_id": 484,
+    "name": "Nuevo Leon"
+  },
+  {
+    "id": 88,
+    "country_id": 484,
+    "name": "Puebla"
+  },
+  {
+    "id": 89,
+    "country_id": 484,
+    "name": "Guanajuato"
+  },
+  {
+    "id": 90,
+    "country_id": 484,
+    "name": "Veracruz"
+  },
+  {
+    "id": 91,
+    "country_id": 484,
+    "name": "Queretaro"
+  },
+  {
+    "id": 92,
+    "country_id": 484,
+    "name": "Baja California"
+  },
+  {
+    "id": 93,
+    "country_id": 484,
+    "name": "Yucatan"
+  },
+  {
+    "id": 94,
+    "country_id": 484,
+    "name": "Chihuahua"
+  },
+  {
+    "id": 95,
+    "country_id": 484,
+    "name": "Sonora"
+  },
+  {
+    "id": 96,
+    "country_id": 554,
+    "name": "Auckland Region"
+  },
+  {
+    "id": 97,
+    "country_id": 554,
+    "name": "Wellington Region"
+  },
+  {
+    "id": 98,
+    "country_id": 554,
+    "name": "Canterbury"
+  },
+  {
+    "id": 99,
+    "country_id": 554,
+    "name": "Otago"
+  },
+  {
+    "id": 100,
+    "country_id": 554,
+    "name": "Waikato"
+  },
+  {
+    "id": 101,
+    "country_id": 554,
+    "name": "Bay of Plenty"
+  },
+  {
+    "id": 102,
+    "country_id": 554,
+    "name": "Hawkes Bay"
+  },
+  {
+    "id": 103,
+    "country_id": 554,
+    "name": "Northland"
+  },
+  {
+    "id": 104,
+    "country_id": 554,
+    "name": "Southland"
+  },
+  {
+    "id": 105,
+    "country_id": 724,
+    "name": "Madrid"
+  },
+  {
+    "id": 106,
+    "country_id": 724,
+    "name": "Cataluna"
+  },
+  {
+    "id": 107,
+    "country_id": 724,
+    "name": "Andalucia"
+  },
+  {
+    "id": 108,
+    "country_id": 724,
+    "name": "Comunidad Valenciana"
+  },
+  {
+    "id": 109,
+    "country_id": 724,
+    "name": "Galicia"
+  },
+  {
+    "id": 110,
+    "country_id": 724,
+    "name": "Pais Vasco"
+  },
+  {
+    "id": 111,
+    "country_id": 724,
+    "name": "Castilla y Leon"
+  },
+  {
+    "id": 112,
+    "country_id": 724,
+    "name": "Castilla-La Mancha"
+  },
+  {
+    "id": 113,
+    "country_id": 724,
+    "name": "Aragon"
+  },
+  {
+    "id": 114,
+    "country_id": 724,
+    "name": "Canarias"
+  },
+  {
+    "id": 115,
+    "country_id": 724,
+    "name": "Baleares"
+  },
+  {
+    "id": 116,
+    "country_id": 124,
+    "name": "Ontario"
+  },
+  {
+    "id": 117,
+    "country_id": 124,
+    "name": "Quebec"
+  },
+  {
+    "id": 118,
+    "country_id": 124,
+    "name": "British Columbia"
+  },
+  {
+    "id": 119,
+    "country_id": 124,
+    "name": "Alberta"
+  },
+  {
+    "id": 120,
+    "country_id": 124,
+    "name": "Manitoba"
+  },
+  {
+    "id": 121,
+    "country_id": 124,
+    "name": "Saskatchewan"
+  },
+  {
+    "id": 122,
+    "country_id": 124,
+    "name": "Nova Scotia"
+  },
+  {
+    "id": 123,
+    "country_id": 124,
+    "name": "New Brunswick"
+  },
+  {
+    "id": 124,
+    "country_id": 124,
+    "name": "Newfoundland & Labrador"
+  },
+  {
+    "id": 125,
+    "country_id": 124,
+    "name": "Prince Edward Island"
+  },
+  {
+    "id": 126,
+    "country_id": 124,
+    "name": "Yukon"
+  },
+  {
+    "id": 127,
+    "country_id": 124,
+    "name": "Northwest Territories"
+  },
+  {
+    "id": 128,
+    "country_id": 124,
+    "name": "Nunavut"
+  }
+]

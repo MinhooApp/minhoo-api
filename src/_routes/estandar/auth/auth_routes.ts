@@ -41,12 +41,15 @@ const checkDisabledBeforeLogin = async (req: any, res: any, next: any) => {
       disabledValue === true ||
       disabledValue === 1 ||
       disabledValue === "1";
+    const isDeleted = (user as any)?.is_deleted === true || (user as any)?.is_deleted === 1;
 
-    if (user && isDisabled) {
+    if (user && (isDisabled || isDeleted)) {
       return res.status(403).json({
         header: { success: false },
         body: {
-          message: "Tu cuenta ha sido bloqueada por el administrador.",
+          message: isDeleted
+            ? "Tu cuenta ha sido eliminada."
+            : "Tu cuenta ha sido bloqueada por el administrador.",
         },
       });
     }

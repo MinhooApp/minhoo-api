@@ -246,7 +246,7 @@ export const socketController = (socket: Socket) => {
           messageId,
           type: "message",
           message: notificationBody,
-          senderName: `ID: ${userId}`,
+          senderName: "New reaction",
         });
       }
     } catch (e) {

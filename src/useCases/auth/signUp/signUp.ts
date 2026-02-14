@@ -315,18 +315,33 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
 
   try {
     const user = await repository.findByEmail(email);
-    if (user !== null && user !== undefined) {
-      await uRepository.update(user.id, body);
+    if (user === null || user === undefined) {
+      return formatResponse({
+        res: res,
+        success: false,
+        code: 404,
+        message: "user not found",
+      });
+    }
 
-      const emailParams = {
-        subject: "reset password",
-        email: email,
-        htmlPath: "./src/public/html/email/reset_your_password.html",
-        replacements: [{ code: code, name: user!.name }],
-        from: "Minhoo App",
-      };
+    await uRepository.update(user.id, body);
 
-      sendEmail(emailParams);
+    const emailParams = {
+      subject: "reset password",
+      email: email,
+      htmlPath: "./src/public/html/email/reset_your_password.html",
+      replacements: [{ code: code, name: user!.name }],
+      from: "Minhoo App",
+    };
+
+    const sent = await sendEmail(emailParams);
+    if (!sent) {
+      return formatResponse({
+        res: res,
+        success: false,
+        code: 500,
+        message: "failed to send reset email",
+      });
     }
 
     return formatResponse({

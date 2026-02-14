@@ -61,6 +61,11 @@ export const initNewChat = async (
   const me = Number(currentUserId);
   const other = Number(otherUserId);
 
+  const otherUser = await User.findByPk(other);
+  if ((otherUser as any)?.is_deleted) {
+    return null;
+  }
+
   if (await isBlockedEitherWay(me, other)) {
     // lo ideal es que tu controller convierta esto a 403
     return null;
@@ -171,6 +176,9 @@ export const getChatByUser = async (
   const me = Number(currentUserId);
   const other = Number(otherUserId);
 
+  const otherUser = await User.findByPk(other);
+  if ((otherUser as any)?.is_deleted) return [];
+
   if (await isBlockedEitherWay(me, other)) return [];
 
   const existingChat = await chatExist(me, other);
@@ -238,6 +246,7 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
   // Este where se aplica al â€œotro usuarioâ€ dentro del chat
   const userWhere: any = {
     id: { [Op.ne]: uid },
+    is_deleted: false,
   };
 
   if (useBlockFilter) {

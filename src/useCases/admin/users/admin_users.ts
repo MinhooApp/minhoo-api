@@ -44,3 +44,23 @@ export const admin_enable_account = async (req: Request, res: Response) => {
     return formatResponse({ res, success: false, message: error });
   }
 };
+
+/**
+ * ✅ Reactiva una cuenta eliminada (soft delete).
+ */
+export const admin_restore_account = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+
+    const result = await (repository as any).admin_restore_deleted?.(id);
+
+    return formatResponse({
+      res,
+      success: true,
+      message: result ?? { id, restored: true },
+    });
+  } catch (error) {
+    console.error("admin_restore_account error:", error);
+    return formatResponse({ res, success: false, message: error });
+  }
+};

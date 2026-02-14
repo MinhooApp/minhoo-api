@@ -12,6 +12,7 @@ import comment_routes from "./estandar/comment/comment_routes";
 import service_routes from "./estandar/service/service_routes";
 import category_routes from "./estandar/category/category_routes";
 import notification_routes from "./estandar/notification/notification_routes";
+import catalog_routes from "./estandar/catalog/catalog_routes";
 
 // 👇 Importa rutas comunes (ping, healthcheck)
 import common_routes from "./common";
@@ -36,6 +37,7 @@ export class AppRoutes {
     router.use("/api/v1/comment", comment_routes);
     router.use("/api/v1/category", category_routes);
     router.use("/api/v1/notification", notification_routes);
+    router.use("/api/v1/catalog", catalog_routes);
 
     // -----------------------------
     // 🔹 RUTAS ADMINISTRATIVAS

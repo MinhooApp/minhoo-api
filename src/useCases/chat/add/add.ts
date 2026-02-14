@@ -44,9 +44,9 @@ const buildFullName = (sender: any): string => {
   return fullName;
 };
 
-const buildSenderTitle = (senderId: number, fullName: string): string => {
+const buildSenderTitle = (_senderId: number, fullName: string): string => {
   const name = (fullName || "").trim();
-  return name ? `ID: ${senderId}\n${name}` : `ID: ${senderId}`;
+  return name ? name : "Nuevo mensaje";
 };
 
 export const sendMessage = async (req: Request, res: Response) => {
@@ -131,7 +131,7 @@ export const sendMessage = async (req: Request, res: Response) => {
       }
     }
 
-    // title final con ID arriba
+    // title final sin ID
     const senderName = buildSenderTitle(senderId, fullName || "Nuevo mensaje");
 
     const rawPreview = (message ?? "").toString().trim();

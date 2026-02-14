@@ -3,6 +3,7 @@ import {
   Response,
   formatResponse,
   repository,
+  followerRepo,
 } from "../_module/module";
 
 export const gets = async (req: Request, res: Response) => {
@@ -29,7 +30,56 @@ export const get = async (req: Request, res: Response) => {
 
   try {
     const user = await repository.get(id, req.userId);
-    return formatResponse({ res: res, success: true, body: { user } });
+    if (user) {
+      const counts = await followerRepo.getCounts(Number((user as any).id));
+      if (typeof (user as any).setDataValue === "function") {
+        (user as any).setDataValue("followers_count", counts.followersCount);
+        (user as any).setDataValue("followings_count", counts.followingCount);
+      } else {
+        (user as any).followers_count = counts.followersCount;
+        (user as any).followings_count = counts.followingCount;
+      }
+    }
+    const breakdown = {
+      name: !!user?.name,
+      last_name: !!user?.last_name,
+      image_profil: !!user?.image_profil,
+      username: !!user?.username,
+      phone: !!user?.phone && !!user?.dialing_code,
+      about: !!user?.about,
+      job_preferences:
+        Array.isArray((user as any)?.job_category_ids) &&
+        (user as any).job_category_ids.length > 0,
+      languages:
+        Array.isArray((user as any)?.language_ids) &&
+        (user as any).language_ids.length > 0,
+      country_origin_id: !!(user as any)?.country_origin_id,
+      country_residence_id: !!(user as any)?.country_residence_id,
+    };
+
+    const percent =
+      (breakdown.name ? 10 : 0) +
+      (breakdown.last_name ? 10 : 0) +
+      (breakdown.image_profil ? 10 : 0) +
+      (breakdown.username ? 20 : 0) +
+      (breakdown.phone ? 10 : 0) +
+      (breakdown.about ? 10 : 0) +
+      (breakdown.job_preferences ? 10 : 0) +
+      (breakdown.languages ? 10 : 0) +
+      (breakdown.country_origin_id ? 5 : 0) +
+      (breakdown.country_residence_id ? 5 : 0);
+
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        user,
+        profile_completion: {
+          percent,
+          breakdown,
+        },
+      },
+    });
   } catch (error) {
     console.log(req.userId);
     return formatResponse({ res: res, success: false, message: error });
@@ -39,7 +89,104 @@ export const get = async (req: Request, res: Response) => {
 export const myData = async (req: Request, res: Response) => {
   try {
     const user = await repository.get(req.userId);
-    return formatResponse({ res: res, success: true, body: { user } });
+    if (user) {
+      const counts = await followerRepo.getCounts(Number((user as any).id));
+      if (typeof (user as any).setDataValue === "function") {
+        (user as any).setDataValue("followers_count", counts.followersCount);
+        (user as any).setDataValue("followings_count", counts.followingCount);
+      } else {
+        (user as any).followers_count = counts.followersCount;
+        (user as any).followings_count = counts.followingCount;
+      }
+    }
+    const breakdown = {
+      name: !!user?.name,
+      last_name: !!user?.last_name,
+      image_profil: !!user?.image_profil,
+      username: !!user?.username,
+      phone: !!user?.phone && !!user?.dialing_code,
+      about: !!user?.about,
+      job_preferences:
+        Array.isArray((user as any)?.job_category_ids) &&
+        (user as any).job_category_ids.length > 0,
+      languages:
+        Array.isArray((user as any)?.language_ids) &&
+        (user as any).language_ids.length > 0,
+      country_origin_id: !!(user as any)?.country_origin_id,
+      country_residence_id: !!(user as any)?.country_residence_id,
+    };
+
+    const percent =
+      (breakdown.name ? 10 : 0) +
+      (breakdown.last_name ? 10 : 0) +
+      (breakdown.image_profil ? 10 : 0) +
+      (breakdown.username ? 20 : 0) +
+      (breakdown.phone ? 10 : 0) +
+      (breakdown.about ? 10 : 0) +
+      (breakdown.job_preferences ? 10 : 0) +
+      (breakdown.languages ? 10 : 0) +
+      (breakdown.country_origin_id ? 5 : 0) +
+      (breakdown.country_residence_id ? 5 : 0);
+
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        user,
+        profile_completion: {
+          percent,
+          breakdown,
+        },
+      },
+    });
+  } catch (error) {
+    console.log(req.userId);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
+export const profile_completion = async (req: Request, res: Response) => {
+  try {
+    const user = await repository.get(req.userId);
+    const breakdown = {
+      name: !!user?.name,
+      last_name: !!user?.last_name,
+      image_profil: !!user?.image_profil,
+      username: !!user?.username,
+      phone: !!user?.phone && !!user?.dialing_code,
+      about: !!user?.about,
+      job_preferences:
+        Array.isArray((user as any)?.job_category_ids) &&
+        (user as any).job_category_ids.length > 0,
+      languages:
+        Array.isArray((user as any)?.language_ids) &&
+        (user as any).language_ids.length > 0,
+      country_origin_id: !!(user as any)?.country_origin_id,
+      country_residence_id: !!(user as any)?.country_residence_id,
+    };
+
+    const percent =
+      (breakdown.name ? 10 : 0) +
+      (breakdown.last_name ? 10 : 0) +
+      (breakdown.image_profil ? 10 : 0) +
+      (breakdown.username ? 20 : 0) +
+      (breakdown.phone ? 10 : 0) +
+      (breakdown.about ? 10 : 0) +
+      (breakdown.job_preferences ? 10 : 0) +
+      (breakdown.languages ? 10 : 0) +
+      (breakdown.country_origin_id ? 5 : 0) +
+      (breakdown.country_residence_id ? 5 : 0);
+
+    return formatResponse({
+      res,
+      success: true,
+      body: {
+        profile_completion: {
+          percent,
+          breakdown,
+        },
+      },
+    });
   } catch (error) {
     console.log(req.userId);
     return formatResponse({ res: res, success: false, message: error });
@@ -90,6 +237,191 @@ export const validatePhone = async (req: Request, res: Response) => {
   } catch (error) {
     console.error("Error in validatePhone:", error);
     return formatResponse({ res, success: false, message: "Internal server error" });
+  }
+};
+
+const normalizeUsername = (raw: any) => {
+  const trimmed = String(raw ?? "").trim();
+  const normalized = trimmed.toLowerCase();
+  return normalized;
+};
+
+const isValidUsername = (username: string) => {
+  if (username.length < 1 || username.length > 30) return false;
+  return /^[a-z0-9._]+$/.test(username);
+};
+
+const buildSuggestions = async (base: string, excludeUserId?: number) => {
+  const suggestions: string[] = [];
+  const max = 5;
+  let counter = 1;
+
+  while (suggestions.length < max && counter <= 30) {
+    const suffix = String(100 + counter);
+    const candidate = `${base}`.slice(0, 30 - suffix.length) + suffix;
+    const available = !(await repository.findByUsernameLower(candidate, excludeUserId));
+    if (available && !suggestions.includes(candidate)) suggestions.push(candidate);
+    counter += 1;
+  }
+
+  return suggestions.slice(0, 5);
+};
+
+export const check_username = async (req: Request, res: Response) => {
+  try {
+    const input = (req.query as any)?.username;
+    const username = normalizeUsername(
+      String(input ?? "").replace(/^@/, "")
+    );
+
+    if (!username || !isValidUsername(username)) {
+      return formatResponse({
+        res,
+        success: true,
+        body: { available: false, suggested: [] },
+      });
+    }
+
+    const existing = await repository.findByUsernameLower(username);
+    if (!existing) {
+      return formatResponse({
+        res,
+        success: true,
+        body: { available: true },
+      });
+    }
+
+    const suggested = await buildSuggestions(username);
+    return formatResponse({
+      res,
+      success: true,
+      body: { available: false, suggested },
+    });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
+export const get_username = async (req: Request, res: Response) => {
+  try {
+    const raw = (req.params as any)?.username;
+    const username = normalizeUsername(String(raw ?? "").replace(/^@/, ""));
+
+    if (!username || !isValidUsername(username)) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "invalid username",
+      });
+    }
+
+    const existing = await repository.findByUsernameLower(username);
+    if (!existing) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 404,
+        message: "username not found",
+      });
+    }
+
+    return formatResponse({
+      res,
+      success: true,
+      body: { id: existing.id, username: existing.username },
+    });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
+export const followers_v2 = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const cursorRaw = (req.query as any)?.cursor;
+    const limitRaw = (req.query as any)?.limit;
+    const targetId = Number(id ?? req.userId);
+
+    if (!Number.isFinite(targetId)) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "id must be a valid number",
+      });
+    }
+
+    const items = await followerRepo.listFollowersWithFlags(targetId, req.userId ?? null, {
+      cursor: cursorRaw ? Number(cursorRaw) : null,
+      limit: limitRaw ? Number(limitRaw) : undefined,
+    });
+
+    return formatResponse({ res, success: true, body: { followers: items } });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
+export const following_v2 = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const cursorRaw = (req.query as any)?.cursor;
+    const limitRaw = (req.query as any)?.limit;
+    const targetId = Number(id ?? req.userId);
+
+    if (!Number.isFinite(targetId)) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "id must be a valid number",
+      });
+    }
+
+    const items = await followerRepo.listFollowingWithFlags(targetId, req.userId ?? null, {
+      cursor: cursorRaw ? Number(cursorRaw) : null,
+      limit: limitRaw ? Number(limitRaw) : undefined,
+    });
+
+    return formatResponse({ res: res, success: true, body: { following: items } });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
+export const relationship = async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const targetId = Number(id);
+
+    if (!Number.isFinite(targetId)) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "id must be a valid number",
+      });
+    }
+
+    if (!req.userId) {
+      return formatResponse({
+        res,
+        success: true,
+        body: { isFollowing: false, isFollowedBy: false, isMutual: false },
+      });
+    }
+
+    const result = await followerRepo.getRelationship(req.userId, targetId);
+
+    return formatResponse({ res, success: true, body: result });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res: res, success: false, message: error });
   }
 };
 

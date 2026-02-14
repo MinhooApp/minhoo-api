@@ -35,7 +35,15 @@ Follower.init(
         },
     },
     {
-        sequelize, modelName: 'follower'
+        sequelize,
+        modelName: 'follower',
+        indexes: [
+            {
+                unique: true,
+                fields: ['userId', 'followerId'],
+                name: 'uniq_follow_user_follower'
+            }
+        ]
     }
 );
 export default Follower;

@@ -24,6 +24,16 @@ export const login = async (req: Request, res: Response) => {
         message: "User and/or Password not valid.",
       });
     }
+    if ((userTemp as any).is_deleted === true || (userTemp as any).is_deleted === 1) {
+      return formatResponse({
+        islogin: true,
+        res: res,
+        success: false,
+        code: 403,
+        message:
+          "Your account has been deleted. Please contact info@minhoo.app to reactivate your account.",
+      });
+    }
     const validatePass = bcryptjs.compareSync(
       String(password),
       userTemp.password

@@ -30,7 +30,7 @@ const notBlockedBetweenMeAndTarget = () =>
 /* 🔹 Lista de todos los usuarios activos (no deshabilitados por la empresa) */
 export const gets = async () => {
   const user = await User.findAll({
-    where: { available: true, disabled: false },
+    where: { available: true, disabled: false, is_deleted: false },
     include: userIncludes(),
   });
   return user;
@@ -40,7 +40,7 @@ export const gets = async () => {
 export const users = async (page: any = 0, size: any = 10) => {
   const option = { limit: +size, offset: +page * +size };
   const users = await User.findAndCountAll({
-    where: { available: 1, disabled: false },
+    where: { available: 1, disabled: false, is_deleted: false },
     ...option,
     include: userIncludes(),
   });
@@ -55,6 +55,7 @@ export const get = async (id: any, meId: any = -1) => {
     where: {
       id,
       disabled: false,
+      is_deleted: false,
       [Op.and]: [notBlockedBetweenMeAndTarget()],
     },
     include: [
@@ -131,7 +132,15 @@ export const follows = async (id: any, meId: any = -1) => {
       {
         model: User,
         as: "following_data",
-        attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+        attributes: [
+          "id",
+          "name",
+          "last_name",
+          "image_profil",
+          "verified",
+          "rate",
+          "username",
+        ],
         where: { disabled: false },
         include: [
           {
@@ -186,7 +195,15 @@ export const followers = async (id: any, meId: any = -1) => {
       {
         model: User,
         as: "follower_data",
-        attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+        attributes: [
+          "id",
+          "name",
+          "last_name",
+          "image_profil",
+          "verified",
+          "rate",
+          "username",
+        ],
         where: { disabled: false },
         include: [
           {
@@ -220,7 +237,7 @@ export const followers = async (id: any, meId: any = -1) => {
 
 /* 🔹 Devuelve el UUID si el usuario tiene alertas activas */
 export const getUuid = async (id: number) => {
-  const user = await User.findOne({ where: { id, alert: true } });
+  const user = await User.findOne({ where: { id, alert: true, is_deleted: false } });
   return user?.uuid;
 };
 
@@ -288,7 +305,7 @@ export const get_blocked_users = async (blocker_id: any) => {
 
   const users = await User.findAll({
     where: { id: ids, disabled: false },
-    attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+    attributes: ["id", "name", "last_name", "image_profil", "verified", "rate", "username"],
   });
 
   // mantener orden del bloqueo (createdAt DESC)
@@ -314,7 +331,7 @@ export const get_users_who_blocked_me = async (blocked_id: any) => {
 
   const users = await User.findAll({
     where: { id: ids, disabled: false },
-    attributes: ["id", "name", "last_name", "image_profil", "verified", "rate"],
+    attributes: ["id", "name", "last_name", "image_profil", "verified", "rate", "username"],
   });
 
   const orderMap = new Map(ids.map((id: number, idx: number) => [id, idx]));
@@ -323,10 +340,50 @@ export const get_users_who_blocked_me = async (blocked_id: any) => {
   return users;
 };
 
+export const getUserById = async (id: number) => {
+  return User.findByPk(id);
+};
+
+export const findByUsernameLower = async (usernameLower: string, excludeUserId?: number) => {
+  const where: any = {
+    [Op.and]: [Sequelize.where(Sequelize.fn("lower", Sequelize.col("username")), usernameLower)],
+  };
+
+  if (excludeUserId) {
+    where.id = { [Op.ne]: excludeUserId };
+  }
+
+  return User.findOne({
+    where,
+    attributes: ["id", "username", "username_updated_at"],
+  });
+};
+
+export const updateUsername = async (id: number, username: string) => {
+  await User.update(
+    { username, username_updated_at: new Date() },
+    {
+      where: { id },
+    }
+  );
+
+  return User.findByPk(id);
+};
+
 /* 🔹 Bloqueo global a nivel empresa (solo admin) */
 export const admin_set_disabled = async (id: number, disabled: boolean) => {
   const [affected] = await User.update({ disabled }, { where: { id } });
   return affected ? { id, disabled } : { id, disabled, notFound: true };
+};
+
+export const admin_restore_deleted = async (id: number) => {
+  const [affected] = await User.update(
+    { is_deleted: false, deleted_at: null, available: true, disabled: false },
+    { where: { id } }
+  );
+  return affected
+    ? { id, restored: true }
+    : { id, restored: false, notFound: true };
 };
 
 export const activeUser = async (id: any) => {

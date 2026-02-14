@@ -17,7 +17,11 @@ export const gets = async () => {
   return worker;
 };
 
-export const workers = async (page: any, size: any, meId: any = -1) => {
+export const workers = async (
+  page: any,
+  size: any,
+  meId: any = -1
+) => {
   const option = {
     limit: +size,
     offset: +page * +size,
@@ -57,12 +61,11 @@ export const update = async (id: any, body: any) => {
   });
 
   const worker = await workerTemp?.update(body);
-  // Obtener las categorías actuales del trabajador
-  const currentCategories = await worker?.getCategories();
-  // Eliminar las categorías actuales del trabajador
-  await worker?.removeCategories(currentCategories);
-  // Asociar las nuevas categorías al trabajador
-  await worker?.addCategories(body.categories);
+  if (Array.isArray(body.categories)) {
+    const currentCategories = await worker?.getCategories();
+    await worker?.removeCategories(currentCategories);
+    await worker?.addCategories(body.categories);
+  }
   return worker;
 };
 export const visibleProfile = async (id: any, body: any) => {
@@ -137,3 +140,5 @@ export const deleteImageProfil = async (id: any) => {
     { where: { id: id } }
   );
 };
+
+
