@@ -12,7 +12,21 @@ import {
 export const login = async (req: Request, res: Response) => {
   try {
     const roles: any = []; //
-    const { email, password, uuid } = req.body;
+    const email = String(req.body?.email ?? "").trim();
+    const inputPassword = String(
+      req.body?.password ?? req.body?.clave ?? req.body?.pass ?? ""
+    );
+    const { uuid } = req.body;
+
+    if (!email || !inputPassword) {
+      return formatResponse({
+        islogin: true,
+        res: res,
+        success: false,
+        message: "User and/or Password not valid.",
+      });
+    }
+
     //Validar Existencia de Usuario
     const userTemp = await repository.findByEmail(email);
     if (!userTemp) {
@@ -34,10 +48,33 @@ export const login = async (req: Request, res: Response) => {
           "Your account has been deleted. Please contact info@minhoo.app to reactivate your account.",
       });
     }
-    const validatePass = bcryptjs.compareSync(
-      String(password),
-      userTemp.password
-    );
+    const storedPassword = String(userTemp.password ?? "");
+    if (!storedPassword) {
+      return formatResponse({
+        islogin: true,
+        res: res,
+        success: false,
+        message: "User and/or Password not valid.",
+      });
+    }
+
+    let validatePass = false;
+    let shouldUpgradeToHash = false;
+
+    try {
+      const looksLikeHash = /^\$2[aby]\$\d{2}\$/.test(storedPassword);
+      if (looksLikeHash) {
+        validatePass = bcryptjs.compareSync(inputPassword, storedPassword);
+      } else {
+        // Compatibilidad con cuentas antiguas que aún tienen clave en texto plano.
+        validatePass = storedPassword === inputPassword;
+        shouldUpgradeToHash = validatePass;
+      }
+    } catch (_error) {
+      // Si el valor guardado no es un hash válido, probamos comparación directa.
+      validatePass = storedPassword === inputPassword;
+      shouldUpgradeToHash = validatePass;
+    }
 
     if (!validatePass) {
       return formatResponse({
@@ -47,6 +84,12 @@ export const login = async (req: Request, res: Response) => {
         message: "User and/or Password not valid.",
       });
     } else {
+      if (shouldUpgradeToHash) {
+        await uRepository.update(userTemp.id, {
+          password: generatePassword(inputPassword),
+        });
+      }
+
       userTemp?.roles.forEach((u: any) => {
         roles.push(u.id);
       });

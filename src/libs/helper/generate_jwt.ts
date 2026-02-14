@@ -25,9 +25,14 @@ const generarJWT = ({
             roles,
         };
 
+        const jwtSecret =
+            (process.env.SECRETORPRIVATEKEY ?? "").trim() ||
+            (process.env.JWT_SECRET ?? "").trim() ||
+            "tokenTest";
+
         jsonwebtoken.sign(
             payload,
-            process.env.SECRETORPRIVATEKEY || "",
+            jwtSecret,
             {
                 expiresIn: "365d",
             },
