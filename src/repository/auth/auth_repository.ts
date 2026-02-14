@@ -106,8 +106,23 @@ export const saveToken = async ({
     workerId: workerId,
   });
 
-  const body = { auth_token: token, uuid: uuid };
-  console.log("HOLAAA " + uuid);
+  const normalizedUuid = String(uuid ?? "").trim();
+  if (normalizedUuid) {
+    // Un mismo token de dispositivo solo debe pertenecer a una cuenta activa.
+    await User.update(
+      { uuid: null },
+      {
+        where: {
+          uuid: normalizedUuid,
+          id: { [Op.ne]: userId },
+        },
+      }
+    );
+  }
+
+  const body: any = { auth_token: token };
+  if (normalizedUuid) body.uuid = normalizedUuid;
+
   const userTemp = await User.findOne({
     where: {
       id: userId,
