@@ -19,6 +19,7 @@ Chat.init(
     {
         sequelize,
         modelName: 'Chat',
+        tableName: 'chats',
     }
 );
 
