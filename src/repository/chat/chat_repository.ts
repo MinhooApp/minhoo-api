@@ -10,7 +10,7 @@ import UserBlock from "../../_models/block/block";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 const MAX_MESSAGES_PER_CHAT = Math.max(
   1,
-  Number(process.env.CHAT_MAX_MESSAGES_PER_CHAT ?? 21) || 21
+  Number(process.env.CHAT_MAX_MESSAGES_PER_CHAT ?? 20) || 20
 );
 
 export const add = async (body: any) => {
