@@ -7,8 +7,12 @@ import {
 } from "../_module/module";
 
 export const myChats = async (req: Request, res: Response) => {
+  const startedAt = Date.now();
   try {
     const chats = await repository.getUserChats(req.userId, req.userId);
+    console.log(
+      `[perf][myChats] userId=${req.userId} chats=${Array.isArray(chats) ? chats.length : 0} totalMs=${Date.now() - startedAt}`
+    );
     return formatResponse({
       res,
       success: true,

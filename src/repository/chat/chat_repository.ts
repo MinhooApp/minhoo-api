@@ -299,35 +299,11 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
             model: User,
             as: "users",
             where: userWhere,
+            attributes: {
+              exclude: ["password", "auth_token", "temp_code", "created_temp_code"],
+            },
             through: { attributes: [] },
             required: true,
-          },
-          {
-            model: Message,
-            as: "messages",
-            required: false,
-            // âœ… solo el Ãºltimo mensaje visible para mÃ­
-            where: {
-              deletedBy: { [Op.in]: [0, uid] },
-            },
-            order: [
-              ["date", "DESC"],
-              ["id", "DESC"],
-            ],
-            limit: 1,
-            attributes: [
-              "id",
-              "chatId",
-              "senderId",
-              "text",
-              "date",
-              "deletedBy",
-              "status",
-              "deliveredAt",
-              "readAt",
-              "replyToMessageId",
-              "reactions",
-            ],
           },
         ],
       },
@@ -335,6 +311,47 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
     // âœ… replacements solo si usamos filtro
     ...(useBlockFilter ? { replacements: { me } } : {}),
   });
+
+  const chatIds = (chats as any[])
+    .map((row: any) => Number(row.chatId ?? row.get?.("chatId")))
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
+  const latestMessageByChatId = new Map<number, any>();
+  if (chatIds.length > 0) {
+    const latestCandidates = await Message.findAll({
+      where: {
+        chatId: { [Op.in]: chatIds },
+        deletedBy: { [Op.in]: [0, uid] },
+      },
+      attributes: [
+        "id",
+        "chatId",
+        "senderId",
+        "text",
+        "date",
+        "deletedBy",
+        "status",
+        "deliveredAt",
+        "readAt",
+        "replyToMessageId",
+        "reactions",
+      ],
+      order: [
+        ["chatId", "ASC"],
+        ["date", "DESC"],
+        ["id", "DESC"],
+      ],
+      raw: true,
+    });
+
+    for (const row of latestCandidates as any[]) {
+      const cid = Number(row.chatId);
+      if (!Number.isFinite(cid) || cid <= 0) continue;
+      if (!latestMessageByChatId.has(cid)) {
+        latestMessageByChatId.set(cid, row);
+      }
+    }
+  }
 
   const pinnedRows = await Chat_User.findAll({
     attributes: ["chatId", "pinnedAt", "pinnedOrder"],
@@ -356,6 +373,13 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
   for (const chat of chats as any[]) {
     const chatId = Number(chat.chatId ?? chat.get?.("chatId"));
     if (!Number.isFinite(chatId)) continue;
+    const lastMessage = latestMessageByChatId.get(chatId) ?? null;
+    if (chat.Chat) {
+      if (typeof chat.Chat.setDataValue === "function") {
+        chat.Chat.setDataValue("messages", lastMessage ? [lastMessage] : []);
+      }
+      chat.Chat.messages = lastMessage ? [lastMessage] : [];
+    }
     const pinned = pinnedByChatId.get(chatId);
     if (!pinned) continue;
     if (typeof chat.setDataValue === "function") {

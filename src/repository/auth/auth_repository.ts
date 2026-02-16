@@ -48,6 +48,19 @@ const userIncludes = [
     attributes: { exclude: excludeKeys },
   },
 ];
+const loginIncludes = [
+  {
+    model: Role,
+    as: "roles",
+    attributes: ["id"],
+    through: { attributes: [] },
+  },
+  {
+    model: Worker,
+    as: "worker",
+    attributes: ["id"],
+  },
+];
 export const add = async (body: any) => {
   const user = await User.create(body);
   await user.addRole(body.roles);
@@ -62,6 +75,14 @@ export const findByEmail = async (email: String) => {
   const user = await User.findOne({
     where: { email: email },
     include: userIncludes,
+  });
+  return user;
+};
+export const findByEmailForLogin = async (email: string) => {
+  const user = await User.findOne({
+    where: { email },
+    attributes: ["id", "email", "password", "is_deleted", "disabled", "available"],
+    include: loginIncludes,
   });
   return user;
 };
@@ -123,14 +144,12 @@ export const saveToken = async ({
   const body: any = { auth_token: token };
   if (normalizedUuid) body.uuid = normalizedUuid;
 
-  const userTemp = await User.findOne({
+  await User.update(body, {
     where: {
       id: userId,
       available: true,
     },
-    include: userIncludes,
   });
-  await userTemp?.update(body);
 
   const user = await User.findOne({
     where: { id: userId, available: true },

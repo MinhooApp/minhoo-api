@@ -12,6 +12,7 @@ import { getSocketInstance } from "../../../_sockets/socket_instance";
 import User from "../../../_models/user/user";
 
 export const login = async (req: Request, res: Response) => {
+  const startedAt = Date.now();
   try {
     const roles: any = []; //
     const email = String(req.body?.email ?? "").trim();
@@ -29,8 +30,10 @@ export const login = async (req: Request, res: Response) => {
       });
     }
 
-    //Validar Existencia de Usuario
-    const userTemp = await repository.findByEmail(email);
+    // Lookup de login ligero (evita includes pesados en esta etapa).
+    const userLookupStartedAt = Date.now();
+    const userTemp = await repository.findByEmailForLogin(email);
+    const userLookupMs = Date.now() - userLookupStartedAt;
     if (!userTemp) {
       console.log("🚫  User no found");
       return formatResponse({
@@ -48,6 +51,23 @@ export const login = async (req: Request, res: Response) => {
         code: 403,
         message:
           "Your account has been deleted. Please contact info@minhoo.app to reactivate your account.",
+      });
+    }
+    if ((userTemp as any).disabled === true || (userTemp as any).disabled === 1) {
+      return formatResponse({
+        islogin: true,
+        res: res,
+        success: false,
+        code: 403,
+        message: "This account has been disabled by an administrator.",
+      });
+    }
+    if ((userTemp as any).available === false || (userTemp as any).available === 0) {
+      return formatResponse({
+        islogin: true,
+        res: res,
+        success: false,
+        message: "User and/or Password not valid.",
       });
     }
     const storedPassword = String(userTemp.password ?? "");
@@ -106,6 +126,10 @@ export const login = async (req: Request, res: Response) => {
             : null,
       });
 
+      const totalMs = Date.now() - startedAt;
+      console.log(
+        `[perf][login] email=${email} totalMs=${totalMs} lookupMs=${userLookupMs}`
+      );
       return formatResponse({ res: res, success: true, body: { user } });
     }
   } catch (error) {

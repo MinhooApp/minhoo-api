@@ -72,8 +72,7 @@ router.post("/verify/email", verifyEmailCode);
 router.post("/", signUp);
 router.post("/image", signUp);
 
-// 👇 Aquí metemos el middleware ANTES del login real
-router.post("/login", checkDisabledBeforeLogin, login);
+router.post("/login", login);
 router.post("/logout", TokenValidation(), logout);
 router.post("/logout/device", logoutDevice);
 router.post("/session/logout", TokenValidation(), logout);
