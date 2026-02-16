@@ -4,6 +4,7 @@ import Offer from "../_models/offer/offer";
 import Service from "../_models/service/service";
 import Message from "../_models/chat/message";
 import Chat_User from "../_models/chat/chat_user";
+import User from "../_models/user/user";
 import Notification from "_models/notification/notification";
 import { Op } from "sequelize";
 import jwt from "jsonwebtoken";
@@ -17,7 +18,22 @@ type ChatStatusPayload = {
   userId?: number;
 };
 
-type ChatJoinPayload = { chatId: number };
+type ChatJoinPayload = {
+  chatId: number;
+  userId?: number;
+  lastMessageId?: number;
+  last_message_id?: number;
+};
+
+type ChatSyncPayload = {
+  chatId: number;
+  userId?: number;
+  lastMessageId?: number;
+  last_message_id?: number;
+  sinceMessageId?: number;
+  since_message_id?: number;
+  limit?: number;
+};
 
 type ChatTypingPayload = {
   chatId: number;
@@ -35,6 +51,7 @@ type ChatReactionPayload = {
 type ReactionMap = Record<string, number[]>;
 
 const chatRoom = (chatId: number) => `chat_${chatId}`;
+const userRoom = (userId: number) => `user_${userId}`;
 
 function buildStatusPayload(params: {
   chatId: number;
@@ -96,6 +113,34 @@ function parseMessageId(payload: any): number {
   return 0;
 }
 
+function parseLastMessageId(payload: any): number {
+  const obj = payload ?? {};
+  const candidates = [
+    obj.lastMessageId,
+    obj.last_message_id,
+    obj.sinceMessageId,
+    obj.since_message_id,
+    obj.fromMessageId,
+    obj.from_message_id,
+    obj.lastId,
+    obj.last_id,
+    obj.messageId,
+    obj.message_id,
+  ];
+  for (const candidate of candidates) {
+    const n = Number(candidate);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+function parseSyncLimit(payload: any, fallback = 100): number {
+  const obj = payload ?? {};
+  const candidate = Number(obj.limit);
+  if (!Number.isFinite(candidate)) return fallback;
+  return Math.max(1, Math.min(candidate, 200));
+}
+
 function parseUserId(payload: any): number {
   if (typeof payload === "number" || typeof payload === "string") {
     const n = Number(payload);
@@ -116,6 +161,44 @@ function parseUserId(payload: any): number {
 
 function getSocketUserId(socket: Socket): number {
   return parseUserId({ userId: (socket.data as any)?.userId });
+}
+
+function requireAuthenticatedUser(
+  socket: Socket,
+  event: string,
+  payloadUserId?: number
+): number {
+  const socketUserId = getSocketUserId(socket);
+  const payloadUid = Number.isFinite(payloadUserId as any) ? Number(payloadUserId) : 0;
+
+  if (socketUserId <= 0) {
+    console.log(`[socket] ${event} rejected unauthenticated socket=${socket.id}`);
+    socket.emit("auth:error", { event, code: "UNAUTHENTICATED" });
+    return 0;
+  }
+
+  if (payloadUid > 0 && payloadUid !== socketUserId) {
+    console.log(
+      `[socket] ${event} rejected user mismatch socket=${socket.id} socketUserId=${socketUserId} payloadUserId=${payloadUid}`
+    );
+    socket.emit("auth:error", { event, code: "USER_MISMATCH" });
+    return 0;
+  }
+
+  return socketUserId;
+}
+
+async function isUserParticipantInChat(chatId: number, userId: number): Promise<boolean> {
+  if (!Number.isFinite(chatId) || chatId <= 0) return false;
+  if (!Number.isFinite(userId) || userId <= 0) return false;
+
+  const row = await Chat_User.findOne({
+    where: { chatId, userId },
+    attributes: ["chatId"],
+    raw: true,
+  });
+
+  return !!row;
 }
 
 function normalizeToken(raw: any): string {
@@ -322,10 +405,43 @@ export const socketController = (socket: Socket) => {
   const handshakeUserId = resolveUserIdFromHandshake(socket);
   if (handshakeUserId > 0) {
     (socket.data as any).userId = handshakeUserId;
+    socket.join(userRoom(handshakeUserId));
     console.log(`[socket] bind userId=${handshakeUserId} source=handshake socket=${socket.id}`);
   } else {
     console.log(`[socket] bind userId=0 source=handshake socket=${socket.id}`);
   }
+
+  socket.on("bind-user", (payload: any) => {
+    try {
+      const payloadUserId = parseUserId(payload);
+      const tokenUserId = resolveUserIdFromToken(
+        payload?.token ?? payload?.authToken ?? payload?.jwt ?? payload?.authorization
+      );
+      const socketUserId = getSocketUserId(socket);
+
+      const resolvedUserId = tokenUserId > 0 ? tokenUserId : socketUserId;
+      if (!resolvedUserId) {
+        console.log(`[socket] bind-user rejected unauthenticated socket=${socket.id}`);
+        socket.emit("auth:error", { event: "bind-user", code: "UNAUTHENTICATED" });
+        return;
+      }
+
+      if (payloadUserId > 0 && payloadUserId !== resolvedUserId) {
+        console.log(
+          `[socket] bind-user rejected user mismatch socket=${socket.id} resolvedUserId=${resolvedUserId} payloadUserId=${payloadUserId}`
+        );
+        socket.emit("auth:error", { event: "bind-user", code: "USER_MISMATCH" });
+        return;
+      }
+
+      (socket.data as any).userId = resolvedUserId;
+      socket.join(userRoom(resolvedUserId));
+      console.log(`[socket] bind userId=${resolvedUserId} source=bind-user socket=${socket.id}`);
+      socket.emit("bind-user:ok", { userId: resolvedUserId });
+    } catch (e) {
+      console.log("❌ bind-user error", e);
+    }
+  });
 
   socket.on("disconnect", () => {
     console.log(`Cliente desconectado ${socket.id}`);
@@ -351,77 +467,76 @@ export const socketController = (socket: Socket) => {
         console.log(`[socket] chat:join ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`);
         return;
       }
-      socket.join(chatRoom(chatId));
+      const actorUserId = requireAuthenticatedUser(socket, "chat:join", parseUserId(payload));
+      if (!actorUserId) return;
 
-      // Si el frontend envía userId en join, lo asociamos al socket.
-      const actorUserIdFromPayload = parseUserId(payload);
-      const actorUserId =
-        actorUserIdFromPayload > 0
-          ? actorUserIdFromPayload
-          : Number((socket.data as any).userId ?? 0);
-      if (actorUserIdFromPayload > 0) {
-        (socket.data as any).userId = actorUserIdFromPayload;
-      }
+      void (async () => {
+        const isMember = await isUserParticipantInChat(chatId, actorUserId);
+        if (!isMember) {
+          console.log(
+            `[socket] chat:join rejected forbidden chatId=${chatId} socket=${socket.id} userId=${actorUserId}`
+          );
+          socket.emit("auth:error", { event: "chat:join", code: "FORBIDDEN_CHAT", chatId });
+          return;
+        }
 
-      const roomSize = socket.nsp.adapter.rooms.get(chatRoom(chatId))?.size ?? 0;
-      console.log(
-        `[socket] chat:join chatId=${chatId} socket=${socket.id} userId=${actorUserId || 0} roomSize=${roomSize}`
-      );
+        socket.join(chatRoom(chatId));
 
-      // Si el frontend envía userId en join, marcamos como leído al entrar.
-      if (Number.isFinite(actorUserId) && actorUserId > 0) {
-        void (async () => {
-          const now = new Date();
-          const pending = await Message.findAll({
+        const roomSize = socket.nsp.adapter.rooms.get(chatRoom(chatId))?.size ?? 0;
+        console.log(
+          `[socket] chat:join chatId=${chatId} socket=${socket.id} userId=${actorUserId} roomSize=${roomSize}`
+        );
+
+        const now = new Date();
+        const pending = await Message.findAll({
+          where: {
+            chatId,
+            senderId: { [Op.ne]: actorUserId },
+            status: { [Op.in]: ["sent", "delivered"] },
+            deletedBy: { [Op.in]: [0, actorUserId] },
+          },
+          attributes: ["id", "senderId", "deliveredAt"],
+        });
+
+        for (const item of pending as any[]) {
+          const patch: any = { status: "read", readAt: now };
+          if (!item.deliveredAt) patch.deliveredAt = now;
+
+          const [updatedCount] = await Message.update(patch, {
             where: {
-              chatId,
-              senderId: { [Op.ne]: actorUserId },
+              id: item.id,
               status: { [Op.in]: ["sent", "delivered"] },
-              deletedBy: { [Op.in]: [0, actorUserId] },
             },
-            attributes: ["id", "senderId", "deliveredAt"],
           });
 
-          for (const item of pending as any[]) {
-            const patch: any = { status: "read", readAt: now };
-            if (!item.deliveredAt) patch.deliveredAt = now;
+          if (!updatedCount) continue;
 
-            const [updatedCount] = await Message.update(patch, {
-              where: {
-                id: item.id,
-                status: { [Op.in]: ["sent", "delivered"] },
-              },
-            });
+          emitChatHybrid(socket, chatId, `chat/status/${chatId}`, {
+            ...buildStatusPayload({
+              chatId,
+              messageId: Number(item.id),
+              status: "read" as ChatStatus,
+              readAt: now.toISOString(),
+              deliveredAt: now.toISOString(),
+            }),
+          });
 
-            if (!updatedCount) continue;
+          const senderId = Number(item.senderId);
+          const statusPayload = {
+            ...buildStatusPayload({
+              chatId,
+              messageId: Number(item.id),
+              status: "read" as ChatStatus,
+              readAt: now.toISOString(),
+              deliveredAt: now.toISOString(),
+            }),
+          };
+          emitChatStatusWithRetryToSender(socket, senderId, chatId, statusPayload);
+          emitChatsRefresh(socket, senderId);
+        }
 
-            emitChatHybrid(socket, chatId, `chat/status/${chatId}`, {
-              ...buildStatusPayload({
-                chatId,
-                messageId: Number(item.id),
-                status: "read" as ChatStatus,
-                readAt: now.toISOString(),
-                deliveredAt: now.toISOString(),
-              }),
-            });
-
-            const senderId = Number(item.senderId);
-            const statusPayload = {
-              ...buildStatusPayload({
-                chatId,
-                messageId: Number(item.id),
-                status: "read" as ChatStatus,
-                readAt: now.toISOString(),
-                deliveredAt: now.toISOString(),
-              }),
-            };
-            emitChatStatusWithRetryToSender(socket, senderId, chatId, statusPayload);
-            emitChatsRefresh(socket, senderId);
-          }
-
-          emitChatsRefresh(socket, actorUserId);
-        })().catch((err) => console.log("❌ chat:join mark-read error", err));
-      }
+        emitChatsRefresh(socket, actorUserId);
+      })().catch((err) => console.log("❌ chat:join mark-read error", err));
     } catch (e) {
       console.log("❌ chat:join error", e);
     }
@@ -435,11 +550,119 @@ export const socketController = (socket: Socket) => {
         console.log(`[socket] chat:leave ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`);
         return;
       }
+      const actorUserId = requireAuthenticatedUser(socket, "chat:leave", parseUserId(payload));
+      if (!actorUserId) return;
       socket.leave(chatRoom(chatId));
       const roomSize = socket.nsp.adapter.rooms.get(chatRoom(chatId))?.size ?? 0;
-      console.log(`[socket] chat:leave chatId=${chatId} socket=${socket.id} roomSize=${roomSize}`);
+      console.log(
+        `[socket] chat:leave chatId=${chatId} socket=${socket.id} userId=${actorUserId} roomSize=${roomSize}`
+      );
     } catch (e) {
       console.log("❌ chat:leave error", e);
+    }
+  });
+
+  // ✅ resync de mensajes al reconectar (chatId + lastMessageId)
+  socket.on("chat:sync", async (payload: ChatSyncPayload) => {
+    try {
+      const chatId = parseChatId(payload);
+      if (!chatId) {
+        console.log(
+          `[socket] chat:sync ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`
+        );
+        return;
+      }
+
+      const actorUserId = requireAuthenticatedUser(socket, "chat:sync", parseUserId(payload));
+      if (!actorUserId) return;
+
+      const isMember = await isUserParticipantInChat(chatId, actorUserId);
+      if (!isMember) {
+        console.log(
+          `[socket] chat:sync rejected forbidden chatId=${chatId} socket=${socket.id} userId=${actorUserId}`
+        );
+        socket.emit("auth:error", { event: "chat:sync", code: "FORBIDDEN_CHAT", chatId });
+        return;
+      }
+
+      socket.join(chatRoom(chatId));
+
+      const lastMessageId = parseLastMessageId(payload);
+      const limit = parseSyncLimit(payload, 120);
+      const where: any = {
+        chatId,
+        deletedBy: { [Op.in]: [0, actorUserId] },
+      };
+      if (lastMessageId > 0) {
+        where.id = { [Op.gt]: lastMessageId };
+      }
+
+      const missingMessages = await Message.findAll({
+        where,
+        order: [["id", "ASC"]],
+        limit,
+        include: [
+          {
+            model: Message,
+            as: "replyTo",
+            required: false,
+            attributes: ["id", "text", "senderId", "date"],
+          },
+          {
+            model: User,
+            as: "sender",
+            required: false,
+            attributes: [
+              "id",
+              "name",
+              "last_name",
+              "username",
+              "image_profil",
+              "is_deleted",
+            ],
+          },
+        ],
+      });
+
+      let statusEvents = 0;
+      for (const raw of missingMessages as any[]) {
+        const msg = typeof raw.toJSON === "function" ? raw.toJSON() : raw;
+        socket.emit(`room/chat/${chatId}`, msg);
+        socket.emit(`chat/${chatId}`, msg);
+
+        if (Number(msg?.senderId) === actorUserId) {
+          const status = String(msg?.status ?? "");
+          if (status === "read" || status === "delivered") {
+            const payloadStatus = buildStatusPayload({
+              chatId,
+              messageId: Number(msg.id),
+              status: status as ChatStatus,
+              deliveredAt: msg?.deliveredAt
+                ? new Date(msg.deliveredAt).toISOString()
+                : undefined,
+              readAt: msg?.readAt ? new Date(msg.readAt).toISOString() : undefined,
+            });
+            socket.emit(`room/chat/status/${chatId}`, payloadStatus);
+            socket.emit(`chat/status/${chatId}`, payloadStatus);
+            statusEvents++;
+          }
+        }
+      }
+
+      socket.emit(`chat/sync/${chatId}`, {
+        chatId,
+        fromMessageId: lastMessageId || null,
+        syncedCount: missingMessages.length,
+        statusEvents,
+      });
+
+      if (missingMessages.length > 0) {
+        console.log(
+          `[socket] chat:sync chatId=${chatId} socket=${socket.id} userId=${actorUserId} fromId=${lastMessageId || 0} synced=${missingMessages.length} limit=${limit}`
+        );
+      }
+    } catch (e) {
+      console.log("❌ chat:sync error", e);
     }
   });
 
@@ -532,17 +755,25 @@ export const socketController = (socket: Socket) => {
   socket.on("chat:typing", (payload: ChatTypingPayload) => {
     try {
       const chatId = parseChatId(payload);
-      const userId = parseUserId(payload);
+      const userId = requireAuthenticatedUser(socket, "chat:typing", parseUserId(payload));
       const typing = !!payload?.typing;
 
       if (!chatId || !userId) return;
-      (socket.data as any).userId = userId;
+      void (async () => {
+        const isMember = await isUserParticipantInChat(chatId, userId);
+        if (!isMember) {
+          console.log(
+            `[socket] chat:typing rejected forbidden chatId=${chatId} socket=${socket.id} userId=${userId}`
+          );
+          return;
+        }
 
-      emitChatHybrid(socket, chatId, `chat/typing/${chatId}`, {
-        chatId,
-        userId,
-        typing,
-      });
+        emitChatHybrid(socket, chatId, `chat/typing/${chatId}`, {
+          chatId,
+          userId,
+          typing,
+        });
+      })().catch((err) => console.log("❌ chat:typing membership error", err));
     } catch (e) {
       console.log("❌ chat:typing error", e);
     }
@@ -564,11 +795,17 @@ export const socketController = (socket: Socket) => {
     try {
       const chatId = parseChatId(payload);
       const messageId = parseMessageId(payload);
-      const userId = parseUserId(payload);
+      const userId = requireAuthenticatedUser(socket, "chat:reaction", parseUserId(payload));
       const emoji = String(payload?.emoji ?? "").trim();
 
       if (!chatId || !messageId || !userId || !emoji) return;
-      (socket.data as any).userId = userId;
+      const isMember = await isUserParticipantInChat(chatId, userId);
+      if (!isMember) {
+        console.log(
+          `[socket] chat:reaction rejected forbidden chatId=${chatId} socket=${socket.id} userId=${userId}`
+        );
+        return;
+      }
 
       const msg: any = await Message.findByPk(messageId);
       if (!msg) return;
@@ -648,12 +885,19 @@ export const socketController = (socket: Socket) => {
       const chatId = parseChatId(payload);
       const messageId = parseMessageId(payload);
       if (!chatId || !messageId) return;
-      const actorUserId =
-        parseUserId(payload) > 0 ? parseUserId(payload) : getSocketUserId(socket);
-      if (actorUserId > 0) {
-        (socket.data as any).userId = actorUserId;
-      }
+      const actorUserId = requireAuthenticatedUser(
+        socket,
+        "chat:delivered",
+        parseUserId(payload)
+      );
       if (!actorUserId) return;
+      const isMember = await isUserParticipantInChat(chatId, actorUserId);
+      if (!isMember) {
+        console.log(
+          `[socket] chat:delivered rejected forbidden chatId=${chatId} socket=${socket.id} userId=${actorUserId}`
+        );
+        return;
+      }
 
       const msg: any = await Message.findByPk(messageId, {
         attributes: ["id", "chatId", "senderId", "status"],
@@ -711,12 +955,15 @@ export const socketController = (socket: Socket) => {
       const chatId = parseChatId(payload);
       const messageId = parseMessageId(payload);
       if (!chatId || !messageId) return;
-      const actorUserId =
-        parseUserId(payload) > 0 ? parseUserId(payload) : getSocketUserId(socket);
-      if (actorUserId > 0) {
-        (socket.data as any).userId = actorUserId;
-      }
+      const actorUserId = requireAuthenticatedUser(socket, "chat:read", parseUserId(payload));
       if (!actorUserId) return;
+      const isMember = await isUserParticipantInChat(chatId, actorUserId);
+      if (!isMember) {
+        console.log(
+          `[socket] chat:read rejected forbidden chatId=${chatId} socket=${socket.id} userId=${actorUserId}`
+        );
+        return;
+      }
 
       const now = new Date();
 
