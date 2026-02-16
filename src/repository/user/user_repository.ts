@@ -93,6 +93,23 @@ export const update = async (id: any, body: any) => {
   return [user];
 };
 
+/* 🔹 Limpia uuid push token solo si coincide (evita borrar token nuevo por carrera) */
+export const clearUuidIfMatch = async (id: number, uuid: string) => {
+  const userId = Number(id);
+  const token = String(uuid ?? "").trim();
+  if (!Number.isFinite(userId) || userId <= 0 || !token) return 0;
+  const [affected] = await User.update(
+    { uuid: null },
+    {
+      where: {
+        id: userId,
+        uuid: token,
+      },
+    }
+  );
+  return affected;
+};
+
 /* 🔹 Activa/desactiva alertas personales */
 export const activeAlerts = async (id: any) => {
   const userTemp = await User.findOne({
@@ -237,7 +254,14 @@ export const followers = async (id: any, meId: any = -1) => {
 
 /* 🔹 Devuelve el UUID si el usuario tiene alertas activas */
 export const getUuid = async (id: number) => {
-  const user = await User.findOne({ where: { id, alert: true, is_deleted: false } });
+  const user = await User.findOne({
+    where: {
+      id,
+      alert: true,
+      is_deleted: false,
+      auth_token: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] },
+    },
+  });
   return user?.uuid;
 };
 

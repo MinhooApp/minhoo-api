@@ -3,8 +3,10 @@ import { Socket } from "socket.io";
 import Offer from "../_models/offer/offer";
 import Service from "../_models/service/service";
 import Message from "../_models/chat/message";
+import Chat_User from "../_models/chat/chat_user";
 import Notification from "_models/notification/notification";
 import { Op } from "sequelize";
+import jwt from "jsonwebtoken";
 import { sendNotification } from "../useCases/notification/add/add";
 
 type ChatStatus = "sent" | "delivered" | "read";
@@ -33,6 +35,237 @@ type ChatReactionPayload = {
 type ReactionMap = Record<string, number[]>;
 
 const chatRoom = (chatId: number) => `chat_${chatId}`;
+
+function buildStatusPayload(params: {
+  chatId: number;
+  messageId: number;
+  status: ChatStatus;
+  deliveredAt?: string;
+  readAt?: string;
+}) {
+  const { chatId, messageId, status, deliveredAt, readAt } = params;
+  return {
+    chatId,
+    chat_id: chatId,
+    messageId,
+    message_id: messageId,
+    id: messageId,
+    status,
+    deliveredAt: deliveredAt ?? null,
+    readAt: readAt ?? null,
+  };
+}
+
+function parseChatId(payload: any): number {
+  if (typeof payload === "number") {
+    return Number.isFinite(payload) && payload > 0 ? payload : 0;
+  }
+  if (typeof payload === "string") {
+    const n = Number(payload);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  const obj = payload ?? {};
+  const candidates = [
+    obj.chatId,
+    obj.chat_id,
+    obj.idChat,
+    obj.chatID,
+    obj.roomId,
+    obj.room_id,
+    obj.id,
+    obj.chat?.id,
+    obj.chat?.chatId,
+    obj.data?.chatId,
+    obj.payload?.chatId,
+    Array.isArray(obj) ? obj[0] : undefined,
+  ];
+  for (const candidate of candidates) {
+    const n = Number(candidate);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+function parseMessageId(payload: any): number {
+  const obj = payload ?? {};
+  const candidates = [obj.messageId, obj.message_id, obj.idMessage, obj.msgId, obj.id];
+  for (const candidate of candidates) {
+    const n = Number(candidate);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+function parseUserId(payload: any): number {
+  if (typeof payload === "number" || typeof payload === "string") {
+    const n = Number(payload);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+  const obj = payload ?? {};
+  const candidates = [obj.userId, obj.user_id, obj.uid, obj.idUser];
+  if (obj?.user && typeof obj.user === "object") {
+    candidates.push(obj.user.id);
+    candidates.push(obj.user.userId);
+  }
+  for (const candidate of candidates) {
+    const n = Number(candidate);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return 0;
+}
+
+function getSocketUserId(socket: Socket): number {
+  return parseUserId({ userId: (socket.data as any)?.userId });
+}
+
+function normalizeToken(raw: any): string {
+  const value = String(raw ?? "").trim();
+  if (!value) return "";
+  if (value.toLowerCase().startsWith("bearer ")) {
+    return value.slice(7).trim();
+  }
+  return value;
+}
+
+function resolveUserIdFromToken(tokenRaw: any): number {
+  const token = normalizeToken(tokenRaw);
+  if (!token) return 0;
+
+  const secrets = [
+    (process.env.SECRETORPRIVATEKEY ?? "").trim(),
+    (process.env.JWT_SECRET ?? "").trim(),
+    "tokenTest",
+  ].filter(Boolean);
+
+  for (const secret of secrets) {
+    try {
+      const payload = jwt.verify(token, secret) as any;
+      const userId =
+        parseUserId(payload) ||
+        parseUserId({ userId: payload?.sub }) ||
+        parseUserId({ userId: payload?.id });
+      if (userId > 0) return userId;
+    } catch (_) {
+      // keep trying with next secret
+    }
+  }
+
+  try {
+    const decoded = jwt.decode(token) as any;
+    return (
+      parseUserId(decoded) ||
+      parseUserId({ userId: decoded?.sub }) ||
+      parseUserId({ userId: decoded?.id })
+    );
+  } catch (_) {
+    return 0;
+  }
+}
+
+function resolveUserIdFromHandshake(socket: Socket): number {
+  const auth: any = socket.handshake?.auth ?? {};
+  const query: any = socket.handshake?.query ?? {};
+  const headers: any = socket.handshake?.headers ?? {};
+
+  const directUserId =
+    parseUserId(auth) ||
+    parseUserId(query) ||
+    parseUserId(headers) ||
+    parseUserId({
+      userId:
+        auth?.user_id ??
+        query?.user_id ??
+        headers?.["x-user-id"] ??
+        headers?.["x-userid"],
+    });
+  if (directUserId > 0) return directUserId;
+
+  const token =
+    auth?.token ??
+    auth?.accessToken ??
+    auth?.jwt ??
+    query?.token ??
+    query?.access_token ??
+    query?.urlToken ??
+    headers?.authorization ??
+    headers?.Authorization;
+
+  return resolveUserIdFromToken(token);
+}
+
+function emitChatsRefresh(socket: Socket, userId: number) {
+  if (!Number.isFinite(userId) || userId <= 0) return;
+  let delivered = 0;
+
+  for (const s of socket.nsp.sockets.values()) {
+    const uid = Number((s.data as any)?.userId ?? 0);
+    if (uid !== userId) continue;
+    s.emit(`chats/${userId}`);
+    s.emit("chats", { userId });
+    delivered++;
+  }
+
+  // Fallback para clientes legacy sin bind de userId en socket.data.
+  if (delivered === 0) {
+    socket.broadcast.emit(`chats/${userId}`);
+    socket.broadcast.emit("chats", { userId });
+  }
+}
+
+function emitChatStatusToUserSockets(
+  socket: Socket,
+  userId: number,
+  chatId: number,
+  payload: any
+) {
+  if (!Number.isFinite(userId) || userId <= 0) return;
+  const roomEvent = `room/chat/status/${chatId}`;
+  const legacyEvent = `chat/status/${chatId}`;
+
+  for (const s of socket.nsp.sockets.values()) {
+    const uid = Number((s.data as any)?.userId ?? 0);
+    if (uid !== userId) continue;
+    s.emit(roomEvent, payload);
+    s.emit(legacyEvent, payload);
+  }
+}
+
+function emitChatStatusWithRetryToSender(
+  socket: Socket,
+  senderId: number,
+  chatId: number,
+  payload: any
+) {
+  if (!Number.isFinite(senderId) || senderId <= 0) return;
+  emitChatStatusToUserSockets(socket, senderId, chatId, payload);
+  setTimeout(() => emitChatStatusToUserSockets(socket, senderId, chatId, payload), 400);
+  setTimeout(() => emitChatStatusToUserSockets(socket, senderId, chatId, payload), 1200);
+}
+
+async function emitChatsRefreshForChat(socket: Socket, chatId: number) {
+  const links = await Chat_User.findAll({
+    where: { chatId },
+    attributes: ["userId"],
+    raw: true,
+  });
+
+  for (const link of links as any[]) {
+    const uid = Number(link.userId);
+    if (Number.isFinite(uid) && uid > 0) {
+      emitChatsRefresh(socket, uid);
+    }
+  }
+}
+
+async function getDistinctRoomUserIds(socket: Socket, chatId: number): Promise<number[]> {
+  const roomSockets = await socket.nsp.in(chatRoom(chatId)).fetchSockets();
+  const unique = new Set<number>();
+  for (const s of roomSockets as any[]) {
+    const uid = Number((s?.data as any)?.userId ?? 0);
+    if (Number.isFinite(uid) && uid > 0) unique.add(uid);
+  }
+  return [...unique];
+}
 
 /**
  * ✅ EMIT HÍBRIDO (Room + Legacy)
@@ -86,6 +319,14 @@ function addUnique(arr: number[], id: number) {
 export const socketController = (socket: Socket) => {
   console.log(`Cliente conectado ${socket.id}`);
 
+  const handshakeUserId = resolveUserIdFromHandshake(socket);
+  if (handshakeUserId > 0) {
+    (socket.data as any).userId = handshakeUserId;
+    console.log(`[socket] bind userId=${handshakeUserId} source=handshake socket=${socket.id}`);
+  } else {
+    console.log(`[socket] bind userId=0 source=handshake socket=${socket.id}`);
+  }
+
   socket.on("disconnect", () => {
     console.log(`Cliente desconectado ${socket.id}`);
   });
@@ -105,9 +346,82 @@ export const socketController = (socket: Socket) => {
   // ✅ join a room del chat (APK nueva)
   socket.on("chat:join", (payload: ChatJoinPayload) => {
     try {
-      const chatId = Number(payload?.chatId);
-      if (!chatId) return;
+      const chatId = parseChatId(payload);
+      if (!chatId) {
+        console.log(`[socket] chat:join ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`);
+        return;
+      }
       socket.join(chatRoom(chatId));
+
+      // Si el frontend envía userId en join, lo asociamos al socket.
+      const actorUserIdFromPayload = parseUserId(payload);
+      const actorUserId =
+        actorUserIdFromPayload > 0
+          ? actorUserIdFromPayload
+          : Number((socket.data as any).userId ?? 0);
+      if (actorUserIdFromPayload > 0) {
+        (socket.data as any).userId = actorUserIdFromPayload;
+      }
+
+      const roomSize = socket.nsp.adapter.rooms.get(chatRoom(chatId))?.size ?? 0;
+      console.log(
+        `[socket] chat:join chatId=${chatId} socket=${socket.id} userId=${actorUserId || 0} roomSize=${roomSize}`
+      );
+
+      // Si el frontend envía userId en join, marcamos como leído al entrar.
+      if (Number.isFinite(actorUserId) && actorUserId > 0) {
+        void (async () => {
+          const now = new Date();
+          const pending = await Message.findAll({
+            where: {
+              chatId,
+              senderId: { [Op.ne]: actorUserId },
+              status: { [Op.in]: ["sent", "delivered"] },
+              deletedBy: { [Op.in]: [0, actorUserId] },
+            },
+            attributes: ["id", "senderId", "deliveredAt"],
+          });
+
+          for (const item of pending as any[]) {
+            const patch: any = { status: "read", readAt: now };
+            if (!item.deliveredAt) patch.deliveredAt = now;
+
+            const [updatedCount] = await Message.update(patch, {
+              where: {
+                id: item.id,
+                status: { [Op.in]: ["sent", "delivered"] },
+              },
+            });
+
+            if (!updatedCount) continue;
+
+            emitChatHybrid(socket, chatId, `chat/status/${chatId}`, {
+              ...buildStatusPayload({
+                chatId,
+                messageId: Number(item.id),
+                status: "read" as ChatStatus,
+                readAt: now.toISOString(),
+                deliveredAt: now.toISOString(),
+              }),
+            });
+
+            const senderId = Number(item.senderId);
+            const statusPayload = {
+              ...buildStatusPayload({
+                chatId,
+                messageId: Number(item.id),
+                status: "read" as ChatStatus,
+                readAt: now.toISOString(),
+                deliveredAt: now.toISOString(),
+              }),
+            };
+            emitChatStatusWithRetryToSender(socket, senderId, chatId, statusPayload);
+            emitChatsRefresh(socket, senderId);
+          }
+
+          emitChatsRefresh(socket, actorUserId);
+        })().catch((err) => console.log("❌ chat:join mark-read error", err));
+      }
     } catch (e) {
       console.log("❌ chat:join error", e);
     }
@@ -116,9 +430,14 @@ export const socketController = (socket: Socket) => {
   // ✅ leave room (APK nueva)
   socket.on("chat:leave", (payload: ChatJoinPayload) => {
     try {
-      const chatId = Number(payload?.chatId);
-      if (!chatId) return;
+      const chatId = parseChatId(payload);
+      if (!chatId) {
+        console.log(`[socket] chat:leave ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`);
+        return;
+      }
       socket.leave(chatRoom(chatId));
+      const roomSize = socket.nsp.adapter.rooms.get(chatRoom(chatId))?.size ?? 0;
+      console.log(`[socket] chat:leave chatId=${chatId} socket=${socket.id} roomSize=${roomSize}`);
     } catch (e) {
       console.log("❌ chat:leave error", e);
     }
@@ -136,10 +455,70 @@ export const socketController = (socket: Socket) => {
    */
   socket.on("chat", (message: any) => {
     try {
-      const chatId = Number(message?.chatId);
+      const chatId = parseChatId(message?.chatId != null ? message : message?.chat);
       if (!chatId) return;
+      const senderId = parseUserId({
+        userId: message?.senderId ?? message?.sender?.id,
+      });
+      if (senderId > 0) {
+        (socket.data as any).userId = senderId;
+      }
 
       emitChatHybrid(socket, chatId, `chat/${chatId}`, message);
+
+      // ✅ Si hay ambos usuarios en la sala, marcar inmediatamente como leído (azul).
+      void (async () => {
+        const messageId = parseMessageId(message);
+        if (!messageId) return;
+
+        const roomUserIds = await getDistinctRoomUserIds(socket, chatId);
+        const hasOtherParticipant =
+          senderId > 0
+            ? roomUserIds.some((uid) => uid !== senderId)
+            : roomUserIds.length >= 2;
+
+        if (!hasOtherParticipant) return;
+
+        const now = new Date();
+        const [updatedCount] = await Message.update(
+          {
+            status: "read",
+            deliveredAt: now,
+            readAt: now,
+          },
+          {
+            where: {
+              id: messageId,
+              status: { [Op.in]: ["sent", "delivered"] },
+            },
+          }
+        );
+
+        if (!updatedCount) return;
+
+        emitChatHybrid(socket, chatId, `chat/status/${chatId}`, {
+          ...buildStatusPayload({
+            chatId,
+            messageId,
+            status: "read" as ChatStatus,
+            readAt: now.toISOString(),
+            deliveredAt: now.toISOString(),
+          }),
+        });
+
+        const autoStatusPayload = {
+          ...buildStatusPayload({
+            chatId,
+            messageId,
+            status: "read" as ChatStatus,
+            readAt: now.toISOString(),
+            deliveredAt: now.toISOString(),
+          }),
+        };
+        emitChatStatusWithRetryToSender(socket, senderId, chatId, autoStatusPayload);
+
+        await emitChatsRefreshForChat(socket, chatId);
+      })().catch((err) => console.log("❌ chat auto-read error", err));
     } catch (e) {
       console.log("❌ chat error", e);
     }
@@ -152,11 +531,12 @@ export const socketController = (socket: Socket) => {
    */
   socket.on("chat:typing", (payload: ChatTypingPayload) => {
     try {
-      const chatId = Number(payload?.chatId);
-      const userId = Number(payload?.userId);
+      const chatId = parseChatId(payload);
+      const userId = parseUserId(payload);
       const typing = !!payload?.typing;
 
       if (!chatId || !userId) return;
+      (socket.data as any).userId = userId;
 
       emitChatHybrid(socket, chatId, `chat/typing/${chatId}`, {
         chatId,
@@ -182,12 +562,13 @@ export const socketController = (socket: Socket) => {
    */
   socket.on("chat:reaction", async (payload: ChatReactionPayload) => {
     try {
-      const chatId = Number(payload?.chatId);
-      const messageId = Number(payload?.messageId);
-      const userId = Number(payload?.userId);
+      const chatId = parseChatId(payload);
+      const messageId = parseMessageId(payload);
+      const userId = parseUserId(payload);
       const emoji = String(payload?.emoji ?? "").trim();
 
       if (!chatId || !messageId || !userId || !emoji) return;
+      (socket.data as any).userId = userId;
 
       const msg: any = await Message.findByPk(messageId);
       if (!msg) return;
@@ -264,9 +645,27 @@ export const socketController = (socket: Socket) => {
    */
   socket.on("chat:delivered", async (payload: ChatStatusPayload) => {
     try {
-      const chatId = Number(payload?.chatId);
-      const messageId = Number(payload?.messageId);
+      const chatId = parseChatId(payload);
+      const messageId = parseMessageId(payload);
       if (!chatId || !messageId) return;
+      const actorUserId =
+        parseUserId(payload) > 0 ? parseUserId(payload) : getSocketUserId(socket);
+      if (actorUserId > 0) {
+        (socket.data as any).userId = actorUserId;
+      }
+      if (!actorUserId) return;
+
+      const msg: any = await Message.findByPk(messageId, {
+        attributes: ["id", "chatId", "senderId", "status"],
+      });
+      if (!msg) return;
+      if (Number(msg.chatId) !== chatId) return;
+      if (Number(msg.senderId) === actorUserId) {
+        console.log(
+          `[socket] ignore self-delivered chatId=${chatId} messageId=${messageId} userId=${actorUserId}`
+        );
+        return;
+      }
 
       const deliveredAt = new Date();
 
@@ -278,11 +677,26 @@ export const socketController = (socket: Socket) => {
       if (!updatedCount) return;
 
       emitChatHybrid(socket, chatId, `chat/status/${chatId}`, {
-        chatId,
-        messageId,
-        status: "delivered" as ChatStatus,
-        deliveredAt: deliveredAt.toISOString(),
+        ...buildStatusPayload({
+          chatId,
+          messageId,
+          status: "delivered" as ChatStatus,
+          deliveredAt: deliveredAt.toISOString(),
+        }),
       });
+
+      const senderId = Number(msg?.senderId);
+      const statusPayload = {
+        ...buildStatusPayload({
+          chatId,
+          messageId,
+          status: "delivered" as ChatStatus,
+          deliveredAt: deliveredAt.toISOString(),
+        }),
+      };
+      emitChatStatusWithRetryToSender(socket, senderId, chatId, statusPayload);
+      emitChatsRefresh(socket, senderId);
+      emitChatsRefresh(socket, actorUserId);
     } catch (e) {
       console.log("❌ chat:delivered error", e);
     }
@@ -294,15 +708,52 @@ export const socketController = (socket: Socket) => {
    */
   socket.on("chat:read", async (payload: ChatStatusPayload) => {
     try {
-      const chatId = Number(payload?.chatId);
-      const messageId = Number(payload?.messageId);
+      const chatId = parseChatId(payload);
+      const messageId = parseMessageId(payload);
       if (!chatId || !messageId) return;
+      const actorUserId =
+        parseUserId(payload) > 0 ? parseUserId(payload) : getSocketUserId(socket);
+      if (actorUserId > 0) {
+        (socket.data as any).userId = actorUserId;
+      }
+      if (!actorUserId) return;
 
       const now = new Date();
 
       const msg: any = await Message.findByPk(messageId);
       if (!msg) return;
-      if (msg.status === "read") return;
+      if (Number(msg.chatId) !== chatId) return;
+      if (Number(msg.senderId) === actorUserId) {
+        console.log(
+          `[socket] ignore self-read chatId=${chatId} messageId=${messageId} userId=${actorUserId}`
+        );
+        return;
+      }
+      if (msg.status === "read") {
+        const alreadyReadAt = msg.readAt
+          ? new Date(msg.readAt).toISOString()
+          : now.toISOString();
+        const alreadyDeliveredAt = msg.deliveredAt
+          ? new Date(msg.deliveredAt).toISOString()
+          : alreadyReadAt;
+
+        const statusPayload = {
+          ...buildStatusPayload({
+            chatId,
+            messageId,
+            status: "read" as ChatStatus,
+            readAt: alreadyReadAt,
+            deliveredAt: alreadyDeliveredAt,
+          }),
+        };
+
+        emitChatHybrid(socket, chatId, `chat/status/${chatId}`, statusPayload);
+        const senderId = Number(msg.senderId);
+        emitChatStatusWithRetryToSender(socket, senderId, chatId, statusPayload);
+        emitChatsRefresh(socket, senderId);
+        emitChatsRefresh(socket, actorUserId);
+        return;
+      }
 
       const updateData: any = { status: "read", readAt: now };
 
@@ -319,11 +770,28 @@ export const socketController = (socket: Socket) => {
       if (!updatedCount) return;
 
       emitChatHybrid(socket, chatId, `chat/status/${chatId}`, {
-        chatId,
-        messageId,
-        status: "read" as ChatStatus,
-        readAt: now.toISOString(),
+        ...buildStatusPayload({
+          chatId,
+          messageId,
+          status: "read" as ChatStatus,
+          readAt: now.toISOString(),
+          deliveredAt: now.toISOString(),
+        }),
       });
+
+      const senderId = Number(msg.senderId);
+      const statusPayload = {
+        ...buildStatusPayload({
+          chatId,
+          messageId,
+          status: "read" as ChatStatus,
+          readAt: now.toISOString(),
+          deliveredAt: now.toISOString(),
+        }),
+      };
+      emitChatStatusWithRetryToSender(socket, senderId, chatId, statusPayload);
+      emitChatsRefresh(socket, senderId);
+      emitChatsRefresh(socket, actorUserId);
     } catch (e) {
       console.log("❌ chat:read error", e);
     }

@@ -1,5 +1,5 @@
 import axios from "axios";
-import { io } from "socket.io-client";
+import { getInternalSocket } from "../../../libs/helper/internal_socket";
 import { Request, Response } from "express";
 import { sendEmail, sendEmailToMany } from "../../_utils/send_email";
 import { sendNotification } from "../../notification/add/add";
@@ -10,7 +10,11 @@ import {
   sendPushToSingleUser,
   sendPushToMultipleUsers,
 } from "../../common/push_notification/notification";
-const socket = io(process.env.URL_SOCKET || "");
+const socket = {
+  emit: (event: string, payload?: any) => {
+    getInternalSocket().emit(event, payload);
+  },
+};
 
 export {
   Request,

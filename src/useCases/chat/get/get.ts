@@ -22,6 +22,7 @@ export const myChats = async (req: Request, res: Response) => {
 
 export const messages = async (req: Request, res: Response) => {
   const { id } = req.params; // id = userId del otro usuario
+  const otherUserId = Number(id);
 
   // ✅ NUEVO: paginación (sin romper si no mandan query)
   const limitRaw = req.query.limit;
@@ -44,30 +45,43 @@ export const messages = async (req: Request, res: Response) => {
     // chatId para emitir eventos
     const chatId = messages.length > 0 ? messages[0].chatId : null;
 
-    // ✅ marcar DELIVERED al abrir el chat (mensajes NO míos que siguen en sent)
-    // y emitir al socket server para que el emisor actualice en TIEMPO REAL.
+    // ✅ al abrir sala se marcan como READ los mensajes recibidos pendientes
+    // para que el emisor vea ✔✔ azul dentro y fuera del chat.
     if (chatId != null && messages && messages.length > 0) {
       for (const m of messages as any[]) {
         const isMine = String(m.senderId) === String(req.userId);
         const status = (m.status ?? "sent") as string;
 
-        if (!isMine && status === "sent" && m.id != null) {
+        if (!isMine && (status === "sent" || status === "delivered") && m.id != null) {
+          const now = new Date();
+
           // update DB
           if (typeof m.update === "function") {
+            const patch: any = {
+              status: "read",
+              readAt: now,
+            };
+            if (!m.deliveredAt) patch.deliveredAt = now;
+
             await m.update({
-              status: "delivered",
-              deliveredAt: new Date(),
+              ...patch,
             });
           }
 
-          // ✅ emitir al socket server -> este rebota al emisor (chat/status/{chatId})
-          socket.emit("chat:delivered", {
+          // ✅ emitir al socket server -> rebota al emisor (chat/status/{chatId})
+          socket.emit("chat:read", {
             chatId,
             messageId: m.id,
             userId: req.userId,
           });
         }
       }
+
+      // ✅ fuerza refresh de lista de chats para ambos lados (fuera de sala)
+      if (Number.isFinite(otherUserId) && otherUserId > 0) {
+        socket.emit("chats", otherUserId);
+      }
+      socket.emit("chats", req.userId);
     }
 
     // 🔄 volver a cargar para devolver YA actualizado

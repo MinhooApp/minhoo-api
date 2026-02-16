@@ -5,6 +5,8 @@ import {
   verifyEmailCode,
   signUp,
   login,
+  logout,
+  logoutDevice,
   requestRestorePassword,
   validateRestorePassword,
   restorePassword,
@@ -72,6 +74,10 @@ router.post("/image", signUp);
 
 // 👇 Aquí metemos el middleware ANTES del login real
 router.post("/login", checkDisabledBeforeLogin, login);
+router.post("/logout", TokenValidation(), logout);
+router.post("/logout/device", logoutDevice);
+router.post("/session/logout", TokenValidation(), logout);
+router.post("/signout", TokenValidation(), logout);
 
 router.post("/restore/request", requestRestorePassword);
 router.post("/restore/validate", validateRestorePassword);

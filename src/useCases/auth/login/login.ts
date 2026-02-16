@@ -8,6 +8,8 @@ import {
   uRepository,
   sendEmail,
 } from "../_module/module";
+import { getSocketInstance } from "../../../_sockets/socket_instance";
+import User from "../../../_models/user/user";
 
 export const login = async (req: Request, res: Response) => {
   try {
@@ -164,5 +166,92 @@ export const validateSesion = async (req: Request, res: Response) => {
   try {
     return formatResponse({ res: res, success: true });
   } catch (error) {}
+};
+
+const disconnectUserSockets = async (userId: number) => {
+  try {
+    const io = getSocketInstance();
+    if (!io || !userId) return;
+
+    const userRoom = `user_${userId}`;
+    const namespaces = ["/", "/api", "/api/v1"];
+    for (const namespace of namespaces) {
+      const sockets = await io.of(namespace).in(userRoom).fetchSockets();
+      for (const s of sockets) {
+        s.disconnect(true);
+      }
+    }
+  } catch (error) {
+    console.log("⚠️ logout socket disconnect error", error);
+  }
+};
+
+export const logout = async (req: Request, res: Response) => {
+  try {
+    const userId = Number((req as any).userId ?? 0);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Invalid session user.",
+      });
+    }
+
+    await uRepository.update(userId, {
+      auth_token: null,
+      uuid: null,
+    });
+
+    await disconnectUserSockets(userId);
+
+    return formatResponse({ res, success: true });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res, success: false, message: error });
+  }
+};
+
+export const logoutDevice = async (req: Request, res: Response) => {
+  try {
+    const rawUuid = String(req.body?.uuid ?? "").trim();
+    const userIdRaw = Number(req.body?.userId ?? 0);
+
+    if (!rawUuid || rawUuid.length < 20) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Invalid device token.",
+      });
+    }
+
+    const where: any = { uuid: rawUuid };
+    if (Number.isFinite(userIdRaw) && userIdRaw > 0) {
+      where.id = userIdRaw;
+    }
+
+    const users = await User.findAll({
+      where,
+      attributes: ["id"],
+      raw: true,
+    });
+
+    const affectedUserIds = (users as unknown as Array<{ id: number }>)
+      .map((u) => Number(u.id))
+      .filter((id) => Number.isFinite(id) && id > 0);
+
+    await User.update(
+      { uuid: null, auth_token: null },
+      { where: { uuid: rawUuid, ...(where.id ? { id: where.id } : {}) } }
+    );
+
+    for (const uid of affectedUserIds) {
+      await disconnectUserSockets(uid);
+    }
+
+    return formatResponse({ res, success: true });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res, success: false, message: error });
+  }
 };
 //

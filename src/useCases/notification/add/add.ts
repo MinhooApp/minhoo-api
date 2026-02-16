@@ -3,8 +3,8 @@ import {
   repository,
   sendPushToSingleUser,
   userRepository,
-  socket,
 } from "../_module/module";
+import { emitNotificationRealtime } from "../../../libs/helper/realtime_dispatch";
 
 interface SendNotificationParams {
   userId: number;
@@ -54,7 +54,7 @@ export const sendNotification = async (
     const notification = await repository.add(notificationData);
     const uuid = await userRepository.getUuid(params.userId);
 
-    socket.emit("notification", notification);
+    emitNotificationRealtime(params.userId, notification);
 
     // ✅ Para chat: queremos que se vea el nombre en la barra de notificaciones
     const pushTitle =
@@ -72,7 +72,7 @@ export const sendNotification = async (
       messageId: params.messageId ?? "",
     };
 
-    sendPushToSingleUser(
+    const pushResult = await sendPushToSingleUser(
       pushTitle,
       pushBody,
       uuid,
@@ -80,6 +80,15 @@ export const sendNotification = async (
       getFirstAvailableId(notificationData),
       extraData
     );
+
+    if (pushResult?.reason === "TOKEN_NOT_REGISTERED" && uuid) {
+      const cleared = await userRepository.clearUuidIfMatch(params.userId, uuid);
+      if (cleared > 0) {
+        console.warn(
+          `🧹 UUID inválido limpiado userId=${params.userId} reason=TOKEN_NOT_REGISTERED`
+        );
+      }
+    }
   } catch (error) {
     console.error("Error al enviar la notificación:", error);
     throw error;

@@ -1,4 +1,4 @@
-import { io } from "socket.io-client";
+import { getInternalSocket } from "../../../libs/helper/internal_socket";
 import { Request, Response } from "express";
 import { sendEmail } from "../../_utils/send_email";
 import Offer from "../../../_models/offer/offer";
@@ -7,7 +7,11 @@ import { formatResponse } from "../../_response/format_response";
 import * as repository from "../../../repository/offer/offer_repository";
 import * as userRepository from "../../../repository/user/user_repository";
 import * as serviceRepository from "../../../repository/service/service_repository";
-const socket = io(process.env.URL_SOCKET || "");
+const socket = {
+  emit: (event: string, payload?: any) => {
+    getInternalSocket().emit(event, payload);
+  },
+};
 export {
   Request,
   Response,

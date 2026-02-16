@@ -1,10 +1,14 @@
-import { io, Socket } from "socket.io-client";
+import { getInternalSocket } from "../../../libs/helper/internal_socket";
 import { Request, Response } from "express";
 import { formatResponse } from "../../_response/format_response";
 import * as repository from "../../../repository/chat/chat_repository";
 import { sendNotification } from "../../notification/add/add";
 
-const socket: Socket = io(process.env.URL_SOCKET || "");
+const socket = {
+  emit: (event: string, payload?: any) => {
+    getInternalSocket().emit(event, payload);
+  },
+};
 
 export {
   Request,

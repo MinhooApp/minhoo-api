@@ -4,7 +4,6 @@ import { promisify } from "util";
 import dotenv from "dotenv";
 
 dotenv.config();
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0";
 
 // Interfaz para definir todos los parámetros
 interface SendEmailParams {
@@ -31,6 +30,29 @@ const isValidEmail = (email: string): boolean => {
   return emailRegex.test(email);
 };
 
+const allowInsecureTls =
+  String(process.env.EMAIL_ALLOW_INSECURE_TLS ?? "").trim() === "1";
+
+const createTransporter = () => {
+  if (allowInsecureTls) {
+    console.warn(
+      "EMAIL_ALLOW_INSECURE_TLS=1 activo: se deshabilita verificación TLS para SMTP."
+    );
+  }
+
+  return nodemailer.createTransport({
+    host: process.env.EMAIL_HOST,
+    port: Number(process.env.EMAIL_PORT),
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+    tls: {
+      rejectUnauthorized: !allowInsecureTls,
+    },
+  });
+};
+
 export const sendEmail = async (params: SendEmailParams) => {
   const { subject, email, htmlPath, replacements, from } = params;
   const readFile = promisify(fs.readFile);
@@ -40,14 +62,7 @@ export const sendEmail = async (params: SendEmailParams) => {
     return false;
   }
 
-  const transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: Number(process.env.EMAIL_PORT),
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-  });
+  const transporter = createTransporter();
 
   try {
     let htmlContent = await readFile(htmlPath, "utf8");
@@ -87,14 +102,7 @@ export const sendEmailToMany = async (params: SendManyEmailParams) => {
     return false;
   }
 
-  const transporter = nodemailer.createTransport({
-    host: process.env.EMAIL_HOST,
-    port: Number(process.env.EMAIL_PORT),
-    auth: {
-      user: process.env.EMAIL_USER,
-      pass: process.env.EMAIL_PASS,
-    },
-  });
+  const transporter = createTransporter();
 
   try {
     let htmlContent = await readFile(htmlPath, "utf8");

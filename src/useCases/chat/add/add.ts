@@ -68,26 +68,30 @@ export const sendMessage = async (req: Request, res: Response) => {
     }
 
     // ✅ guardar mensaje (con reply)
-    await repository.initNewChat(req.userId, userId, message, replyToMessageId);
-
-    // ✅ obtener mensajes del chat para devolver en el response
-    const messages = await repository.getChatByUser(req.userId, userId);
-    if (!messages || messages.length === 0) {
+    const created = await repository.initNewChat(
+      req.userId,
+      userId,
+      message,
+      replyToMessageId
+    );
+    if (!created || !created.chatId || !created.messageId) {
       return formatResponse({
         res,
-        success: true,
-        body: { chatId: null, messages: [] },
+        success: false,
+        message: "No se pudo enviar el mensaje",
       });
     }
 
-    // ✅ último mensaje
-    const lastMessage = messages.reduce(
-      (max, msg) => (msg.id > max.id ? msg : max),
-      messages[0]
-    );
-
-    // ✅ cargar el mensaje completo (incluye sender)
-    const fullMessage = await repository.getSenderByMessageId(lastMessage.id);
+    const chatId = Number((created as any).chatId);
+    const createdMessageId = Number((created as any).messageId);
+    const fullMessage = await repository.getSenderByMessageId(createdMessageId);
+    if (!fullMessage) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "No se pudo cargar el mensaje enviado",
+      });
+    }
 
     // ✅ fallback por si el repo no devolvió el campo reply
     if (replyToMessageId != null) {
@@ -102,6 +106,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     //////// Emit the chat ///////
     socket.emit("chat", fullMessage);
     socket.emit("chats", userId);
+    socket.emit("chats", req.userId);
 
     // ==========================================================
     // ✅ senderName = "ID: X\nNombre Apellido"
@@ -143,14 +148,17 @@ export const sendMessage = async (req: Request, res: Response) => {
     await sendNotification({
       userId,                  // receptor
       interactorId: senderId,   // senderId
-      messageId: lastMessage.id,
+      messageId: createdMessageId,
       type: "message",
       message: notificationBody,
       senderName,              // 👈 title = "ID: X\nNombre Apellido"
     });
 
+    // ✅ recargar al final para evitar devolver estados viejos (ticks)
+    const messages = await repository.getChatByUser(req.userId, userId);
+
     const payload = {
-      chatId: messages.length > 0 ? messages[0].chatId : null,
+      chatId: messages.length > 0 ? messages[0].chatId : chatId,
       messages,
     };
 

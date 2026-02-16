@@ -11,7 +11,7 @@ import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
 const router = Router();
 
 router.get("/", TokenValidation(), myChats);
-router.get("/user/message/:id", getUserByMessage);
+router.get("/user/message/:id", TokenValidation(), getUserByMessage);
 router.get("/message/:id", TokenValidation(), messages);
 router.post("/", TokenValidation(), sendMessage);
 router.patch("/:id/pin", TokenValidation(), pinChat);

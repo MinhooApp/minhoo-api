@@ -87,8 +87,11 @@ export const TokenValidation = (
           });
         }
 
-        // Token revocado (no coincide con el guardado)
-        if ((user as any).auth_token && (user as any).auth_token !== token) {
+        // Token revocado o sesión cerrada:
+        // - si auth_token está vacío => sesión inválida
+        // - si auth_token no coincide => token revocado
+        const storedAuthToken = String((user as any).auth_token ?? "").trim();
+        if (!storedAuthToken || storedAuthToken !== token) {
           return res.status(401).json({
             header: { success: false, authenticated: false },
             messages: ["Access denied, token revoked"],

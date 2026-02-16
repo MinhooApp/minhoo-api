@@ -9,7 +9,7 @@ export const monitorNetwork = (intervalMs = 10000) => {
 
   setInterval(async () => {
     try {
-      await axios.get("https://api.minhoo.xyz/ping", { timeout: 3000 });
+      await axios.get("https://api.minhoo.xyz/api/v1/ping", { timeout: 3000 });
       if (!isOnline) {
         console.log("✅ Conexión restaurada");
         isOnline = true;

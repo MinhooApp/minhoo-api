@@ -8,6 +8,10 @@ import Chat_User from "../../_models/chat/chat_user";
 import UserBlock from "../../_models/block/block";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
+const MAX_MESSAGES_PER_CHAT = Math.max(
+  1,
+  Number(process.env.CHAT_MAX_MESSAGES_PER_CHAT ?? 21) || 21
+);
 
 export const add = async (body: any) => {
   const chat = await Chat.create(body);
@@ -71,7 +75,8 @@ export const initNewChat = async (
     return null;
   }
 
-  const now = new Date(new Date().toUTCString());
+  // Mantener milisegundos evita empates de `date` en ráfagas.
+  const now = new Date();
   const existingChat = await chatExist(me, other);
 
   let chatId: number;
@@ -97,7 +102,7 @@ export const initNewChat = async (
     }
   }
 
-  await Message.create({
+  const createdMessage = await Message.create({
     text: mensajeInicial,
     senderId: me,
     chatId,
@@ -106,7 +111,13 @@ export const initNewChat = async (
     replyToMessageId: replyToMessageId ?? null,
   });
 
-  return chat;
+  await pruneChatHistory(chatId, MAX_MESSAGES_PER_CHAT);
+
+  return {
+    chatId,
+    messageId: Number(createdMessage.id),
+    chat,
+  };
 };
 
 /**
@@ -121,7 +132,10 @@ export const getChatMessages = async (chatId: any, currentUserId: any) => {
   const me = Number(currentUserId);
 
   const messages = await Message.findAll({
-    order: [["date", "DESC"]],
+    order: [
+      ["date", "DESC"],
+      ["id", "DESC"],
+    ],
     where: {
       chatId,
       deletedBy: { [Op.in]: [0, me] }, // âœ… FIX: nunca traer -1
@@ -146,7 +160,6 @@ export const getChatMessages = async (chatId: any, currentUserId: any) => {
 
 export const getSenderByMessageId = async (messageId: any) => {
   const messages = await Message.findOne({
-    order: [["date", "DESC"]],
     where: { id: messageId },
     include: [
       {
@@ -297,7 +310,10 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
             where: {
               deletedBy: { [Op.in]: [0, uid] },
             },
-            order: [["date", "DESC"]],
+            order: [
+              ["date", "DESC"],
+              ["id", "DESC"],
+            ],
             limit: 1,
             attributes: [
               "id",
@@ -359,8 +375,8 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
     if (!pinA && pinB) return 1;
     if (pinA && pinB && pinA !== pinB) return pinB - pinA;
 
-    const dateA = a.Chat?.messages?.[0]?.date || 0;
-    const dateB = b.Chat?.messages?.[0]?.date || 0;
+    const dateA = new Date(a.Chat?.messages?.[0]?.date ?? 0).getTime() || 0;
+    const dateB = new Date(b.Chat?.messages?.[0]?.date ?? 0).getTime() || 0;
     return dateB - dateA;
   });
 
@@ -508,6 +524,32 @@ async function isBlockedEitherWay(a: number, b: number): Promise<boolean> {
   });
 
   return !!row;
+}
+
+async function pruneChatHistory(chatId: number, keepLimit: number): Promise<void> {
+  const keep = Math.max(1, Number(keepLimit) || 1);
+
+  const oldMessages = await Message.findAll({
+    where: { chatId },
+    attributes: ["id"],
+    order: [["id", "DESC"]],
+    offset: keep,
+    raw: true,
+  });
+
+  if (!oldMessages.length) return;
+
+  const idsToDelete = oldMessages
+    .map((row: any) => Number(row.id))
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
+  if (!idsToDelete.length) return;
+
+  await Message.destroy({
+    where: {
+      id: { [Op.in]: idsToDelete },
+    },
+  });
 }
 
 
