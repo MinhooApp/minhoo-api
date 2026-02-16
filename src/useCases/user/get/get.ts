@@ -6,6 +6,53 @@ import {
   followerRepo,
 } from "../_module/module";
 
+const enrichUserFollowCounts = async (user: any) => {
+  if (!user) return null;
+
+  const userId = Number((user as any).id);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    const fallback = { followersCount: 0, followingCount: 0 };
+    const fallbackFields = {
+      followers_count: 0,
+      followings_count: 0,
+      following_count: 0,
+      followersCount: 0,
+      followingsCount: 0,
+      followingCount: 0,
+    };
+
+    if (typeof (user as any).setDataValue === "function") {
+      Object.entries(fallbackFields).forEach(([key, value]) => {
+        (user as any).setDataValue(key, value);
+      });
+    } else {
+      Object.assign(user, fallbackFields);
+    }
+
+    return fallback;
+  }
+
+  const counts = await followerRepo.getCounts(userId);
+  const fields = {
+    followers_count: counts.followersCount,
+    followings_count: counts.followingCount,
+    following_count: counts.followingCount,
+    followersCount: counts.followersCount,
+    followingsCount: counts.followingCount,
+    followingCount: counts.followingCount,
+  };
+
+  if (typeof (user as any).setDataValue === "function") {
+    Object.entries(fields).forEach(([key, value]) => {
+      (user as any).setDataValue(key, value);
+    });
+  } else {
+    Object.assign(user, fields);
+  }
+
+  return counts;
+};
+
 export const gets = async (req: Request, res: Response) => {
   try {
     const { page = 0, size = 5 } = req.query;
@@ -30,16 +77,7 @@ export const get = async (req: Request, res: Response) => {
 
   try {
     const user = await repository.get(id, req.userId);
-    if (user) {
-      const counts = await followerRepo.getCounts(Number((user as any).id));
-      if (typeof (user as any).setDataValue === "function") {
-        (user as any).setDataValue("followers_count", counts.followersCount);
-        (user as any).setDataValue("followings_count", counts.followingCount);
-      } else {
-        (user as any).followers_count = counts.followersCount;
-        (user as any).followings_count = counts.followingCount;
-      }
-    }
+    const counts = await enrichUserFollowCounts(user);
     const breakdown = {
       name: !!user?.name,
       last_name: !!user?.last_name,
@@ -74,6 +112,15 @@ export const get = async (req: Request, res: Response) => {
       success: true,
       body: {
         user,
+        counts: counts
+          ? {
+              followersCount: counts.followersCount,
+              followingCount: counts.followingCount,
+              followers_count: counts.followersCount,
+              followings_count: counts.followingCount,
+              following_count: counts.followingCount,
+            }
+          : null,
         profile_completion: {
           percent,
           breakdown,
@@ -89,16 +136,7 @@ export const get = async (req: Request, res: Response) => {
 export const myData = async (req: Request, res: Response) => {
   try {
     const user = await repository.get(req.userId);
-    if (user) {
-      const counts = await followerRepo.getCounts(Number((user as any).id));
-      if (typeof (user as any).setDataValue === "function") {
-        (user as any).setDataValue("followers_count", counts.followersCount);
-        (user as any).setDataValue("followings_count", counts.followingCount);
-      } else {
-        (user as any).followers_count = counts.followersCount;
-        (user as any).followings_count = counts.followingCount;
-      }
-    }
+    const counts = await enrichUserFollowCounts(user);
     const breakdown = {
       name: !!user?.name,
       last_name: !!user?.last_name,
@@ -133,6 +171,15 @@ export const myData = async (req: Request, res: Response) => {
       success: true,
       body: {
         user,
+        counts: counts
+          ? {
+              followersCount: counts.followersCount,
+              followingCount: counts.followingCount,
+              followers_count: counts.followersCount,
+              followings_count: counts.followingCount,
+              following_count: counts.followingCount,
+            }
+          : null,
         profile_completion: {
           percent,
           breakdown,
