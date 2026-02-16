@@ -6,6 +6,24 @@ import { Op, Sequelize } from "sequelize";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 export const add = async (body: any) => {
+  const userId = Number(body?.userId);
+  if (Number.isFinite(userId) && userId > 0) {
+    const existing = await Worker.findOne({
+      where: { userId },
+      order: [
+        ["available", "DESC"],
+        ["id", "DESC"],
+      ],
+    });
+
+    if (existing) {
+      const updateBody: any = { ...body, available: true };
+      delete updateBody.userId;
+      await existing.update(updateBody);
+      return existing;
+    }
+  }
+
   const worker = await Worker.create(body);
   return worker;
 };
@@ -70,7 +88,8 @@ export const update = async (id: any, body: any) => {
 };
 export const visibleProfile = async (id: any, body: any) => {
   const workerTemp = await Worker.findOne({
-    where: { userId: id },
+    where: { userId: id, available: true },
+    order: [["id", "DESC"]],
     include: workerIncludes,
   });
   const ressponse = await workerTemp?.update(body);
@@ -95,6 +114,7 @@ export const worker = async (id: any, meId: any = -1) => {
       ],
     },
     replacements: { meId },
+    order: [["id", "DESC"]],
     include: workerIncludes,
     attributes: { exclude: excludeKeys },
   });

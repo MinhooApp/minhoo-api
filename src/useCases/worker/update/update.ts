@@ -33,6 +33,61 @@ const uploadEither = multer({
   { name: "image_profil", maxCount: 1 },
 ]);
 
+const parseCategoryIds = (value: any): number[] | null => {
+  if (value === undefined || value === null) return null;
+
+  let rawItems: any[] = [];
+
+  if (Array.isArray(value)) {
+    rawItems = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (Array.isArray(parsed)) {
+          rawItems = parsed;
+        } else {
+          return null;
+        }
+      } catch {
+        return null;
+      }
+    } else if (trimmed.includes(",")) {
+      rawItems = trimmed.split(",").map((v) => v.trim());
+    } else {
+      rawItems = [trimmed];
+    }
+  } else if (typeof value === "number") {
+    rawItems = [value];
+  } else {
+    return null;
+  }
+
+  const ids = rawItems
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v) && v > 0);
+
+  if (ids.length !== rawItems.length) return null;
+
+  return Array.from(new Set(ids));
+};
+
+const parseOptionalPositiveInt = (value: any): number | undefined => {
+  if (value === undefined || value === null || value === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return parsed;
+};
+
+const parseOptionalString = (value: any): string | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const parsed = String(value).trim();
+  return parsed ? parsed : undefined;
+};
+
 export const update = async (req: Request, res: Response) => {
   // 1) Parseo ÚNICO (acepta image_profile o image_profil)
   uploadEither(req, res, async (err: any) => {
@@ -79,6 +134,22 @@ export const update = async (req: Request, res: Response) => {
         );
       }
 
+      const hasSkills =
+        Object.prototype.hasOwnProperty.call(req.body, "skills") ||
+        Object.prototype.hasOwnProperty.call(req.body, "job_category_ids");
+      const skillsRaw = Object.prototype.hasOwnProperty.call(req.body, "skills")
+        ? (req.body as any)?.skills
+        : (req.body as any)?.job_category_ids;
+      const skills = hasSkills ? parseCategoryIds(skillsRaw) : null;
+      if (hasSkills && skills === null) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 400,
+          message: "skills must be a numeric id or an array of numeric ids",
+        });
+      }
+
       // ---- Body User ----
       const bodyUser: any = {
         name: req.body.name,
@@ -93,11 +164,63 @@ export const update = async (req: Request, res: Response) => {
             : filePath || undefined,
       };
 
+      if (hasSkills) {
+        bodyUser.job_category_ids = skills;
+        if ((skills ?? []).length > 0) {
+          const categories = await Category.findAll({
+            where: { id: skills },
+            attributes: ["id", "name"],
+          });
+          bodyUser.job_categories_labels = categories.map((c: any) => c.name);
+        } else {
+          bodyUser.job_categories_labels = [];
+        }
+      }
+
+      const countryOriginId = parseOptionalPositiveInt(
+        (req.body as any)?.country_origin_id ?? (req.body as any)?.countryOriginId
+      );
+      if (countryOriginId !== undefined) bodyUser.country_origin_id = countryOriginId;
+
+      const countryOriginCode = parseOptionalString(
+        (req.body as any)?.country_origin_code ?? (req.body as any)?.countryOriginCode
+      );
+      if (countryOriginCode !== undefined)
+        bodyUser.country_origin_code = countryOriginCode;
+
+      const countryResidenceId = parseOptionalPositiveInt(
+        (req.body as any)?.country_residence_id ?? (req.body as any)?.countryResidenceId
+      );
+      if (countryResidenceId !== undefined)
+        bodyUser.country_residence_id = countryResidenceId;
+
+      const stateResidenceId = parseOptionalPositiveInt(
+        (req.body as any)?.state_residence_id ?? (req.body as any)?.stateResidenceId
+      );
+      if (stateResidenceId !== undefined) bodyUser.state_residence_id = stateResidenceId;
+
+      const stateResidenceCode = parseOptionalString(
+        (req.body as any)?.state_residence_code ?? (req.body as any)?.stateResidenceCode
+      );
+      if (stateResidenceCode !== undefined)
+        bodyUser.state_residence_code = stateResidenceCode;
+
+      const cityResidenceId = parseOptionalPositiveInt(
+        (req.body as any)?.city_residence_id ?? (req.body as any)?.cityResidenceId
+      );
+      if (cityResidenceId !== undefined) bodyUser.city_residence_id = cityResidenceId;
+
+      const cityResidenceName = parseOptionalString(
+        (req.body as any)?.city_residence_name ?? (req.body as any)?.cityResidenceName
+      );
+      if (cityResidenceName !== undefined)
+        bodyUser.city_residence_name = cityResidenceName;
+
       // ---- Body Worker ----
       const bodyWorker: any = {
         planId: worker?.planId,
         about: req.body.about,
-        categories: req.body.skills,
+        categories: hasSkills ? skills : undefined,
         userId: (req as any).userId,
       };
 
@@ -280,20 +403,74 @@ export const updateProfile = async (req: Request, res: Response) => {
         image_profil: avatarBody,
       };
 
-      const skillsRaw = (req.body as any)?.skills ?? (req.body as any)?.job_category_ids;
-      const skills = Array.isArray(skillsRaw)
-        ? skillsRaw.map((v: any) => Number(v)).filter((v: any) => Number.isFinite(v))
-        : null;
-
-      if (skills && skills.length > 0) {
-        const categories = await Category.findAll({
-          where: { id: skills },
-          attributes: ["id", "name"],
+      const hasSkills =
+        Object.prototype.hasOwnProperty.call(req.body, "skills") ||
+        Object.prototype.hasOwnProperty.call(req.body, "job_category_ids");
+      const skillsRaw = Object.prototype.hasOwnProperty.call(req.body, "skills")
+        ? (req.body as any)?.skills
+        : (req.body as any)?.job_category_ids;
+      const skills = hasSkills ? parseCategoryIds(skillsRaw) : null;
+      if (hasSkills && skills === null) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 400,
+          message:
+            "skills/job_category_ids must be a numeric id or an array of numeric ids",
         });
-        const labels = categories.map((c: any) => c.name);
-        bodyUser.job_category_ids = skills;
-        bodyUser.job_categories_labels = labels;
       }
+
+      if (hasSkills) {
+        bodyUser.job_category_ids = skills;
+        if ((skills ?? []).length > 0) {
+          const categories = await Category.findAll({
+            where: { id: skills },
+            attributes: ["id", "name"],
+          });
+          bodyUser.job_categories_labels = categories.map((c: any) => c.name);
+        } else {
+          bodyUser.job_categories_labels = [];
+        }
+      }
+
+      const countryOriginId = parseOptionalPositiveInt(
+        (req.body as any)?.country_origin_id ?? (req.body as any)?.countryOriginId
+      );
+      if (countryOriginId !== undefined) bodyUser.country_origin_id = countryOriginId;
+
+      const countryOriginCode = parseOptionalString(
+        (req.body as any)?.country_origin_code ?? (req.body as any)?.countryOriginCode
+      );
+      if (countryOriginCode !== undefined)
+        bodyUser.country_origin_code = countryOriginCode;
+
+      const countryResidenceId = parseOptionalPositiveInt(
+        (req.body as any)?.country_residence_id ?? (req.body as any)?.countryResidenceId
+      );
+      if (countryResidenceId !== undefined)
+        bodyUser.country_residence_id = countryResidenceId;
+
+      const stateResidenceId = parseOptionalPositiveInt(
+        (req.body as any)?.state_residence_id ?? (req.body as any)?.stateResidenceId
+      );
+      if (stateResidenceId !== undefined) bodyUser.state_residence_id = stateResidenceId;
+
+      const stateResidenceCode = parseOptionalString(
+        (req.body as any)?.state_residence_code ?? (req.body as any)?.stateResidenceCode
+      );
+      if (stateResidenceCode !== undefined)
+        bodyUser.state_residence_code = stateResidenceCode;
+
+      const cityResidenceId = parseOptionalPositiveInt(
+        (req.body as any)?.city_residence_id ?? (req.body as any)?.cityResidenceId
+      );
+      if (cityResidenceId !== undefined) bodyUser.city_residence_id = cityResidenceId;
+
+      const cityResidenceName = parseOptionalString(
+        (req.body as any)?.city_residence_name ?? (req.body as any)?.cityResidenceName
+      );
+      if (cityResidenceName !== undefined)
+        bodyUser.city_residence_name = cityResidenceName;
 
       await uRepository.update((req as any).userId, bodyUser);
 
@@ -306,18 +483,11 @@ export const updateProfile = async (req: Request, res: Response) => {
         worker = await repository.add(createBody);
       }
 
-      if (skills && skills.length > 0) {
+      if (hasSkills || (req.body as any)?.about !== undefined) {
         await repository.update(worker.id, {
           planId: worker.planId,
           about: (req.body as any)?.about ?? worker.about,
-          categories: skills,
-          userId: (req as any).userId,
-        });
-      } else if ((req.body as any)?.about !== undefined) {
-        await repository.update(worker.id, {
-          planId: worker.planId,
-          about: (req.body as any)?.about,
-          categories: [],
+          categories: hasSkills ? skills : undefined,
           userId: (req as any).userId,
         });
       }

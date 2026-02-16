@@ -163,6 +163,8 @@ export const follows = async (id: any, meId: any = -1) => {
           {
             model: Worker,
             as: "worker",
+            where: { available: true },
+            required: false,
             attributes: ["id", "rate"],
             include: [
               {
@@ -226,6 +228,8 @@ export const followers = async (id: any, meId: any = -1) => {
           {
             model: Worker,
             as: "worker",
+            where: { available: true },
+            required: false,
             attributes: ["id", "rate"],
             include: [
               {

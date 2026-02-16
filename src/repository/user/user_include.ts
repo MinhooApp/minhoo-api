@@ -24,6 +24,8 @@ export const userIncludes = (meId: any = -1): Includeable[] => [
   {
     model: Worker,
     as: "worker",
+    where: { available: true },
+    required: false,
     attributes: { exclude: excludeKeys },
     include: [
       {

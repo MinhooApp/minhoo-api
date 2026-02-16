@@ -158,9 +158,40 @@ export const delete_profile_image = async (req: Request, res: Response) => {
 };
 
 const normalizeIdArray = (value: any) => {
-  if (!Array.isArray(value)) return null;
-  const ids = value.map((v) => Number(v)).filter((v) => Number.isFinite(v));
-  return ids;
+  if (value === undefined || value === null) return null;
+
+  let rawItems: any[] = [];
+  if (Array.isArray(value)) {
+    rawItems = value;
+  } else if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return [];
+
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      try {
+        const parsed = JSON.parse(trimmed);
+        if (!Array.isArray(parsed)) return null;
+        rawItems = parsed;
+      } catch {
+        return null;
+      }
+    } else if (trimmed.includes(",")) {
+      rawItems = trimmed.split(",").map((v) => v.trim());
+    } else {
+      rawItems = [trimmed];
+    }
+  } else if (typeof value === "number") {
+    rawItems = [value];
+  } else {
+    return null;
+  }
+
+  const ids = rawItems
+    .map((v) => Number(v))
+    .filter((v) => Number.isFinite(v) && v > 0);
+  if (ids.length !== rawItems.length) return null;
+
+  return Array.from(new Set(ids));
 };
 
 const normalizeStringArray = (value: any) => {

@@ -24,6 +24,8 @@ const userIncludes = [
   {
     model: Worker,
     as: "worker",
+    where: { available: true },
+    required: false,
     attributes: { exclude: excludeKeys },
     include: [
       {
@@ -58,6 +60,8 @@ const loginIncludes = [
   {
     model: Worker,
     as: "worker",
+    where: { available: true },
+    required: false,
     attributes: ["id"],
   },
 ];
