@@ -142,7 +142,18 @@ User.init(
     image_profil: {
       type: DataTypes.STRING,
       allowNull: false,
-      defaultValue: "\\uploads\\images\\user\\profile\\profile.png",
+      defaultValue:
+        "https://imagedelivery.net/byMb3jxLYxr0Esz1Tf7NcQ/ff67a5c9-2984-45be-9502-925d46939100/public",
+      get() {
+        const raw = this.getDataValue("image_profil");
+        if (!raw) return raw;
+        const value = String(raw);
+        if (/^https?:\/\//i.test(value) || value.startsWith("data:")) {
+          return value;
+        }
+        const normalized = value.replace(/\\/g, "/");
+        return normalized.startsWith("/") ? normalized : `/${normalized}`;
+      },
       validate: {
         notNull: {
           msg: "The field 'image_profil' can't be null",

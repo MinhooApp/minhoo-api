@@ -8,16 +8,75 @@ import { whereNotBlockedExists } from "../user/block_where";
 
 const excludeKeys = ["createdAt", "updatedAt"];
 
+type MediaItem = { url: string; is_img: boolean };
+
+const toBool = (value: any, fallback = true) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes"].includes(normalized)) return true;
+    if (["0", "false", "no"].includes(normalized)) return false;
+  }
+  return fallback;
+};
+
+const normalizeMediaPayload = (value: any): MediaItem[] => {
+  if (value === undefined || value === null) return [];
+
+  let source: any = value;
+  if (typeof source === "string") {
+    const trimmed = source.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        source = JSON.parse(trimmed);
+      } catch {
+        source = trimmed;
+      }
+    }
+  }
+
+  const items = Array.isArray(source) ? source : [source];
+  const normalized = items
+    .map((entry: any) => {
+      if (typeof entry === "string") {
+        const url = entry.trim();
+        if (!url) return null;
+        return { url, is_img: true };
+      }
+
+      if (!entry || typeof entry !== "object") return null;
+      const url = String(entry.url ?? entry.media_url ?? "").trim();
+      if (!url) return null;
+
+      const type = String(entry.type ?? "").trim().toLowerCase();
+      const inferredIsImg = type ? type !== "video" : true;
+      const is_img = toBool(entry.is_img, inferredIsImg);
+
+      return { url, is_img };
+    })
+    .filter((entry): entry is MediaItem => !!entry);
+
+  const unique = new Map<string, MediaItem>();
+  normalized.forEach((entry) => {
+    unique.set(entry.url, entry);
+  });
+
+  return Array.from(unique.values());
+};
+
 export const add = async (body: any) => {
   const post: any = await Post.create(body);
 
-  if (body.media_url != null) {
+  const mediaItems = normalizeMediaPayload(body.media_items ?? body.media_url);
+  if (mediaItems.length) {
     await Promise.all(
-      body.media_url.map(async (str: any) => {
+      mediaItems.map(async (item) => {
         await MediaPost.create({
           postId: post.id,
-          url: str,
-          is_img: true,
+          url: item.url,
+          is_img: item.is_img,
         });
       })
     );

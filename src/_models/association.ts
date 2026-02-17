@@ -11,6 +11,7 @@ import Service from "./service/service";
 import Comment from "./comment/comment";
 import Chat_User from "./chat/chat_user";
 import MediaPost from "./post/media_post";
+import SavedPost from "./post/saved_post";
 import Category from "./category/category";
 import Follower from "./follower/follower";
 import MediaWorker from "./worker/media_worker";
@@ -57,6 +58,12 @@ Post.belongsTo(Category, { as: "categry", foreignKey: "categoryId" });
 //Association Post with MediaPost
 Post.hasMany(MediaPost, { as: "post_media", foreignKey: "postId" });
 MediaPost.belongsTo(Post, { as: "post", foreignKey: "postId" });
+
+//Association SavedPost with User/Post
+User.hasMany(SavedPost, { as: "saved_posts", foreignKey: "userId" });
+SavedPost.belongsTo(User, { as: "user", foreignKey: "userId" });
+Post.hasMany(SavedPost, { as: "saves", foreignKey: "postId" });
+SavedPost.belongsTo(Post, { as: "post", foreignKey: "postId" });
 
 //Association Like with Comment
 Comment.hasMany(Like, { as: "likes", foreignKey: "commentId" });

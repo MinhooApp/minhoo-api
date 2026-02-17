@@ -107,7 +107,8 @@ export const update_username = async (req: Request, res: Response) => {
   }
 };
 
-const PROFILE_DEFAULT = "\\uploads\\images\\user\\profile\\profile.png";
+const PROFILE_DEFAULT =
+  "https://imagedelivery.net/byMb3jxLYxr0Esz1Tf7NcQ/ff67a5c9-2984-45be-9502-925d46939100/public";
 
 const resolveProfileAbsolutePath = (storedPath: string | null | undefined) => {
   if (!storedPath) return null;

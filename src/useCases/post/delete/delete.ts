@@ -5,6 +5,7 @@ import {
   formatResponse,
   repository,
 } from "../_module/module";
+import * as savedRepository from "../../../repository/saved/saved_repository";
 
 export const deletePost = async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -17,6 +18,7 @@ export const deletePost = async (req: Request, res: Response) => {
     });
   }
   await repository.deletePost(id);
+  await savedRepository.removeByPostId(Number(id));
 
   return formatResponse({
     res: res,
@@ -36,6 +38,7 @@ export const deletePostAdmin = async (req: Request, res: Response) => {
     });
   }
   await repository.deletePost(id);
+  await savedRepository.removeByPostId(Number(id));
 
   return formatResponse({
     res: res,

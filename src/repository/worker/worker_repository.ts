@@ -156,7 +156,10 @@ export const tokensByNewService = async (categoryId: any, meId: any) => {
 };
 export const deleteImageProfil = async (id: any) => {
   return await User.update(
-    { image_profil: "\\uploads\\images\\user\\profile\\profile.png" },
+    {
+      image_profil:
+        "https://imagedelivery.net/byMb3jxLYxr0Esz1Tf7NcQ/ff67a5c9-2984-45be-9502-925d46939100/public",
+    },
     { where: { id: id } }
   );
 };

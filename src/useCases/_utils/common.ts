@@ -1,8 +1,5 @@
 
-import fs from 'fs';
-import path from 'path'
-import multer from 'multer'
-import { v4 as uuid } from 'uuid';
+import multer from "multer";
 
 interface parameters {
     route: string, file: any, body?: any, maxFiles: any, is_img: boolean, maxFileSizeBytes?: number
@@ -18,14 +15,7 @@ export const camelSentence = function camelSentence(str: any) {
 // Settings
 export const uploadFile = function ({ route, file, maxFiles, is_img, maxFileSizeBytes }: parameters) {
 
-    const storage = multer.diskStorage({
-        destination: "./src/public" + route,
-
-        filename: (req, file, cb) => {
-
-            cb(null, uuid() + path.extname(file.originalname))
-        }
-    });
+    const storage = multer.memoryStorage();
     const multerOptions: any = {
         storage: storage,
         fileFilter: is_img ? fileFilterImg : fileFilterAll

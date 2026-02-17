@@ -1,129 +1,104 @@
 import {
   formatResponse,
   repository,
-  path,
   uRepository,
   generatePassword,
   Request,
   Response,
-  uploadFile,
-  fs,
   sendEmail,
   bcryptjs,
+  multer,
 } from "../_module/module";
-const PUBLIC_FOLDER = path.join(__dirname, "../../../../src/public");
-const PROFILE_IMAGE_FOLDER = path.join(
-  PUBLIC_FOLDER,
-  "uploads/images/user/profile/"
-);
+import {
+  normalizeRemoteHttpUrl,
+  uploadImageBufferToCloudflare,
+} from "../../_utils/cloudflare_images";
+
+const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
+const uploadSignUpAvatar = multer({
+  storage: multer.memoryStorage(),
+  limits: { files: 1, fileSize: AVATAR_MAX_BYTES },
+}).fields([
+  { name: "image_profil", maxCount: 1 },
+  { name: "image_profile", maxCount: 1 },
+]);
 
 // signUp.ts
 const now: any = new Date(new Date().toUTCString());
-
-/**
- * I normalize the uploaded file into a path that your DB can store.
- * Works for: Multer diskStorage (destination/filename/path) and multer-s3 (location).
- */
-function resolveUploadedImage(
-  file: any,
-  req: Request,
-  staticBase = "/uploads"
-) {
-  // Prefer explicit URL from S3-like providers
-  if (file?.location) {
-    // Example: multer-s3 puts the final public URL in location
-    return { url: file.location, relative: null };
-  }
-
-  // Multer disk: typical fields are destination, filename, path
-  // Build a POSIX-like public path your app serves, e.g. /uploads/images/user/profile/xxx.jpg
-  const filename = file?.filename ?? file?.originalname ?? null;
-  const destination = file?.destination ?? "";
-  const pathFromDisk = file?.path ?? "";
-
-  // Try to map disk path into a public URL under staticBase
-  // Example: if destination = "<project>/public/uploads/images/user/profile"
-  // and you serve `public` as static, then remove everything before `/uploads`.
-  let relativeFromDisk = null;
-  if (typeof pathFromDisk === "string" && pathFromDisk.includes(staticBase)) {
-    // pathFromDisk might be "C:\app\public\uploads\images\user\profile\file.jpg"
-    relativeFromDisk = pathFromDisk.substring(pathFromDisk.indexOf(staticBase));
-  } else if (destination && filename) {
-    // Fallback: try to reconstruct using route folder and filename
-    // You use route: "/uploads/images/user/profile"
-    const normDest = destination.replace(/\\/g, "/");
-    const idx = normDest.indexOf(staticBase);
-    if (idx >= 0) {
-      const base = normDest.substring(idx);
-      relativeFromDisk = `${base.replace(/\/+$/, "")}/${filename}`;
-    }
-  }
-
-  // Ensure forward slashes for URLs
-  if (relativeFromDisk) {
-    relativeFromDisk = relativeFromDisk.replace(/\\/g, "/");
-    const fullUrl = `${req.protocol}://${req.get("host")}${relativeFromDisk}`;
-    return { url: fullUrl, relative: relativeFromDisk };
-  }
-
-  // Last resort: return filename only (not ideal for DB)
-  return { url: null, relative: filename };
-}
 
 export const signUp = async (req: Request, res: Response) => {
   try {
     const isMultipart = !!req.is("multipart/form-data");
 
     if (!isMultipart) {
-      await processSignUp(req, res, null);
+      await processSignUp(req, res);
       return;
     }
 
-    // Your helper is configured to receive "image_profil" as the field name
-    const upload = uploadFile({
-      route: "/uploads/images/user/profile",
-      file: "image_profil",
-      maxFiles: 1,
-      is_img: true,
-      maxFileSizeBytes: 10 * 1024 * 1024,
-    });
-
-    upload(req, res, async (err: any) => {
+    uploadSignUpAvatar(req, res, async (err: any) => {
       if (err) {
         return formatResponse({
           res,
           success: false,
-          code: 500,
+          code: 400,
           message: err?.message || "Error uploading file",
         });
       }
 
-      // Remove empty text fields if they arrive as empty strings
-      if ((req.body as any)?.image_profil === "")
-        delete (req.body as any).image_profil;
-      if ((req.body as any)?.image_profile === "")
-        delete (req.body as any).image_profile;
+      try {
+        if ((req.body as any)?.image_profil === "")
+          delete (req.body as any).image_profil;
+        if ((req.body as any)?.image_profile === "")
+          delete (req.body as any).image_profile;
 
-      // Normalize the file object from different shapes
-      const filesAny: any = (req as any).files || {};
-      const fileSingle: any = (req as any).file || null;
-      const fileObj =
-        fileSingle ??
-        filesAny?.image_profil?.[0] ??
-        filesAny?.image_profile?.[0] ??
-        null;
+        const filesAny: any = (req as any).files || {};
+        const fileSingle: any = (req as any).file || null;
+        const fileObj =
+          fileSingle ??
+          filesAny?.image_profil?.[0] ??
+          filesAny?.image_profile?.[0] ??
+          null;
 
-      // If a file exists, resolve a storable path/URL and assign it to the body
-      if (fileObj) {
-        const resolved = resolveUploadedImage(fileObj, req, "/uploads");
+        const arrProfil: any[] = filesAny.image_profil ?? [];
+        const arrProfile: any[] = filesAny.image_profile ?? [];
+        const total =
+          (fileSingle ? 1 : 0) +
+          (arrProfil?.length || 0) +
+          (arrProfile?.length || 0);
+        if ((arrProfil.length > 0 && arrProfile.length > 0) || total > 1) {
+          return formatResponse({
+            res,
+            success: false,
+            code: 400,
+            message:
+              "Solo se permite 1 archivo con el campo image_profile O image_profil.",
+          });
+        }
 
-        // I save only the relative path, without protocol/host
-        (req.body as any).image_profil = resolved.relative ?? null;
+        if (fileObj?.buffer) {
+          const uploadedAvatar = await uploadImageBufferToCloudflare({
+            buffer: fileObj.buffer,
+            filename: fileObj.originalname,
+            mimeType: fileObj.mimetype,
+            metadata: {
+              app: "minhoo",
+              context: "signup-avatar",
+              email: String((req.body as any)?.email ?? "").trim(),
+            },
+          });
+          (req.body as any).image_profil = uploadedAvatar.url;
+          (req.body as any).image_profile = uploadedAvatar.url;
+        }
 
-        // Optional mirror for image_profile
-        (req.body as any).image_profile = (req.body as any).image_profil;
+        await processSignUp(req, res);
+      } catch (uploadError: any) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 502,
+          message: uploadError?.message ?? "cloudflare upload failed",
+        });
       }
-      await processSignUp(req, res, fileObj ? fileObj : null);
     });
   } catch (error: any) {
     return formatResponse({
@@ -136,10 +111,26 @@ export const signUp = async (req: Request, res: Response) => {
 };
 
 // Función para procesar el registro de usuario
-const processSignUp = async (req: Request, res: Response, files: any) => {
-  let trash = "";
-
+const processSignUp = async (req: Request, res: Response) => {
   const { email, password, confirm_password, uuid } = req.body;
+
+  const rawAvatarUrl =
+    (req.body as any)?.image_profil ?? (req.body as any)?.image_profile;
+  const normalizedAvatarUrl = normalizeRemoteHttpUrl(rawAvatarUrl);
+  const hasAvatarUrl =
+    rawAvatarUrl !== undefined && String(rawAvatarUrl ?? "").trim() !== "";
+  if (hasAvatarUrl && !normalizedAvatarUrl) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "image_profil must be a valid http(s) URL",
+    });
+  }
+  if (normalizedAvatarUrl) {
+    (req.body as any).image_profil = normalizedAvatarUrl;
+    (req.body as any).image_profile = normalizedAvatarUrl;
+  }
 
   if (password !== confirm_password) {
     return formatResponse({
@@ -158,21 +149,6 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
   const validateEmail = await repository.findByEmail(email);
 
   if (validateEmail) {
-    if (files && files.image_profil) {
-      try {
-        if (req.body.delete !== "profile.png") {
-          trash = PROFILE_IMAGE_FOLDER + req.body.delete;
-          fs.unlink(trash, (err: any) => {
-            if (err) console.error(err);
-          });
-        }
-        fs.unlink(files.image_profil[0].path, (err: any) => {
-          if (err) console.error(err);
-        });
-      } catch (error: any) {
-        console.error(error);
-      }
-    }
     return formatResponse({
       res,
       success: false,
@@ -183,13 +159,6 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
   }
 
   try {
-    if (files && files.image_profil) {
-      req.body.image_profil = files.image_profil[0].path.replace(
-        "src\\public\\",
-        "\\"
-      );
-    }
-
     const userTemp: any = await repository.add(req.body);
 
     const roles = userTemp?.roles.map((role: any) => role.id) || [];
@@ -211,12 +180,6 @@ const processSignUp = async (req: Request, res: Response, files: any) => {
 
     return formatResponse({ res, success: true, body: { user } });
   } catch (error: any) {
-    if (files?.image_profile) {
-      const filePath = files.image_profile[0].path;
-      fs.unlink(filePath, (err: any) => {
-        if (err) console.error(err);
-      });
-    }
     return formatResponse({
       res,
       success: false,

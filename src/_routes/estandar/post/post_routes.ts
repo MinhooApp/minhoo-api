@@ -16,7 +16,7 @@ router.post("/", TokenValidation(), add);
 //router.get("/", gets);
 router.get("/", TokenOptional(), gets);
 router.put("/like/:id", TokenValidation(), like);
-router.get("/:id", get);
+router.get("/:id", TokenOptional(), get);
 router.delete("/admin/:id", TokenValidation([8088]), deletePostAdmin);
 router.delete("/:id", TokenValidation(), deletePost);
 router.get("/share/:id", async (req, res) => {

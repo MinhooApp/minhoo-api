@@ -4,30 +4,21 @@ import {
   formatResponse,
   repository,
   uRepository,
-  fs,
-  uploadFile,
-  path,
   authRepository,
 } from "../_module/module";
 import Category from "../../../_models/category/category";
 import multer from "multer";
-const PUBLIC_FOLDER = path.join(__dirname, "../../../../src/public");
-const PROFILE_IMAGE_FOLDER = path.join(
-  PUBLIC_FOLDER,
-  "uploads/images/user/profile/"
-);
-const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
+import {
+  normalizeRemoteHttpUrl,
+  uploadImageBufferToCloudflare,
+} from "../../_utils/cloudflare_images";
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, PROFILE_IMAGE_FOLDER),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname || "");
-    cb(null, `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`);
-  },
-});
+const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
+const PROFILE_DEFAULT =
+  "https://imagedelivery.net/byMb3jxLYxr0Esz1Tf7NcQ/ff67a5c9-2984-45be-9502-925d46939100/public";
 
 const uploadEither = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { files: 1, fileSize: AVATAR_MAX_BYTES },
 }).fields([
   { name: "image_profile", maxCount: 1 },
@@ -122,17 +113,39 @@ export const update = async (req: Request, res: Response) => {
 
     // 2) Toma el archivo (si viene)
     const fileObj = singleFile ?? arrProfile[0] ?? arrProfil[0];
-    let filePath = "";
-    let trash = "";
+    const rawAvatarUrl =
+      (req.body as any)?.avatar_url ??
+      (req.body as any)?.image_profil ??
+      (req.body as any)?.image_profile;
+    const normalizedAvatarUrl = normalizeRemoteHttpUrl(rawAvatarUrl);
+    const hasAvatarUrlField =
+      rawAvatarUrl !== undefined && String(rawAvatarUrl ?? "").trim() !== "";
+
+    if (hasAvatarUrlField && !normalizedAvatarUrl) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "avatar_url must be a valid http(s) URL",
+      });
+    }
 
     try {
       const worker = await repository.worker((req as any).userId);
+      let avatarUrl = normalizedAvatarUrl || undefined;
 
-      if (fileObj?.filename) {
-        filePath = path.join(
-          "\\uploads\\images\\user\\profile",
-          fileObj.filename
-        );
+      if (fileObj?.buffer) {
+        const uploadedAvatar = await uploadImageBufferToCloudflare({
+          buffer: fileObj.buffer,
+          filename: fileObj.originalname,
+          mimeType: fileObj.mimetype,
+          metadata: {
+            app: "minhoo",
+            context: "avatar",
+            userId: String((req as any).userId ?? ""),
+          },
+        });
+        avatarUrl = uploadedAvatar.url;
       }
 
       const hasSkills =
@@ -161,8 +174,8 @@ export const update = async (req: Request, res: Response) => {
         // Mantén image_profil como en tu BD
         image_profil:
           req.body.delete_image === true || req.body.delete_image === "true"
-            ? "\\uploads\\images\\user\\profile\\profile.png"
-            : filePath || undefined,
+            ? PROFILE_DEFAULT
+            : avatarUrl,
       };
 
       if (hasSkills) {
@@ -245,13 +258,6 @@ export const update = async (req: Request, res: Response) => {
       const user = await uRepository.get((req as any).userId);
       return formatResponse({ res, success: true, body: { user } });
     } catch (error: any) {
-      // Limpieza si falló
-      const toDelete: any[] = [
-        ...((filesAny.image_profile as any[]) ?? []),
-        ...((filesAny.image_profil as any[]) ?? []),
-      ];
-      if ((req as any).file) toDelete.push((req as any).file);
-      for (const f of toDelete) if (f?.path) fs.unlink(f.path, () => {});
       console.error(error);
       return formatResponse({
         res,
@@ -335,7 +341,22 @@ export const updateProfile = async (req: Request, res: Response) => {
     }
 
     const fileObj = singleFile ?? arrProfile[0] ?? arrProfil[0];
-    let filePath = "";
+    const rawAvatarUrl =
+      (req.body as any)?.avatar_url ??
+      (req.body as any)?.image_profil ??
+      (req.body as any)?.image_profile;
+    const normalizedAvatarUrl = normalizeRemoteHttpUrl(rawAvatarUrl);
+    const hasAvatarUrlField =
+      rawAvatarUrl !== undefined && String(rawAvatarUrl ?? "").trim() !== "";
+
+    if (hasAvatarUrlField && !normalizedAvatarUrl) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "avatar_url must be a valid http(s) URL",
+      });
+    }
 
     try {
       const user = await uRepository.getUserById((req as any).userId);
@@ -384,12 +405,21 @@ export const updateProfile = async (req: Request, res: Response) => {
         }
       }
 
-      if (fileObj?.filename) {
-        filePath = path.join("\\uploads\\images\\user\\profile", fileObj.filename);
-      }
+      let avatarBody = normalizedAvatarUrl || undefined;
 
-      const avatarUrl = String((req.body as any)?.avatar_url ?? "");
-      const avatarBody = filePath || (avatarUrl ? avatarUrl : undefined);
+      if (fileObj?.buffer) {
+        const uploadedAvatar = await uploadImageBufferToCloudflare({
+          buffer: fileObj.buffer,
+          filename: fileObj.originalname,
+          mimeType: fileObj.mimetype,
+          metadata: {
+            app: "minhoo",
+            context: "avatar",
+            userId: String((req as any).userId ?? ""),
+          },
+        });
+        avatarBody = uploadedAvatar.url;
+      }
 
       const bodyUser: any = {
         name: (req.body as any)?.first_name ?? (req.body as any)?.name,
@@ -502,12 +532,6 @@ export const updateProfile = async (req: Request, res: Response) => {
         body: { user: userUpdated, worker: workerUpdated },
       });
     } catch (error: any) {
-      const toDelete: any[] = [
-        ...((filesAny.image_profile as any[]) ?? []),
-        ...((filesAny.image_profil as any[]) ?? []),
-      ];
-      if ((req as any).file) toDelete.push((req as any).file);
-      for (const f of toDelete) if (f?.path) fs.unlink(f.path, () => {});
       console.error(error);
       return formatResponse({
         res,
