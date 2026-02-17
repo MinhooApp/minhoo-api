@@ -16,6 +16,7 @@ const PROFILE_IMAGE_FOLDER = path.join(
   PUBLIC_FOLDER,
   "uploads/images/user/profile/"
 );
+const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, PROFILE_IMAGE_FOLDER),
@@ -27,7 +28,7 @@ const storage = multer.diskStorage({
 
 const uploadEither = multer({
   storage,
-  limits: { files: 1, fileSize: 8 * 1024 * 1024 }, // ajusta si quieres
+  limits: { files: 1, fileSize: AVATAR_MAX_BYTES },
 }).fields([
   { name: "image_profile", maxCount: 1 },
   { name: "image_profil", maxCount: 1 },

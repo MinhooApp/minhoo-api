@@ -5,7 +5,7 @@ import multer from 'multer'
 import { v4 as uuid } from 'uuid';
 
 interface parameters {
-    route: string, file: any, body?: any, maxFiles: any, is_img: boolean
+    route: string, file: any, body?: any, maxFiles: any, is_img: boolean, maxFileSizeBytes?: number
 }
 
 export const camelSentence = function camelSentence(str: any) {
@@ -16,7 +16,7 @@ export const camelSentence = function camelSentence(str: any) {
 
 
 // Settings
-export const uploadFile = function ({ route, file, maxFiles, is_img }: parameters) {
+export const uploadFile = function ({ route, file, maxFiles, is_img, maxFileSizeBytes }: parameters) {
 
     const storage = multer.diskStorage({
         destination: "./src/public" + route,
@@ -26,10 +26,14 @@ export const uploadFile = function ({ route, file, maxFiles, is_img }: parameter
             cb(null, uuid() + path.extname(file.originalname))
         }
     });
-    return multer({
+    const multerOptions: any = {
         storage: storage,
         fileFilter: is_img ? fileFilterImg : fileFilterAll
-    }).fields([{
+    };
+    if (Number.isFinite(maxFileSizeBytes) && (maxFileSizeBytes as number) > 0) {
+        multerOptions.limits = { fileSize: maxFileSizeBytes };
+    }
+    return multer(multerOptions).fields([{
         name: file,
         maxCount: maxFiles,
     }]);

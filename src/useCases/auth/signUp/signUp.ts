@@ -85,6 +85,7 @@ export const signUp = async (req: Request, res: Response) => {
       file: "image_profil",
       maxFiles: 1,
       is_img: true,
+      maxFileSizeBytes: 10 * 1024 * 1024,
     });
 
     upload(req, res, async (err: any) => {
