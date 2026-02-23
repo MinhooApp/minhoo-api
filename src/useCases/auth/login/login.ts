@@ -11,6 +11,46 @@ import {
 import { getSocketInstance } from "../../../_sockets/socket_instance";
 import User from "../../../_models/user/user";
 
+const normalizeDeviceToken = (raw: any): string => {
+  const value = String(raw ?? "").trim();
+  if (!value) return "";
+  if (value.toLowerCase() === "null" || value.toLowerCase() === "undefined") return "";
+  if (value.toLowerCase().startsWith("bearer ")) {
+    return value.slice(7).trim();
+  }
+  return value;
+};
+
+const extractDeviceToken = (req: Request): string => {
+  const body: any = req.body ?? {};
+  const headers: any = req.headers ?? {};
+
+  const candidates = [
+    body?.uuid,
+    body?.fcmToken,
+    body?.fcm_token,
+    body?.deviceToken,
+    body?.device_token,
+    body?.pushToken,
+    body?.push_token,
+    body?.firebaseToken,
+    body?.firebase_token,
+    body?.notificationToken,
+    body?.notification_token,
+    headers?.["x-device-token"],
+    headers?.["x-fcm-token"],
+    headers?.["x-push-token"],
+    headers?.["x-notification-token"],
+  ];
+
+  for (const candidate of candidates) {
+    const token = normalizeDeviceToken(candidate);
+    if (token.length >= 20) return token;
+  }
+
+  return "";
+};
+
 export const login = async (req: Request, res: Response) => {
   const startedAt = Date.now();
   try {
@@ -19,7 +59,7 @@ export const login = async (req: Request, res: Response) => {
     const inputPassword = String(
       req.body?.password ?? req.body?.clave ?? req.body?.pass ?? ""
     );
-    const { uuid } = req.body;
+    const uuid = extractDeviceToken(req);
 
     if (!email || !inputPassword) {
       return formatResponse({
@@ -237,7 +277,7 @@ export const logout = async (req: Request, res: Response) => {
 
 export const logoutDevice = async (req: Request, res: Response) => {
   try {
-    const rawUuid = String(req.body?.uuid ?? "").trim();
+    const rawUuid = extractDeviceToken(req);
     const userIdRaw = Number(req.body?.userId ?? 0);
 
     if (!rawUuid || rawUuid.length < 20) {

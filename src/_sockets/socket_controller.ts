@@ -35,6 +35,7 @@ type ChatSyncPayload = {
   limit?: number;
 };
 
+
 type ChatTypingPayload = {
   chatId: number;
   userId: number;
@@ -52,6 +53,9 @@ type ReactionMap = Record<string, number[]>;
 
 const chatRoom = (chatId: number) => `chat_${chatId}`;
 const userRoom = (userId: number) => `user_${userId}`;
+const ALLOW_SOCKET_USERID_FALLBACK =
+  String(process.env.ALLOW_SOCKET_USERID_FALLBACK ?? "1").trim() !== "0";
+const SESSION_VALIDATION_TTL_MS = 15 * 1000;
 
 function buildStatusPayload(params: {
   chatId: number;
@@ -163,11 +167,57 @@ function getSocketUserId(socket: Socket): number {
   return parseUserId({ userId: (socket.data as any)?.userId });
 }
 
-function requireAuthenticatedUser(
+async function validateSocketSession(socket: Socket): Promise<boolean> {
+  const socketUserId = getSocketUserId(socket);
+  if (!Number.isFinite(socketUserId) || socketUserId <= 0) return false;
+
+  const now = Date.now();
+  const validatedAt = Number((socket.data as any)?.sessionValidatedAt ?? 0);
+  const alreadyValidated = Boolean((socket.data as any)?.sessionValidated);
+  if (alreadyValidated && now - validatedAt <= SESSION_VALIDATION_TTL_MS) {
+    return true;
+  }
+
+  const authToken = normalizeToken((socket.data as any)?.authToken);
+  if (!authToken) return false;
+
+  const tokenUserId = resolveUserIdFromToken(authToken);
+  if (!tokenUserId || tokenUserId !== socketUserId) return false;
+
+  const user = await User.findOne({
+    where: { id: socketUserId },
+    attributes: ["id", "available", "disabled"],
+    raw: true,
+  });
+  if (!user) return false;
+  if (!(user as any).available || Boolean((user as any).disabled)) return false;
+
+  (socket.data as any).sessionValidated = true;
+  (socket.data as any).sessionValidatedAt = now;
+  return true;
+}
+
+async function requireAuthenticatedUser(
   socket: Socket,
   event: string,
   payloadUserId?: number
-): number {
+): Promise<number> {
+  const tokenAuthenticated = Boolean((socket.data as any)?.authenticatedByToken);
+  if (!tokenAuthenticated && !ALLOW_SOCKET_USERID_FALLBACK) {
+    console.log(`[socket] ${event} rejected missing token auth socket=${socket.id}`);
+    socket.emit("auth:error", { event, code: "UNAUTHENTICATED" });
+    return 0;
+  }
+
+  if (tokenAuthenticated) {
+    const validSession = await validateSocketSession(socket);
+    if (!validSession) {
+      console.log(`[socket] ${event} rejected invalid session socket=${socket.id}`);
+      socket.emit("auth:error", { event, code: "INVALID_SESSION" });
+      return 0;
+    }
+  }
+
   const socketUserId = getSocketUserId(socket);
   const payloadUid = Number.isFinite(payloadUserId as any) ? Number(payloadUserId) : 0;
 
@@ -201,6 +251,24 @@ async function isUserParticipantInChat(chatId: number, userId: number): Promise<
   return !!row;
 }
 
+async function getChatParticipantUserIds(chatId: number): Promise<number[]> {
+  if (!Number.isFinite(chatId) || chatId <= 0) return [];
+
+  const rows = await Chat_User.findAll({
+    where: { chatId },
+    attributes: ["userId"],
+    raw: true,
+  });
+
+  return Array.from(
+    new Set(
+      (rows as any[])
+        .map((row) => Number((row as any)?.userId))
+        .filter((uid) => Number.isFinite(uid) && uid > 0)
+    )
+  );
+}
+
 function normalizeToken(raw: any): string {
   const value = String(raw ?? "").trim();
   if (!value) return "";
@@ -210,6 +278,36 @@ function normalizeToken(raw: any): string {
   return value;
 }
 
+function resolveTokenFromSources(...sources: any[]): string {
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+
+    const candidate =
+      source?.token ??
+      source?.accessToken ??
+      source?.access_token ??
+      source?.authToken ??
+      source?.auth_token ??
+      source?.jwt ??
+      source?.idToken ??
+      source?.id_token ??
+      source?.authorization ??
+      source?.bearer ??
+      source?.bearerToken ??
+      source?.urlToken ??
+      source?.["x-access-token"] ??
+      source?.["x-auth-token"] ??
+      source?.["auth-token"] ??
+      source?.["x-jwt-token"] ??
+      source?.["x-device-token"];
+
+    const token = normalizeToken(candidate);
+    if (token) return token;
+  }
+
+  return "";
+}
+
 function resolveUserIdFromToken(tokenRaw: any): number {
   const token = normalizeToken(tokenRaw);
   if (!token) return 0;
@@ -217,7 +315,6 @@ function resolveUserIdFromToken(tokenRaw: any): number {
   const secrets = [
     (process.env.SECRETORPRIVATEKEY ?? "").trim(),
     (process.env.JWT_SECRET ?? "").trim(),
-    "tokenTest",
   ].filter(Boolean);
 
   for (const secret of secrets) {
@@ -233,16 +330,7 @@ function resolveUserIdFromToken(tokenRaw: any): number {
     }
   }
 
-  try {
-    const decoded = jwt.decode(token) as any;
-    return (
-      parseUserId(decoded) ||
-      parseUserId({ userId: decoded?.sub }) ||
-      parseUserId({ userId: decoded?.id })
-    );
-  } catch (_) {
-    return 0;
-  }
+  return 0;
 }
 
 function resolveUserIdFromHandshake(socket: Socket): number {
@@ -261,19 +349,24 @@ function resolveUserIdFromHandshake(socket: Socket): number {
         headers?.["x-user-id"] ??
         headers?.["x-userid"],
     });
-  if (directUserId > 0) return directUserId;
 
-  const token =
-    auth?.token ??
-    auth?.accessToken ??
-    auth?.jwt ??
-    query?.token ??
-    query?.access_token ??
-    query?.urlToken ??
-    headers?.authorization ??
-    headers?.Authorization;
+  const token = resolveTokenFromSources(auth, query, headers);
+  const tokenUserId = resolveUserIdFromToken(token);
+  if (tokenUserId > 0) {
+    if (directUserId > 0 && directUserId !== tokenUserId) {
+      console.log(
+        `[socket] handshake rejected user mismatch directUserId=${directUserId} tokenUserId=${tokenUserId} socket=${socket.id}`
+      );
+      return 0;
+    }
+    return tokenUserId;
+  }
 
-  return resolveUserIdFromToken(token);
+  if (ALLOW_SOCKET_USERID_FALLBACK && directUserId > 0) {
+    return directUserId;
+  }
+
+  return 0;
 }
 
 function emitChatsRefresh(socket: Socket, userId: number) {
@@ -350,20 +443,46 @@ async function getDistinctRoomUserIds(socket: Socket, chatId: number): Promise<n
   return [...unique];
 }
 
+async function emitLegacyChatEventToParticipants(
+  socket: Socket,
+  chatId: number,
+  event: string,
+  data: any
+) {
+  const participantIds = await getChatParticipantUserIds(chatId);
+  for (const userId of participantIds) {
+    socket.nsp.to(userRoom(userId)).emit(event, data);
+  }
+}
+
 /**
  * ✅ EMIT HÍBRIDO (Room + Legacy)
- * - Nuevo (APK nueva):   room/<event>  (a un room)
- * - Legacy (vieja):      <event>       (broadcast global)
- *
- * Importante:
- * - Usamos broadcast/to(room) para NO re-enviar al emisor.
+ * - Nuevo (APK nueva): room/<event> (room del chat)
+ * - Legacy (APK vieja): <event> (solo sockets de participantes)
  */
 function emitChatHybrid(socket: Socket, chatId: number, event: string, data: any) {
   // NUEVO (rooms)
   socket.to(chatRoom(chatId)).emit(`room/${event}`, data);
 
-  // LEGACY (sin rooms)
-  socket.broadcast.emit(event, data);
+  // LEGACY seguro: solo usuarios participantes del chat (NO broadcast global).
+  void emitLegacyChatEventToParticipants(socket, chatId, event, data).catch((err) => {
+    console.log("❌ emit legacy chat error", err);
+  });
+
+  // Compatibilidad extra con clientes que escuchan evento genérico.
+  if (/^chat\/\d+$/.test(event)) {
+    socket.to(chatRoom(chatId)).emit("chat", data);
+    void emitLegacyChatEventToParticipants(socket, chatId, "chat", data).catch(() => undefined);
+  } else if (/^chat\/status\/\d+$/.test(event)) {
+    socket.to(chatRoom(chatId)).emit("chat:status", data);
+    void emitLegacyChatEventToParticipants(socket, chatId, "chat:status", data).catch(() => undefined);
+  } else if (/^chat\/typing\/\d+$/.test(event)) {
+    socket.to(chatRoom(chatId)).emit("chat:typing", data);
+    void emitLegacyChatEventToParticipants(socket, chatId, "chat:typing", data).catch(() => undefined);
+  } else if (/^chat\/reaction\/\d+$/.test(event)) {
+    socket.to(chatRoom(chatId)).emit("chat:reaction", data);
+    void emitLegacyChatEventToParticipants(socket, chatId, "chat:reaction", data).catch(() => undefined);
+  }
 }
 
 /**
@@ -402,24 +521,71 @@ function addUnique(arr: number[], id: number) {
 export const socketController = (socket: Socket) => {
   console.log(`Cliente conectado ${socket.id}`);
 
+  const auth: any = socket.handshake?.auth ?? {};
+  const query: any = socket.handshake?.query ?? {};
+  const headers: any = socket.handshake?.headers ?? {};
+  const handshakeToken = resolveTokenFromSources(auth, query, headers);
+  const handshakeAuthToken = normalizeToken(handshakeToken);
+  const handshakeTokenUserId = resolveUserIdFromToken(handshakeToken);
+
   const handshakeUserId = resolveUserIdFromHandshake(socket);
   if (handshakeUserId > 0) {
     (socket.data as any).userId = handshakeUserId;
+    (socket.data as any).authenticatedByToken = handshakeTokenUserId > 0;
+    (socket.data as any).authToken = handshakeAuthToken || null;
+    (socket.data as any).sessionValidated = false;
+    (socket.data as any).sessionValidatedAt = 0;
     socket.join(userRoom(handshakeUserId));
-    console.log(`[socket] bind userId=${handshakeUserId} source=handshake socket=${socket.id}`);
+    console.log(
+      `[socket] bind userId=${handshakeUserId} source=handshake tokenAuth=${handshakeTokenUserId > 0} socket=${socket.id}`
+    );
+    if ((socket.data as any).authenticatedByToken) {
+      void (async () => {
+        const validSession = await validateSocketSession(socket);
+        if (validSession) return;
+
+        socket.leave(userRoom(handshakeUserId));
+        (socket.data as any).userId = 0;
+        (socket.data as any).authenticatedByToken = false;
+        (socket.data as any).authToken = null;
+        (socket.data as any).sessionValidated = false;
+        (socket.data as any).sessionValidatedAt = 0;
+        console.log(`[socket] handshake rejected invalid session socket=${socket.id}`);
+        socket.emit("auth:error", { event: "handshake", code: "INVALID_SESSION" });
+      })().catch((err) => {
+        console.log("❌ handshake session validation error", err);
+      });
+    }
   } else {
+    (socket.data as any).authenticatedByToken = false;
+    (socket.data as any).authToken = null;
+    (socket.data as any).sessionValidated = false;
+    (socket.data as any).sessionValidatedAt = 0;
     console.log(`[socket] bind userId=0 source=handshake socket=${socket.id}`);
   }
 
-  socket.on("bind-user", (payload: any) => {
+  socket.on("bind-user", async (payload: any) => {
     try {
       const payloadUserId = parseUserId(payload);
-      const tokenUserId = resolveUserIdFromToken(
-        payload?.token ?? payload?.authToken ?? payload?.jwt ?? payload?.authorization
-      );
+      const bindTokenRaw = resolveTokenFromSources(payload);
+      const bindAuthToken = normalizeToken(bindTokenRaw);
+      const tokenUserId = resolveUserIdFromToken(bindTokenRaw);
       const socketUserId = getSocketUserId(socket);
+      const existingTokenAuth = Boolean((socket.data as any)?.authenticatedByToken);
 
-      const resolvedUserId = tokenUserId > 0 ? tokenUserId : socketUserId;
+      let resolvedUserId = 0;
+      let tokenAuthenticated = existingTokenAuth;
+
+      if (tokenUserId > 0) {
+        resolvedUserId = tokenUserId;
+        tokenAuthenticated = true;
+      } else if (existingTokenAuth && socketUserId > 0) {
+        resolvedUserId = socketUserId;
+        tokenAuthenticated = true;
+      } else if (ALLOW_SOCKET_USERID_FALLBACK) {
+        resolvedUserId = payloadUserId > 0 ? payloadUserId : socketUserId;
+        tokenAuthenticated = false;
+      }
       if (!resolvedUserId) {
         console.log(`[socket] bind-user rejected unauthenticated socket=${socket.id}`);
         socket.emit("auth:error", { event: "bind-user", code: "UNAUTHENTICATED" });
@@ -435,8 +601,29 @@ export const socketController = (socket: Socket) => {
       }
 
       (socket.data as any).userId = resolvedUserId;
+      (socket.data as any).authenticatedByToken = tokenAuthenticated;
+      (socket.data as any).authToken = tokenAuthenticated
+        ? bindAuthToken || (socket.data as any).authToken || null
+        : null;
+      (socket.data as any).sessionValidated = false;
+      (socket.data as any).sessionValidatedAt = 0;
+      if (tokenAuthenticated) {
+        const validSession = await validateSocketSession(socket);
+        if (!validSession) {
+          (socket.data as any).userId = 0;
+          (socket.data as any).authenticatedByToken = false;
+          (socket.data as any).authToken = null;
+          (socket.data as any).sessionValidated = false;
+          (socket.data as any).sessionValidatedAt = 0;
+          console.log(`[socket] bind-user rejected invalid session socket=${socket.id}`);
+          socket.emit("auth:error", { event: "bind-user", code: "INVALID_SESSION" });
+          return;
+        }
+      }
       socket.join(userRoom(resolvedUserId));
-      console.log(`[socket] bind userId=${resolvedUserId} source=bind-user socket=${socket.id}`);
+      console.log(
+        `[socket] bind userId=${resolvedUserId} source=bind-user tokenAuth=${tokenAuthenticated} socket=${socket.id}`
+      );
       socket.emit("bind-user:ok", { userId: resolvedUserId });
     } catch (e) {
       console.log("❌ bind-user error", e);
@@ -467,10 +654,15 @@ export const socketController = (socket: Socket) => {
         console.log(`[socket] chat:join ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`);
         return;
       }
-      const actorUserId = requireAuthenticatedUser(socket, "chat:join", parseUserId(payload));
-      if (!actorUserId) return;
 
       void (async () => {
+        const actorUserId = await requireAuthenticatedUser(
+          socket,
+          "chat:join",
+          parseUserId(payload)
+        );
+        if (!actorUserId) return;
+
         const isMember = await isUserParticipantInChat(chatId, actorUserId);
         if (!isMember) {
           console.log(
@@ -541,16 +733,19 @@ export const socketController = (socket: Socket) => {
       console.log("❌ chat:join error", e);
     }
   });
-
   // ✅ leave room (APK nueva)
-  socket.on("chat:leave", (payload: ChatJoinPayload) => {
+  socket.on("chat:leave", async (payload: ChatJoinPayload) => {
     try {
       const chatId = parseChatId(payload);
       if (!chatId) {
         console.log(`[socket] chat:leave ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`);
         return;
       }
-      const actorUserId = requireAuthenticatedUser(socket, "chat:leave", parseUserId(payload));
+      const actorUserId = await requireAuthenticatedUser(
+        socket,
+        "chat:leave",
+        parseUserId(payload)
+      );
       if (!actorUserId) return;
       socket.leave(chatRoom(chatId));
       const roomSize = socket.nsp.adapter.rooms.get(chatRoom(chatId))?.size ?? 0;
@@ -573,7 +768,11 @@ export const socketController = (socket: Socket) => {
         return;
       }
 
-      const actorUserId = requireAuthenticatedUser(socket, "chat:sync", parseUserId(payload));
+      const actorUserId = await requireAuthenticatedUser(
+        socket,
+        "chat:sync",
+        parseUserId(payload)
+      );
       if (!actorUserId) return;
 
       const isMember = await isUserParticipantInChat(chatId, actorUserId);
@@ -606,7 +805,19 @@ export const socketController = (socket: Socket) => {
             model: Message,
             as: "replyTo",
             required: false,
-            attributes: ["id", "text", "senderId", "date"],
+            attributes: [
+              "id",
+              "text",
+              "messageType",
+              "mediaUrl",
+              "mediaMime",
+              "mediaDurationMs",
+              "mediaSizeBytes",
+              "waveform",
+              "metadata",
+              "senderId",
+              "date",
+            ],
           },
           {
             model: User,
@@ -676,16 +887,27 @@ export const socketController = (socket: Socket) => {
    * - Nuevo:   room/chat/{chatId}
    * - Legacy:  chat/{chatId}
    */
-  socket.on("chat", (message: any) => {
+  socket.on("chat", async (message: any) => {
     try {
       const chatId = parseChatId(message?.chatId != null ? message : message?.chat);
       if (!chatId) return;
-      const senderId = parseUserId({
-        userId: message?.senderId ?? message?.sender?.id,
+
+      const payloadUserId = parseUserId({
+        userId: message?.senderId ?? message?.sender?.id ?? message?.userId,
       });
-      if (senderId > 0) {
-        (socket.data as any).userId = senderId;
+      const actorUserId = await requireAuthenticatedUser(socket, "chat", payloadUserId);
+      if (!actorUserId) return;
+
+      const isMember = await isUserParticipantInChat(chatId, actorUserId);
+      if (!isMember) {
+        console.log(
+          `[socket] chat rejected forbidden chatId=${chatId} socket=${socket.id} userId=${actorUserId}`
+        );
+        socket.emit("auth:error", { event: "chat", code: "FORBIDDEN_CHAT", chatId });
+        return;
       }
+
+      const senderId = actorUserId;
 
       emitChatHybrid(socket, chatId, `chat/${chatId}`, message);
 
@@ -755,11 +977,17 @@ export const socketController = (socket: Socket) => {
   socket.on("chat:typing", (payload: ChatTypingPayload) => {
     try {
       const chatId = parseChatId(payload);
-      const userId = requireAuthenticatedUser(socket, "chat:typing", parseUserId(payload));
       const typing = !!payload?.typing;
 
-      if (!chatId || !userId) return;
+      if (!chatId) return;
       void (async () => {
+        const userId = await requireAuthenticatedUser(
+          socket,
+          "chat:typing",
+          parseUserId(payload)
+        );
+        if (!userId) return;
+
         const isMember = await isUserParticipantInChat(chatId, userId);
         if (!isMember) {
           console.log(
@@ -795,7 +1023,11 @@ export const socketController = (socket: Socket) => {
     try {
       const chatId = parseChatId(payload);
       const messageId = parseMessageId(payload);
-      const userId = requireAuthenticatedUser(socket, "chat:reaction", parseUserId(payload));
+      const userId = await requireAuthenticatedUser(
+        socket,
+        "chat:reaction",
+        parseUserId(payload)
+      );
       const emoji = String(payload?.emoji ?? "").trim();
 
       if (!chatId || !messageId || !userId || !emoji) return;
@@ -885,7 +1117,7 @@ export const socketController = (socket: Socket) => {
       const chatId = parseChatId(payload);
       const messageId = parseMessageId(payload);
       if (!chatId || !messageId) return;
-      const actorUserId = requireAuthenticatedUser(
+      const actorUserId = await requireAuthenticatedUser(
         socket,
         "chat:delivered",
         parseUserId(payload)
@@ -955,7 +1187,11 @@ export const socketController = (socket: Socket) => {
       const chatId = parseChatId(payload);
       const messageId = parseMessageId(payload);
       if (!chatId || !messageId) return;
-      const actorUserId = requireAuthenticatedUser(socket, "chat:read", parseUserId(payload));
+      const actorUserId = await requireAuthenticatedUser(
+        socket,
+        "chat:read",
+        parseUserId(payload)
+      );
       if (!actorUserId) return;
       const isMember = await isUserParticipantInChat(chatId, actorUserId);
       if (!isMember) {

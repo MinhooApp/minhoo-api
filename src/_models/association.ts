@@ -6,6 +6,10 @@ import Like from "./like/like";
 import Chat from "./chat/chat";
 import Offer from "./offer/offer";
 import Message from "./chat/message";
+import Group from "./chat/group";
+import GroupInvite from "./chat/group_invite";
+import GroupJoinRequest from "./chat/group_join_request";
+import GroupMember from "./chat/group_member";
 import Worker from "./worker/worker";
 import Service from "./service/service";
 import Comment from "./comment/comment";
@@ -124,6 +128,46 @@ Message.belongsTo(Chat, { as: "chat", foreignKey: "chatId" });
 //Association Message with User
 User.hasMany(Message, { as: "messages", foreignKey: "senderId" });
 Message.belongsTo(User, { as: "sender", foreignKey: "senderId" });
+
+//Association Group with User (owner)
+User.hasMany(Group, { as: "owned_groups", foreignKey: "ownerUserId" });
+Group.belongsTo(User, { as: "owner", foreignKey: "ownerUserId" });
+
+//Association Group with members
+Group.hasMany(GroupMember, { as: "members", foreignKey: "groupId" });
+GroupMember.belongsTo(Group, { as: "group", foreignKey: "groupId" });
+User.hasMany(GroupMember, { as: "group_memberships", foreignKey: "userId" });
+GroupMember.belongsTo(User, { as: "member_user", foreignKey: "userId" });
+User.belongsToMany(Group, {
+  through: GroupMember,
+  as: "joined_groups",
+  foreignKey: "userId",
+});
+Group.belongsToMany(User, {
+  through: GroupMember,
+  as: "group_users",
+  foreignKey: "groupId",
+});
+
+//Association Group with invites
+Group.hasMany(GroupInvite, { as: "invites", foreignKey: "groupId" });
+GroupInvite.belongsTo(Group, { as: "group", foreignKey: "groupId" });
+User.hasMany(GroupInvite, { as: "group_invites_created", foreignKey: "createdByUserId" });
+GroupInvite.belongsTo(User, { as: "invite_creator", foreignKey: "createdByUserId" });
+
+//Association Group with join requests
+Group.hasMany(GroupJoinRequest, { as: "join_requests", foreignKey: "groupId" });
+GroupJoinRequest.belongsTo(Group, { as: "group", foreignKey: "groupId" });
+User.hasMany(GroupJoinRequest, { as: "group_join_requests", foreignKey: "userId" });
+GroupJoinRequest.belongsTo(User, { as: "request_user", foreignKey: "userId" });
+User.hasMany(GroupJoinRequest, {
+  as: "group_requests_reviewed",
+  foreignKey: "reviewedByUserId",
+});
+GroupJoinRequest.belongsTo(User, {
+  as: "reviewer_user",
+  foreignKey: "reviewedByUserId",
+});
 
 //Association Worker with Service
 Worker.belongsToMany(Service, {

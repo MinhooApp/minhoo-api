@@ -256,17 +256,21 @@ export const followers = async (id: any, meId: any = -1) => {
   return followers;
 };
 
-/* 🔹 Devuelve el UUID si el usuario tiene alertas activas */
+/* 🔹 Devuelve UUID push para usuarios activos con alertas */
 export const getUuid = async (id: number) => {
   const user = await User.findOne({
     where: {
       id,
       alert: true,
+      available: true,
+      disabled: false,
       is_deleted: false,
-      auth_token: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] },
+      uuid: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] },
     },
+    attributes: ["uuid"],
+    raw: true,
   });
-  return user?.uuid;
+  return String((user as any)?.uuid ?? "").trim();
 };
 
 /* 🔹 Verifica duplicado por teléfono */

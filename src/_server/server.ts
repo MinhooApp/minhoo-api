@@ -5,6 +5,7 @@ import * as t from "../_models/association";
 import { Server as SocketIOServer } from "socket.io";
 import express, { Router, Application } from "express";
 import { socketController } from "../_sockets/socket_controller";
+import { setSocketInstance } from "../_sockets/socket_instance";
 
 console.log(t);
 
@@ -33,6 +34,7 @@ class Server {
         credentials: false,
       },
     });
+    setSocketInstance(this.io);
     this.middlewares();
     this.dbConnection();
     this.configure();

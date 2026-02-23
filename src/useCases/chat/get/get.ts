@@ -3,8 +3,11 @@ import {
   Response,
   formatResponse,
   repository,
-  socket, // ✅ viene de ../_module/module
 } from "../_module/module";
+import {
+  emitChatStatusRealtime,
+  emitChatsRefreshRealtime,
+} from "../../../libs/helper/realtime_dispatch";
 
 export const myChats = async (req: Request, res: Response) => {
   const startedAt = Date.now();
@@ -52,52 +55,60 @@ export const messages = async (req: Request, res: Response) => {
     // ✅ al abrir sala se marcan como READ los mensajes recibidos pendientes
     // para que el emisor vea ✔✔ azul dentro y fuera del chat.
     if (chatId != null && messages && messages.length > 0) {
+      const pendingToRead: any[] = [];
+
       for (const m of messages as any[]) {
         const isMine = String(m.senderId) === String(req.userId);
         const status = (m.status ?? "sent") as string;
 
         if (!isMine && (status === "sent" || status === "delivered") && m.id != null) {
-          const now = new Date();
+          pendingToRead.push(m);
+        }
+      }
 
-          // update DB
-          if (typeof m.update === "function") {
-            const patch: any = {
-              status: "read",
-              readAt: now,
-            };
-            if (!m.deliveredAt) patch.deliveredAt = now;
+      if (pendingToRead.length > 0) {
+        const { readAt } = await repository.markMessagesAsReadBulk(
+          pendingToRead.map((m) => m.id)
+        );
+        const now = readAt ?? new Date();
+        const deliveredAtIso = now.toISOString();
 
-            await m.update({
-              ...patch,
-            });
+        for (const m of pendingToRead) {
+          if (typeof (m as any).setDataValue === "function") {
+            (m as any).setDataValue("status", "read");
+            (m as any).setDataValue("readAt", now);
+            (m as any).setDataValue("deliveredAt", now);
+          } else {
+            (m as any).status = "read";
+            (m as any).readAt = now;
+            (m as any).deliveredAt = now;
           }
 
-          // ✅ emitir al socket server -> rebota al emisor (chat/status/{chatId})
-          socket.emit("chat:read", {
+          const statusPayload = {
             chatId,
+            chat_id: chatId,
             messageId: m.id,
-            userId: req.userId,
-          });
+            message_id: m.id,
+            id: m.id,
+            status: "read",
+            deliveredAt: deliveredAtIso,
+            readAt: deliveredAtIso,
+          };
+
+          emitChatStatusRealtime(chatId, statusPayload, [req.userId, otherUserId]);
         }
       }
 
       // ✅ fuerza refresh de lista de chats para ambos lados (fuera de sala)
       if (Number.isFinite(otherUserId) && otherUserId > 0) {
-        socket.emit("chats", otherUserId);
+        emitChatsRefreshRealtime(otherUserId);
       }
-      socket.emit("chats", req.userId);
+      emitChatsRefreshRealtime(req.userId);
     }
 
-    // 🔄 volver a cargar para devolver YA actualizado
-    // ✅ IMPORTANTE: recarga con las mismas opciones para NO cambiar la página
-    const messagesUpdated = await repository.getChatByUser(req.userId, id, {
-      limit,
-      beforeMessageId,
-    });
-
     const payload = {
-      chatId: messagesUpdated.length > 0 ? messagesUpdated[0].chatId : null,
-      messages: messagesUpdated,
+      chatId: messages.length > 0 ? messages[0].chatId : null,
+      messages,
       // opcional útil para el cliente:
       paging: {
         limit,

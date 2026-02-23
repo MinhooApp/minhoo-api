@@ -16,6 +16,25 @@ declare global {
   }
 }
 
+const getJwtSecrets = (): string[] => {
+  const secrets = [
+    (process.env.SECRETORPRIVATEKEY ?? "").trim(),
+    (process.env.JWT_SECRET ?? "").trim(),
+  ].filter(Boolean);
+  return Array.from(new Set(secrets));
+};
+
+const verifyTokenWithKnownSecrets = (token: string): IPayload | null => {
+  for (const secret of getJwtSecrets()) {
+    try {
+      return jwt.verify(token, secret) as IPayload;
+    } catch (_err) {
+      // try next configured secret
+    }
+  }
+  return null;
+};
+
 /**
  * TokenOptional:
  * - No exige token.
@@ -54,14 +73,19 @@ export const TokenOptional = (allowedRoles?: number[]): RequestHandler => {
 
     // 3) Intentar verificar token; si falla, seguimos anónimos salvo allowedRoles
     try {
-      const { userId, roles, workerId } = jwt.verify(
-        token,
-        process.env.SECRETORPRIVATEKEY || "tokenTest"
-      ) as IPayload;
+      const verified = verifyTokenWithKnownSecrets(token);
+      if (!verified) {
+        throw new Error("invalid token signature");
+      }
+      const { userId, roles, workerId } = verified;
+      const normalizedRoles = Array.isArray(roles) ? roles : [];
 
       // 4) Verificaciones de usuario en BD (opcional pero recomendable)
-      const user = await User.findOne({ where: { id: userId } });
-      if (!user || !user.available) {
+      const user = await User.findOne({
+        where: { id: userId },
+        attributes: ["id", "available", "disabled", "auth_token"],
+      });
+      if (!user || !(user as any).available || Boolean((user as any).disabled)) {
         // Token válido pero usuario no existe / no disponible -> tratar como no autenticado
         if (allowedRoles && allowedRoles.length > 0) {
           return res.status(401).json({
@@ -72,14 +96,26 @@ export const TokenOptional = (allowedRoles?: number[]): RequestHandler => {
         return next();
       }
 
+      const storedAuthToken = String((user as any).auth_token ?? "").trim();
+      if (!storedAuthToken || storedAuthToken !== token) {
+        // Token válido pero usuario no existe / no disponible -> tratar como no autenticado
+        if (allowedRoles && allowedRoles.length > 0) {
+          return res.status(401).json({
+            header: { success: false, authenticated: false },
+            messages: ["Access denied, invalid session"],
+          });
+        }
+        return next();
+      }
+
       // 5) Adjuntar datos al request
       req.userId = userId;
       req.workerId = workerId;
-      req.roles = roles;
+      req.roles = normalizedRoles;
       req.authenticated = true;
 
       // 6) Si hay allowedRoles, validar
-      if (allowedRoles && !roles.some((r) => allowedRoles.includes(r))) {
+      if (allowedRoles && !normalizedRoles.some((r) => allowedRoles.includes(r))) {
         return res.status(403).json({
           header: { success: false, authenticated: true },
           messages: ["Access denied, role not allowed"],

@@ -15,6 +15,29 @@ export interface IPayload {
   iat?: number;
 }
 
+const getJwtSecrets = (): string[] => {
+  const secrets = [
+    (process.env.SECRETORPRIVATEKEY ?? "").trim(),
+    (process.env.JWT_SECRET ?? "").trim(),
+  ].filter(Boolean);
+
+  return Array.from(new Set(secrets));
+};
+
+const verifyTokenWithKnownSecrets = (
+  token: string,
+  ignoreExpiration = false
+): IPayload | null => {
+  for (const secret of getJwtSecrets()) {
+    try {
+      return jwt.verify(token, secret, { ignoreExpiration }) as IPayload;
+    } catch (_err) {
+      // try next configured secret
+    }
+  }
+  return null;
+};
+
 /**
  * Validación “tolerante” + bloqueo por cuenta deshabilitada:
  * - 401 solo si la firma del token es inválida, no existe, o está revocado.
@@ -44,25 +67,23 @@ export const TokenValidation = (
 
       const token = header.split(" ")[1];
 
-      // 1) Verificar firma; si expiró, aplicar gracia
+      // 1) Verificar firma real; si expiró, aplicar gracia SOLO con firma válida
       let payload: IPayload | null = null;
-      try {
-        payload = jwt.verify(
-          token,
-          process.env.SECRETORPRIVATEKEY || "tokenTest"
-        ) as IPayload;
-      } catch (_err) {
-        const decoded = jwt.decode(token) as IPayload | null;
-        if (!decoded || !decoded.exp) {
+      const verified = verifyTokenWithKnownSecrets(token, false);
+      if (verified) {
+        payload = verified;
+      } else {
+        const verifiedIgnoringExp = verifyTokenWithKnownSecrets(token, true);
+        if (!verifiedIgnoringExp || !verifiedIgnoringExp.exp) {
           return res.status(401).json({
             header: { success: false, authenticated: false },
             messages: ["Access denied, invalid token"],
           });
         }
-        const expMs = decoded.exp * 1000;
+        const expMs = Number(verifiedIgnoringExp.exp) * 1000;
         const now = Date.now();
         if (now - expMs <= GRACE_MS) {
-          payload = decoded; // aceptamos dentro del período de gracia
+          payload = verifiedIgnoringExp;
         } else {
           return res.status(401).json({
             header: { success: false, authenticated: false },

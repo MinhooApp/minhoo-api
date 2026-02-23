@@ -27,8 +27,12 @@ const generarJWT = ({
 
         const jwtSecret =
             (process.env.SECRETORPRIVATEKEY ?? "").trim() ||
-            (process.env.JWT_SECRET ?? "").trim() ||
-            "tokenTest";
+            (process.env.JWT_SECRET ?? "").trim();
+
+        if (!jwtSecret) {
+            reject("🚫  No se puede generar el token: JWT secret is not configured");
+            return;
+        }
 
         jsonwebtoken.sign(
             payload,

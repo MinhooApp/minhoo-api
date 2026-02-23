@@ -81,6 +81,12 @@ export const sendNotification = async (
       extraData
     );
 
+    if (pushResult?.reason === "EMPTY_TOKEN") {
+      console.warn(
+        `[push] empty token userId=${params.userId} type=${params.type} interactorId=${params.interactorId ?? 0}`
+      );
+    }
+
     if (pushResult?.reason === "TOKEN_NOT_REGISTERED" && uuid) {
       const cleared = await userRepository.clearUuidIfMatch(params.userId, uuid);
       if (cleared > 0) {

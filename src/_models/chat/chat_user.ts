@@ -13,10 +13,12 @@ Chat_User.init(
         userId: {
             type: DataTypes.INTEGER,
             allowNull: false,
+            primaryKey: true,
         },
         chatId: {
             type: DataTypes.INTEGER,
             allowNull: false,
+            primaryKey: true,
         },
         pinnedAt: {
             type: DataTypes.DATE,
@@ -25,6 +27,11 @@ Chat_User.init(
         pinnedOrder: {
             type: DataTypes.INTEGER,
             allowNull: true,
+        },
+        lastReadMessageId: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            defaultValue: 0,
         },
 
     },

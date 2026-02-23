@@ -140,8 +140,14 @@ export const emitChatMessageRealtime = (
 ) => {
   console.log(`[realtime-direct] chat message chatId=${chatId}`);
   const roomEvent = `room/chat/${chatId}`;
+  const legacyEvent = `chat/${chatId}`;
+  const genericEvent = "chat";
   emitToChatExcludingUsers(chatId, roomEvent, payload, excludeUserIds);
+  emitToChatExcludingUsers(chatId, legacyEvent, payload, excludeUserIds);
+  emitToChatExcludingUsers(chatId, genericEvent, payload, excludeUserIds);
   emitToUsersOutsideChat(chatId, roomEvent, payload, userIds);
+  emitToUsersOutsideChat(chatId, legacyEvent, payload, userIds);
+  emitToUsersOutsideChat(chatId, genericEvent, payload, userIds);
 };
 
 export const emitChatStatusRealtime = (
@@ -151,8 +157,14 @@ export const emitChatStatusRealtime = (
 ) => {
   console.log(`[realtime-direct] chat status chatId=${chatId}`);
   const roomEvent = `room/chat/status/${chatId}`;
+  const legacyEvent = `chat/status/${chatId}`;
+  const genericEvent = "chat:status";
   emitToChat(chatId, roomEvent, payload);
+  emitToChat(chatId, legacyEvent, payload);
+  emitToChat(chatId, genericEvent, payload);
   emitToUsersOutsideChat(chatId, roomEvent, payload, userIds);
+  emitToUsersOutsideChat(chatId, legacyEvent, payload, userIds);
+  emitToUsersOutsideChat(chatId, genericEvent, payload, userIds);
 };
 
 export const emitChatsRefreshRealtime = (userId: number) => {

@@ -7,7 +7,20 @@ class Message extends Model {
   public id!: number;
   public chatId!: number;
   public senderId!: number;
-  public text!: string;
+  public text!: string | null;
+  public messageType!:
+    | "text"
+    | "voice"
+    | "image"
+    | "video"
+    | "document"
+    | "contact";
+  public mediaUrl!: string | null;
+  public mediaMime!: string | null;
+  public mediaDurationMs!: number | null;
+  public mediaSizeBytes!: number | null;
+  public waveform!: number[] | null;
+  public metadata!: Record<string, any> | null;
   public date!: Date;
   public deletedBy!: number;
 
@@ -35,7 +48,43 @@ Message.init(
     },
     text: {
       type: DataTypes.TEXT,
+      allowNull: true,
+    },
+    messageType: {
+      type: DataTypes.ENUM(
+        "text",
+        "voice",
+        "image",
+        "video",
+        "document",
+        "contact"
+      ),
       allowNull: false,
+      defaultValue: "text",
+    },
+    mediaUrl: {
+      type: DataTypes.STRING,
+      allowNull: true,
+    },
+    mediaMime: {
+      type: DataTypes.STRING(120),
+      allowNull: true,
+    },
+    mediaDurationMs: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    mediaSizeBytes: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
+    waveform: {
+      type: DataTypes.JSON,
+      allowNull: true,
+    },
+    metadata: {
+      type: DataTypes.JSON,
+      allowNull: true,
     },
     date: {
       type: DataTypes.DATE,

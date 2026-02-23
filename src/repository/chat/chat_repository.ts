@@ -1,10 +1,12 @@
 ﻿import { Op, Sequelize } from "sequelize";
+import { createHash, createHmac } from "crypto";
 import Chat from "../../_models/chat/chat";
 import User from "../../_models/user/user";
 import sequelize from "../../_db/connection";
 import Worker from "../../_models/worker/worker";
 import Message from "../../_models/chat/message";
 import Chat_User from "../../_models/chat/chat_user";
+import Group from "../../_models/chat/group";
 import UserBlock from "../../_models/block/block";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
@@ -12,6 +14,30 @@ const MAX_MESSAGES_PER_CHAT = Math.max(
   1,
   Number(process.env.CHAT_MAX_MESSAGES_PER_CHAT ?? 20) || 20
 );
+const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
+const R2_REGION = "auto";
+const R2_SERVICE = "s3";
+const R2_DELETE_TTL_SECONDS = 60;
+
+export type ChatMessageType =
+  | "text"
+  | "voice"
+  | "image"
+  | "video"
+  | "document"
+  | "contact";
+
+export type ChatMessagePayload = {
+  text?: string | null;
+  messageType?: ChatMessageType;
+  mediaUrl?: string | null;
+  mediaMime?: string | null;
+  mediaDurationMs?: number | null;
+  mediaSizeBytes?: number | null;
+  waveform?: number[] | null;
+  metadata?: Record<string, any> | null;
+};
+
 
 export const add = async (body: any) => {
   const chat = await Chat.create(body);
@@ -59,7 +85,7 @@ export const validateBlock = async (user_A: number, user_B: number): Promise<boo
 export const initNewChat = async (
   currentUserId: any,
   otherUserId: any,
-  mensajeInicial: any,
+  messagePayload: ChatMessagePayload,
   replyToMessageId?: number | null
 ) => {
   const me = Number(currentUserId);
@@ -103,7 +129,14 @@ export const initNewChat = async (
   }
 
   const createdMessage = await Message.create({
-    text: mensajeInicial,
+    text: messagePayload?.text ?? null,
+    messageType: messagePayload?.messageType ?? "text",
+    mediaUrl: messagePayload?.mediaUrl ?? null,
+    mediaMime: messagePayload?.mediaMime ?? null,
+    mediaDurationMs: messagePayload?.mediaDurationMs ?? null,
+    mediaSizeBytes: messagePayload?.mediaSizeBytes ?? null,
+    waveform: messagePayload?.waveform ?? null,
+    metadata: messagePayload?.metadata ?? null,
     senderId: me,
     chatId,
     date: now,
@@ -149,7 +182,19 @@ export const getChatMessages = async (chatId: any, currentUserId: any) => {
         model: Message,
         as: "replyTo",
         required: false,
-        attributes: ["id", "text", "senderId", "date"],
+        attributes: [
+          "id",
+          "text",
+          "messageType",
+          "mediaUrl",
+          "mediaMime",
+          "mediaDurationMs",
+          "mediaSizeBytes",
+          "waveform",
+          "metadata",
+          "senderId",
+          "date",
+        ],
       },
     ],
     attributes: { exclude: excludeKeys },
@@ -174,13 +219,6 @@ export const getSenderByMessageId = async (messageId: any) => {
   return messages;
 };
 
-/**
- * âœ… GET CHAT BY USER (FIX CRÃTICO)
- * - bloqueados => []
- * - chat visible si Chat.deletedBy IN (0, me)
- * - mensajes visibles si Message.deletedBy IN (0, me)
- * - paginaciÃ³n por id < beforeMessageId
- */
 export const getChatByUser = async (
   currentUserId: any,
   otherUserId: any,
@@ -231,12 +269,45 @@ export const getChatByUser = async (
         model: Message,
         as: "replyTo",
         required: false,
-        attributes: ["id", "text", "senderId", "date"],
+        attributes: [
+          "id",
+          "text",
+          "messageType",
+          "mediaUrl",
+          "mediaMime",
+          "mediaDurationMs",
+          "mediaSizeBytes",
+          "waveform",
+          "metadata",
+          "senderId",
+          "date",
+        ],
       },
     ],
   });
 
   return messages.reverse();
+};
+
+const getActiveGroupChatIds = async (): Promise<number[]> => {
+  const rows = await Group.findAll({
+    where: {
+      isActive: true,
+      chatId: {
+        [Op.not]: null,
+      },
+    },
+    attributes: ["chatId"],
+    raw: true,
+  });
+
+  return Array.from(
+    new Set(
+      (rows as any[])
+        .map((row) => Number((row as any).chatId))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    )
+  );
 };
 
 /**
@@ -253,6 +324,7 @@ export const getChatByUser = async (
 export const getUserChats = async (currentUserId: number, meId: any = -1) => {
   const me = Number(meId);
   const uid = Number(currentUserId);
+  const groupChatIds = await getActiveGroupChatIds();
 
   const useBlockFilter = Number.isFinite(me) && me > 0;
 
@@ -292,6 +364,13 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
         model: Chat,
         // âœ… FIX: chat visible si deletedBy = 0 o = uid (NO -1)
         where: {
+          ...(groupChatIds.length
+            ? {
+                id: {
+                  [Op.notIn]: groupChatIds,
+                },
+              }
+            : {}),
           deletedBy: { [Op.in]: [0, uid] },
         },
         include: [
@@ -328,6 +407,13 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
         "chatId",
         "senderId",
         "text",
+        "messageType",
+        "mediaUrl",
+        "mediaMime",
+        "mediaDurationMs",
+        "mediaSizeBytes",
+        "waveform",
+        "metadata",
         "date",
         "deletedBy",
         "status",
@@ -487,6 +573,39 @@ export const updateMessageStatus = async ({
   await Message.update({ status }, { where: { id: messageId } });
 };
 
+export const markMessagesAsReadBulk = async (
+  messageIds: Array<number | string | null | undefined>
+) => {
+  const ids = Array.from(
+    new Set(
+      (messageIds ?? [])
+        .map((raw) => Number(raw))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    )
+  );
+
+  if (!ids.length) {
+    return { ids: [] as number[], readAt: null as Date | null };
+  }
+
+  const now = new Date();
+  await Message.update(
+    {
+      status: "read",
+      deliveredAt: now,
+      readAt: now,
+    },
+    {
+      where: {
+        id: { [Op.in]: ids },
+        status: { [Op.in]: ["sent", "delivered"] },
+      },
+    }
+  );
+
+  return { ids, readAt: now };
+};
+
 export const updateMessageTimestamps = async ({
   messageId,
   deliveredAt,
@@ -508,22 +627,31 @@ export const updateMessageTimestamps = async ({
 // =======================================================
 
 async function chatExist(currentUserId: any, otherUserId: any) {
+  const groupChatIds = await getActiveGroupChatIds();
+
+  const sharedChats = await Chat_User.findAll({
+    where: {
+      userId: { [Op.or]: [currentUserId, otherUserId] },
+    },
+    attributes: ["chatId"],
+    group: ["chatId"],
+    having: sequelize.literal("COUNT(DISTINCT userId) = 2"),
+  });
+
+  const sharedChatIds = (sharedChats as any[])
+    .map((c) => Number((c as any).chatId))
+    .filter((id) => Number.isFinite(id) && id > 0)
+    .filter((id) => !groupChatIds.includes(id));
+
+  if (!sharedChatIds.length) return [];
+
   const chat = await Chat_User.findAll({
     where: {
       [Op.and]: [
         { [Op.or]: [{ userId: currentUserId }, { userId: otherUserId }] },
         {
           chatId: {
-            [Op.in]: (
-              await Chat_User.findAll({
-                where: {
-                  userId: { [Op.or]: [currentUserId, otherUserId] },
-                },
-                attributes: ["chatId"],
-                group: ["chatId"],
-                having: sequelize.literal("COUNT(DISTINCT userId) = 2"),
-              })
-            ).map((c) => c.chatId),
+            [Op.in]: sharedChatIds,
           },
         },
       ],
@@ -550,12 +678,500 @@ async function isBlockedEitherWay(a: number, b: number): Promise<boolean> {
   return !!row;
 }
 
+const rfc3986 = (value: string) =>
+  encodeURIComponent(value).replace(/[!'()*]/g, (c) =>
+    `%${c.charCodeAt(0).toString(16).toUpperCase()}`
+  );
+
+const sha256Hex = (value: string) => createHash("sha256").update(value).digest("hex");
+
+const hmac = (key: Buffer | string, value: string) =>
+  createHmac("sha256", key).update(value).digest();
+
+const toAmzDate = (date: Date) =>
+  date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+
+const getCloudflareAccountId = () =>
+  String(process.env.CLOUDFLARE_ACCOUNT_ID ?? "").trim();
+
+const getImagesToken = () =>
+  String(
+    process.env.CLOUDFLARE_IMAGES_API_TOKEN ??
+      process.env.CLOUDFLARE_API_TOKEN ??
+      process.env.CLOUDFLARE_TOKEN ??
+      ""
+  ).trim();
+
+const getMediaToken = () =>
+  String(
+    process.env.CLOUDFLARE_MEDIA_API_TOKEN ??
+      process.env.CLOUDFLARE_API_TOKEN ??
+      process.env.CLOUDFLARE_TOKEN ??
+      ""
+  ).trim();
+
+const getR2Bucket = () =>
+  String(
+    process.env.CLOUDFLARE_R2_BUCKET ??
+      process.env.R2_BUCKET ??
+      process.env.CLOUDFLARE_R2_AUDIO_BUCKET ??
+      "static-minhoo"
+  ).trim();
+
+const getR2Endpoint = () => {
+  const explicit = String(
+    process.env.CLOUDFLARE_R2_ENDPOINT ??
+      process.env.R2_ENDPOINT ??
+      process.env.CLOUDFLARE_R2_S3_ENDPOINT ??
+      process.env.R2_S3_ENDPOINT ??
+      ""
+  ).trim();
+  if (explicit) return explicit;
+
+  const accountId = getCloudflareAccountId();
+  if (!accountId) return "";
+  return `https://${accountId}.r2.cloudflarestorage.com`;
+};
+
+const getR2AccessKeyId = () =>
+  String(
+    process.env.CLOUDFLARE_R2_ACCESS_KEY_ID ??
+      process.env.R2_ACCESS_KEY_ID ??
+      process.env.CLOUDFLARE_ACCESS_KEY_ID ??
+      ""
+  ).trim();
+
+const getR2SecretAccessKey = () =>
+  String(
+    process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY ??
+      process.env.R2_SECRET_ACCESS_KEY ??
+      process.env.CLOUDFLARE_SECRET_ACCESS_KEY ??
+      ""
+  ).trim();
+
+const normalizeAssetId = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const decoded = decodeURIComponent(value.trim());
+  if (!decoded) return null;
+  if (!/^[a-zA-Z0-9._-]{6,255}$/.test(decoded)) return null;
+  return decoded;
+};
+
+const normalizeR2ObjectKey = normalizeAssetId;
+const normalizeAudioKey = normalizeR2ObjectKey;
+const normalizeDocumentKey = normalizeR2ObjectKey;
+
+const extractAudioKeyFromMediaUrl = (mediaUrl: unknown): string | null => {
+  if (typeof mediaUrl !== "string") return null;
+  const raw = mediaUrl.trim();
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw, "http://local");
+    if (!url.pathname.includes("/api/v1/media/audio/play")) return null;
+    return normalizeAudioKey(url.searchParams.get("key"));
+  } catch {
+    return null;
+  }
+};
+
+const extractDocumentKeyFromMediaUrl = (mediaUrl: unknown): string | null => {
+  if (typeof mediaUrl !== "string") return null;
+  const raw = mediaUrl.trim();
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw, "http://local");
+    if (!url.pathname.includes("/api/v1/media/document/download")) return null;
+    return normalizeDocumentKey(url.searchParams.get("key"));
+  } catch {
+    return null;
+  }
+};
+
+const extractImageIdFromMediaUrl = (mediaUrl: unknown): string | null => {
+  if (typeof mediaUrl !== "string") return null;
+  const raw = mediaUrl.trim();
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw, "http://local");
+    const host = url.hostname.toLowerCase();
+    const parts = url.pathname.split("/").filter(Boolean);
+
+    if (url.pathname.includes("/api/v1/media/image/play")) {
+      return normalizeAssetId(url.searchParams.get("id"));
+    }
+
+    if (host.endsWith("imagedelivery.net") && parts.length >= 2) {
+      return normalizeAssetId(parts[1]);
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+const STREAM_UID_REGEX = /^[a-f0-9]{32}$/i;
+const normalizeVideoUid = (value: unknown): string | null => {
+  if (typeof value !== "string") return null;
+  const decoded = decodeURIComponent(value.trim());
+  if (!decoded) return null;
+  if (!STREAM_UID_REGEX.test(decoded)) return null;
+  return decoded.toLowerCase();
+};
+
+const extractVideoUidFromMediaUrl = (mediaUrl: unknown): string | null => {
+  if (typeof mediaUrl !== "string") return null;
+  const raw = mediaUrl.trim();
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw, "http://local");
+    if (url.pathname.includes("/api/v1/media/video/play")) {
+      return normalizeVideoUid(url.searchParams.get("uid"));
+    }
+
+    const parts = url.pathname.split("/").filter(Boolean);
+    if (!parts.length) return null;
+
+    const match = parts.find((entry) => STREAM_UID_REGEX.test(entry));
+    return match ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const buildR2ObjectUrl = (endpoint: string, bucket: string, key: string) => {
+  const endpointUrl = new URL(
+    /^https?:\/\//i.test(endpoint) ? endpoint : `https://${endpoint}`
+  );
+  const basePath = endpointUrl.pathname.replace(/\/+$/, "");
+  const encodedKey = key
+    .split("/")
+    .map((segment) => rfc3986(segment))
+    .join("/");
+  const host = endpointUrl.host.startsWith(`${bucket}.`)
+    ? endpointUrl.host
+    : `${bucket}.${endpointUrl.host}`;
+  const objectPath = `${basePath}/${encodedKey}`.replace(/\/{2,}/g, "/");
+
+  return {
+    host,
+    origin: `${endpointUrl.protocol}//${host}`,
+    canonicalUri: objectPath.startsWith("/") ? objectPath : `/${objectPath}`,
+  };
+};
+
+const buildR2PresignedDeleteUrl = ({
+  bucket,
+  endpoint,
+  key,
+  accessKeyId,
+  secretAccessKey,
+}: {
+  bucket: string;
+  endpoint: string;
+  key: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+}) => {
+  const { host, origin, canonicalUri } = buildR2ObjectUrl(endpoint, bucket, key);
+  const now = new Date();
+  const amzDate = toAmzDate(now);
+  const dateStamp = amzDate.slice(0, 8);
+  const credentialScope = `${dateStamp}/${R2_REGION}/${R2_SERVICE}/aws4_request`;
+
+  const query: Record<string, string> = {
+    "X-Amz-Algorithm": "AWS4-HMAC-SHA256",
+    "X-Amz-Content-Sha256": "UNSIGNED-PAYLOAD",
+    "X-Amz-Credential": `${accessKeyId}/${credentialScope}`,
+    "X-Amz-Date": amzDate,
+    "X-Amz-Expires": String(R2_DELETE_TTL_SECONDS),
+    "X-Amz-SignedHeaders": "host",
+    "x-id": "DeleteObject",
+  };
+
+  const canonicalQuery = Object.entries(query)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([k, v]) => `${rfc3986(k)}=${rfc3986(v)}`)
+    .join("&");
+  const canonicalHeaders = `host:${host}\n`;
+  const signedHeaders = "host";
+  const payloadHash = "UNSIGNED-PAYLOAD";
+  const canonicalRequest = [
+    "DELETE",
+    canonicalUri,
+    canonicalQuery,
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join("\n");
+  const stringToSign = [
+    "AWS4-HMAC-SHA256",
+    amzDate,
+    credentialScope,
+    sha256Hex(canonicalRequest),
+  ].join("\n");
+  const kDate = hmac(`AWS4${secretAccessKey}`, dateStamp);
+  const kRegion = hmac(kDate, R2_REGION);
+  const kService = hmac(kRegion, R2_SERVICE);
+  const kSigning = hmac(kService, "aws4_request");
+  const signature = createHmac("sha256", kSigning).update(stringToSign).digest("hex");
+
+  return `${origin}${canonicalUri}?${canonicalQuery}&X-Amz-Signature=${signature}`;
+};
+
+const escapeLikeValue = (value: string) => value.replace(/[\\%_]/g, "\\$&");
+
+const extractCloudflareErrorMessage = (payload: any, fallback: string) => {
+  const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+  const messages = errors
+    .map((entry: any) => String(entry?.message ?? "").trim())
+    .filter(Boolean);
+  if (messages.length) return messages.join(" | ");
+
+  const payloadMessage = String(payload?.message ?? "").trim();
+  if (payloadMessage) return payloadMessage;
+
+  return fallback;
+};
+
+const resolveCloudflareImagesDeleteConfig = () => {
+  const accountId = getCloudflareAccountId();
+  const token = getImagesToken();
+  if (!accountId || !token) return null;
+  return { accountId, token };
+};
+
+const resolveCloudflareMediaDeleteConfig = () => {
+  const accountId = getCloudflareAccountId();
+  const token = getMediaToken();
+  if (!accountId || !token) return null;
+  return { accountId, token };
+};
+
+const resolveR2DeleteConfig = () => {
+  const bucket = getR2Bucket();
+  const endpoint = getR2Endpoint();
+  const accessKeyId = getR2AccessKeyId();
+  const secretAccessKey = getR2SecretAccessKey();
+
+  if (!bucket || !endpoint || !accessKeyId || !secretAccessKey) return null;
+  return { bucket, endpoint, accessKeyId, secretAccessKey };
+};
+
+const deleteObjectFromR2 = async (
+  cfg: { bucket: string; endpoint: string; accessKeyId: string; secretAccessKey: string },
+  key: string
+) => {
+  const signedDeleteUrl = buildR2PresignedDeleteUrl({
+    bucket: cfg.bucket,
+    endpoint: cfg.endpoint,
+    key,
+    accessKeyId: cfg.accessKeyId,
+    secretAccessKey: cfg.secretAccessKey,
+  });
+
+  const response = await fetch(signedDeleteUrl, { method: "DELETE" });
+  if (response.ok || response.status === 404) return;
+  throw new Error(`r2 delete failed with status ${response.status}`);
+};
+
+const deleteImageFromCloudflare = async (
+  cfg: { accountId: string; token: string },
+  imageId: string
+) => {
+  const response = await fetch(
+    `${CLOUDFLARE_API_BASE}/accounts/${cfg.accountId}/images/v1/${imageId}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${cfg.token}` },
+    }
+  );
+
+  let payload: any = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (response.status === 404) return;
+  if (response.ok && payload?.success !== false) return;
+
+  throw new Error(
+    extractCloudflareErrorMessage(payload, `cloudflare images delete failed (${response.status})`)
+  );
+};
+
+const deleteVideoFromCloudflare = async (
+  cfg: { accountId: string; token: string },
+  uid: string
+) => {
+  const response = await fetch(
+    `${CLOUDFLARE_API_BASE}/accounts/${cfg.accountId}/stream/${uid}`,
+    {
+      method: "DELETE",
+      headers: { Authorization: `Bearer ${cfg.token}` },
+    }
+  );
+
+  let payload: any = null;
+  try {
+    payload = await response.json();
+  } catch {
+    payload = null;
+  }
+
+  if (response.status === 404) return;
+  if (response.ok && payload?.success !== false) return;
+
+  throw new Error(
+    extractCloudflareErrorMessage(payload, `cloudflare stream delete failed (${response.status})`)
+  );
+};
+
+const cleanupPrunedMediaObjects = async (
+  prunedRows: Array<{ messageType?: unknown; mediaUrl?: unknown }>
+) => {
+  const voiceKeys = new Set<string>();
+  const documentKeys = new Set<string>();
+  const imageIds = new Set<string>();
+  const videoUids = new Set<string>();
+
+  for (const row of prunedRows) {
+    const type = String(row?.messageType ?? "").toLowerCase();
+    if (type === "voice") {
+      const key = extractAudioKeyFromMediaUrl(row?.mediaUrl);
+      if (key) voiceKeys.add(key);
+      continue;
+    }
+    if (type === "document") {
+      const key = extractDocumentKeyFromMediaUrl(row?.mediaUrl);
+      if (key) documentKeys.add(key);
+      continue;
+    }
+    if (type === "image") {
+      const imageId = extractImageIdFromMediaUrl(row?.mediaUrl);
+      if (imageId) imageIds.add(imageId);
+      continue;
+    }
+    if (type === "video") {
+      const uid = extractVideoUidFromMediaUrl(row?.mediaUrl);
+      if (uid) videoUids.add(uid);
+    }
+  }
+
+  if (!voiceKeys.size && !documentKeys.size && !imageIds.size && !videoUids.size) return;
+
+  const r2Cfg = resolveR2DeleteConfig();
+  if ((voiceKeys.size || documentKeys.size) && !r2Cfg) {
+    console.warn("[chat-prune] R2 config missing; skipped audio/document cleanup.");
+  }
+
+  const imageCfg = resolveCloudflareImagesDeleteConfig();
+  if (imageIds.size && !imageCfg) {
+    console.warn("[chat-prune] Cloudflare Images config missing; skipped image cleanup.");
+  }
+
+  const videoCfg = resolveCloudflareMediaDeleteConfig();
+  if (videoUids.size && !videoCfg) {
+    console.warn("[chat-prune] Cloudflare Stream config missing; skipped video cleanup.");
+  }
+
+  for (const key of voiceKeys) {
+    try {
+      const likeNeedle = `%key=${escapeLikeValue(key)}%`;
+      const refs = await Message.count({
+        where: {
+          messageType: "voice",
+          mediaUrl: { [Op.like]: likeNeedle },
+        },
+      });
+
+      if (refs > 0) continue;
+      if (!r2Cfg) continue;
+      await deleteObjectFromR2(r2Cfg, key);
+    } catch (error: any) {
+      console.warn(
+        `[chat-prune] failed to remove R2 audio object key=${key}:`,
+        error?.message ?? error
+      );
+    }
+  }
+
+  for (const key of documentKeys) {
+    try {
+      const likeNeedle = `%key=${escapeLikeValue(key)}%`;
+      const refs = await Message.count({
+        where: {
+          messageType: "document",
+          mediaUrl: { [Op.like]: likeNeedle },
+        },
+      });
+
+      if (refs > 0) continue;
+      if (!r2Cfg) continue;
+      await deleteObjectFromR2(r2Cfg, key);
+    } catch (error: any) {
+      console.warn(
+        `[chat-prune] failed to remove R2 document object key=${key}:`,
+        error?.message ?? error
+      );
+    }
+  }
+
+  for (const imageId of imageIds) {
+    try {
+      const likeNeedle = `%/${escapeLikeValue(imageId)}/%`;
+      const refs = await Message.count({
+        where: {
+          messageType: "image",
+          mediaUrl: { [Op.like]: likeNeedle },
+        },
+      });
+
+      if (refs > 0) continue;
+      if (!imageCfg) continue;
+      await deleteImageFromCloudflare(imageCfg, imageId);
+    } catch (error: any) {
+      console.warn(
+        `[chat-prune] failed to remove Cloudflare image id=${imageId}:`,
+        error?.message ?? error
+      );
+    }
+  }
+
+  for (const uid of videoUids) {
+    try {
+      const likeNeedle = `%/${escapeLikeValue(uid)}/%`;
+      const refs = await Message.count({
+        where: {
+          messageType: "video",
+          mediaUrl: { [Op.like]: likeNeedle },
+        },
+      });
+
+      if (refs > 0) continue;
+      if (!videoCfg) continue;
+      await deleteVideoFromCloudflare(videoCfg, uid);
+    } catch (error: any) {
+      console.warn(
+        `[chat-prune] failed to remove Cloudflare video uid=${uid}:`,
+        error?.message ?? error
+      );
+    }
+  }
+};
+
 async function pruneChatHistory(chatId: number, keepLimit: number): Promise<void> {
   const keep = Math.max(1, Number(keepLimit) || 1);
 
   const oldMessages = await Message.findAll({
     where: { chatId },
-    attributes: ["id"],
+    attributes: ["id", "messageType", "mediaUrl"],
     order: [["id", "DESC"]],
     offset: keep,
     raw: true,
@@ -574,7 +1190,18 @@ async function pruneChatHistory(chatId: number, keepLimit: number): Promise<void
       id: { [Op.in]: idsToDelete },
     },
   });
+
+  await cleanupPrunedMediaObjects(
+    oldMessages as Array<{ messageType?: unknown; mediaUrl?: unknown }>
+  );
 }
+
+export const pruneChatHistoryForChat = async (
+  chatId: number,
+  keepLimit = MAX_MESSAGES_PER_CHAT
+) => {
+  await pruneChatHistory(chatId, keepLimit);
+};
 
 
 

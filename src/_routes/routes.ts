@@ -15,6 +15,7 @@ import notification_routes from "./estandar/notification/notification_routes";
 import catalog_routes from "./estandar/catalog/catalog_routes";
 import media_routes from "./estandar/media/media_routes";
 import saved_routes from "./estandar/saved/saved_routes";
+import group_routes from "./estandar/group/group_routes";
 
 // 👇 Importa rutas comunes (ping, healthcheck)
 import common_routes from "./common";
@@ -42,6 +43,7 @@ export class AppRoutes {
     router.use("/api/v1/catalog", catalog_routes);
     router.use("/api/v1/media", media_routes);
     router.use("/api/v1/saved", saved_routes);
+    router.use("/api/v1/group", group_routes);
 
     // -----------------------------
     // 🔹 RUTAS ADMINISTRATIVAS
