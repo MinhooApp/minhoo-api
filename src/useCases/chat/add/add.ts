@@ -598,6 +598,8 @@ export const sendMessage = async (req: Request, res: Response) => {
       type: "message",
       message: notificationBody,
       senderName,
+      notificationScope: "direct",
+      peerUserId: senderId,
     });
 
     const messages = await repository.getChatByUser(req.userId, receiverUserId);

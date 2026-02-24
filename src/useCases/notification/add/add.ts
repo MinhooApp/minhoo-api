@@ -6,6 +6,8 @@ import {
 } from "../_module/module";
 import { emitNotificationRealtime } from "../../../libs/helper/realtime_dispatch";
 
+type NotificationScope = "direct" | "group";
+
 interface SendNotificationParams {
   userId: number;
   interactorId?: number;
@@ -23,7 +25,96 @@ interface SendNotificationParams {
 
   // ✅ NUEVO: nombre del que dispara la notificación (chat)
   senderName?: string;
+
+  // Chat routing payload (push)
+  notificationScope?: NotificationScope;
+  peerUserId?: number;
+  groupId?: number;
+  deeplink?: string;
 }
+
+const toPositiveInt = (value: any): number | undefined => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return undefined;
+  const safe = Math.trunc(parsed);
+  if (safe <= 0) return undefined;
+  return safe;
+};
+
+const buildChatDeeplink = (params: {
+  scope: NotificationScope;
+  peerUserId?: number;
+  groupId?: number;
+  messageId?: number;
+}) => {
+  const messageSuffix = params.messageId ? `?messageId=${params.messageId}` : "";
+
+  if (params.scope === "group" && params.groupId) {
+    return `chat/group/${params.groupId}${messageSuffix}`;
+  }
+
+  if (params.scope === "direct" && params.peerUserId) {
+    return `chat/direct/${params.peerUserId}${messageSuffix}`;
+  }
+
+  return "";
+};
+
+const buildChatPushData = (params: SendNotificationParams): Record<string, string | number> => {
+  if (params.type !== "message") return {};
+
+  const messageId = toPositiveInt(params.messageId);
+  const groupId = toPositiveInt(params.groupId);
+  const peerUserId = toPositiveInt(params.peerUserId) ?? toPositiveInt(params.interactorId);
+
+  const resolvedScope: NotificationScope =
+    params.notificationScope === "group" || (!params.notificationScope && groupId)
+      ? "group"
+      : "direct";
+
+  if (resolvedScope === "group") {
+    if (!groupId) {
+      throw new Error("groupId is required when notificationScope is group");
+    }
+
+    const deeplink =
+      String(params.deeplink ?? "").trim() ||
+      buildChatDeeplink({ scope: "group", groupId, messageId });
+
+    return {
+      route: "chat",
+      notificationScope: "group",
+      groupId,
+      ...(messageId ? { messageId } : {}),
+      ...(deeplink ? { deeplink } : {}),
+    };
+  }
+
+  if (!peerUserId) {
+    throw new Error("peerUserId is required when notificationScope is direct");
+  }
+
+  const deeplink =
+    String(params.deeplink ?? "").trim() ||
+    buildChatDeeplink({ scope: "direct", peerUserId, messageId });
+
+  return {
+    route: "chat",
+    notificationScope: "direct",
+    peerUserId,
+    ...(messageId ? { messageId } : {}),
+    ...(deeplink ? { deeplink } : {}),
+  };
+};
+
+const hasChatRoutingData = (params: SendNotificationParams) => {
+  if (params.notificationScope === "direct" || params.notificationScope === "group") {
+    return true;
+  }
+  if (toPositiveInt(params.peerUserId)) return true;
+  if (toPositiveInt(params.groupId)) return true;
+  return false;
+};
 
 export const sendNotification = async (
   params: SendNotificationParams
@@ -65,12 +156,19 @@ export const sendNotification = async (
     const pushBody = params.message;
 
     // ✅ data extra para Flutter (foreground)
-    const extraData = {
+    const extraData: Record<string, string | number> = {
       senderName: params.senderName ?? "",     // Flutter lo usa como title
       senderId: params.interactorId ?? "",     // para filtrar/suprimir
-      // opcional:
-      messageId: params.messageId ?? "",
     };
+
+    const notificationMessageId = toPositiveInt(params.messageId);
+    if (notificationMessageId) {
+      extraData.messageId = notificationMessageId;
+    }
+
+    if (params.type === "message" && hasChatRoutingData(params)) {
+      Object.assign(extraData, buildChatPushData(params));
+    }
 
     const pushResult = await sendPushToSingleUser(
       pushTitle,

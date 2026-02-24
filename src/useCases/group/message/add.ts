@@ -134,6 +134,7 @@ export const send_group_message = async (req: Request, res: Response) => {
       : `${groupLabel}: New message`;
     const senderName = String((serializedMessage as any)?.sender_name ?? "").trim() || "New message";
     const normalizedChatId = Number(created.chatId);
+    const createdMessageId = Number((serializedMessage as any)?.id ?? 0) || undefined;
 
     const targets = (created.memberUserIds as number[]).filter((uid) => uid !== senderUserId);
     if (targets.length > 0) {
@@ -143,10 +144,12 @@ export const send_group_message = async (req: Request, res: Response) => {
             sendNotification({
               userId: targetUserId,
               interactorId: senderUserId,
-              messageId: Number((serializedMessage as any)?.id ?? 0) || undefined,
+              messageId: createdMessageId,
               type: "message",
               message: notificationBody,
               senderName,
+              notificationScope: "group",
+              groupId,
             })
           )
         );
