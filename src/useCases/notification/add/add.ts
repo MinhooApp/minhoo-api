@@ -5,6 +5,8 @@ import {
   userRepository,
 } from "../_module/module";
 import { emitNotificationRealtime } from "../../../libs/helper/realtime_dispatch";
+import * as chatRepository from "../../../repository/chat/chat_repository";
+import * as groupRepository from "../../../repository/group/group_repository";
 
 type NotificationScope = "direct" | "group";
 
@@ -23,13 +25,14 @@ interface SendNotificationParams {
   commentId?: number;
   messageId?: number;
 
-  // ✅ NUEVO: nombre del que dispara la notificación (chat)
   senderName?: string;
 
-  // Chat routing payload (push)
   notificationScope?: NotificationScope;
+  chatId?: number;
   peerUserId?: number;
   groupId?: number;
+  groupName?: string;
+  groupAvatarUrl?: string;
   deeplink?: string;
 }
 
@@ -60,22 +63,37 @@ const buildChatDeeplink = (params: {
   return "";
 };
 
-const buildChatPushData = (params: SendNotificationParams): Record<string, string | number> => {
+const buildChatPushData = (
+  params: SendNotificationParams
+): Record<string, string | number> => {
   if (params.type !== "message") return {};
 
+  const chatId = toPositiveInt(params.chatId);
   const messageId = toPositiveInt(params.messageId);
   const groupId = toPositiveInt(params.groupId);
-  const peerUserId = toPositiveInt(params.peerUserId) ?? toPositiveInt(params.interactorId);
+  const peerUserId =
+    toPositiveInt(params.peerUserId) ?? toPositiveInt(params.interactorId);
 
   const resolvedScope: NotificationScope =
     params.notificationScope === "group" || (!params.notificationScope && groupId)
       ? "group"
       : "direct";
 
+  if (!chatId) {
+    throw new Error("chatId is required for chat push payload");
+  }
+  if (!messageId) {
+    throw new Error("messageId is required for chat push payload");
+  }
+
   if (resolvedScope === "group") {
     if (!groupId) {
       throw new Error("groupId is required when notificationScope is group");
     }
+
+    const resolvedGroupName =
+      String(params.groupName ?? "").trim() || `Group ${groupId}`;
+    const resolvedGroupAvatarUrl = String(params.groupAvatarUrl ?? "").trim();
 
     const deeplink =
       String(params.deeplink ?? "").trim() ||
@@ -84,8 +102,21 @@ const buildChatPushData = (params: SendNotificationParams): Record<string, strin
     return {
       route: "chat",
       notificationScope: "group",
+      conversationType: "group",
+      chatId,
+      messageId,
       groupId,
-      ...(messageId ? { messageId } : {}),
+      groupName: resolvedGroupName,
+      groupAvatarUrl: resolvedGroupAvatarUrl,
+
+      // legacy compatibility (1 release)
+      chat_id: chatId,
+      message_id: messageId,
+      group_id: groupId,
+      conversation_type: "group",
+      group_name: resolvedGroupName,
+      group_avatar_url: resolvedGroupAvatarUrl,
+
       ...(deeplink ? { deeplink } : {}),
     };
   }
@@ -101,8 +132,17 @@ const buildChatPushData = (params: SendNotificationParams): Record<string, strin
   return {
     route: "chat",
     notificationScope: "direct",
+    conversationType: "direct",
+    chatId,
+    messageId,
     peerUserId,
-    ...(messageId ? { messageId } : {}),
+
+    // legacy compatibility (1 release)
+    chat_id: chatId,
+    message_id: messageId,
+    peer_user_id: peerUserId,
+    conversation_type: "direct",
+
     ...(deeplink ? { deeplink } : {}),
   };
 };
@@ -111,6 +151,7 @@ const hasChatRoutingData = (params: SendNotificationParams) => {
   if (params.notificationScope === "direct" || params.notificationScope === "group") {
     return true;
   }
+  if (toPositiveInt(params.chatId)) return true;
   if (toPositiveInt(params.peerUserId)) return true;
   if (toPositiveInt(params.groupId)) return true;
   return false;
@@ -120,7 +161,6 @@ export const sendNotification = async (
   params: SendNotificationParams
 ): Promise<void> => {
   try {
-    // si es el mismo usuario, puedes evitar notificar (si quieres)
     if (params.userId === params.interactorId) {
       // return;
     }
@@ -147,18 +187,11 @@ export const sendNotification = async (
 
     emitNotificationRealtime(params.userId, notification);
 
-    // ✅ Para chat: queremos que se vea el nombre en la barra de notificaciones
-    const pushTitle =
-      params.type === "message"
-        ? (params.senderName?.trim() || "Nuevo mensaje")
-        : "Minhoo news";
-
     const pushBody = params.message;
 
-    // ✅ data extra para Flutter (foreground)
     const extraData: Record<string, string | number> = {
-      senderName: params.senderName ?? "",     // Flutter lo usa como title
-      senderId: params.interactorId ?? "",     // para filtrar/suprimir
+      senderName: params.senderName ?? "",
+      senderId: params.interactorId ?? "",
     };
 
     const notificationMessageId = toPositiveInt(params.messageId);
@@ -166,9 +199,65 @@ export const sendNotification = async (
       extraData.messageId = notificationMessageId;
     }
 
-    if (params.type === "message" && hasChatRoutingData(params)) {
-      Object.assign(extraData, buildChatPushData(params));
+    let pushParams: SendNotificationParams = params;
+
+    if (params.type === "message" && !hasChatRoutingData(params) && notificationMessageId) {
+      const resolvedConversation = await chatRepository.resolveConversationByMessageId(
+        params.userId,
+        notificationMessageId
+      );
+
+      if (resolvedConversation) {
+        pushParams = {
+          ...params,
+          notificationScope: resolvedConversation.conversationType,
+          chatId: resolvedConversation.chatId,
+          messageId: resolvedConversation.messageId,
+          peerUserId: resolvedConversation.peerUserId ?? params.peerUserId,
+          groupId: resolvedConversation.groupId ?? params.groupId,
+        };
+      }
     }
+
+    if (pushParams.type === "message" && pushParams.notificationScope === "group") {
+      const resolvedGroupId = toPositiveInt(pushParams.groupId);
+      let groupName = String(pushParams.groupName ?? "").trim();
+      let groupAvatarUrl = String(pushParams.groupAvatarUrl ?? "").trim();
+
+      if (resolvedGroupId && (!groupName || !groupAvatarUrl)) {
+        const group = await groupRepository.getActiveGroupById(resolvedGroupId);
+        if (group) {
+          if (!groupName) {
+            groupName = String((group as any)?.name ?? "").trim();
+          }
+          if (!groupAvatarUrl) {
+            groupAvatarUrl = String((group as any)?.avatarUrl ?? "").trim();
+          }
+        }
+      }
+
+      if (resolvedGroupId) {
+        pushParams = {
+          ...pushParams,
+          groupId: resolvedGroupId,
+          groupName: groupName || `Group ${resolvedGroupId}`,
+          groupAvatarUrl: groupAvatarUrl || "",
+        };
+      }
+    }
+
+    if (pushParams.type === "message" && hasChatRoutingData(pushParams)) {
+      Object.assign(extraData, buildChatPushData(pushParams));
+    }
+
+    const pushTitle =
+      params.type === "message"
+        ? pushParams.notificationScope === "group"
+          ? String(pushParams.groupName ?? "").trim() ||
+            params.senderName?.trim() ||
+            "Nuevo mensaje"
+          : params.senderName?.trim() || "Nuevo mensaje"
+        : "Minhoo news";
 
     const pushResult = await sendPushToSingleUser(
       pushTitle,
@@ -218,12 +307,14 @@ function getFirstAvailableId(data: SendNotificationParams): number {
 
     case "admin":
     default:
-      return (data.serviceId ||
+      return (
+        data.serviceId ||
         data.postId ||
         data.offerId ||
         data.likerId ||
         data.commentId ||
         data.followerId ||
-        data.messageId!)!;
+        data.messageId!
+      )!;
   }
 }

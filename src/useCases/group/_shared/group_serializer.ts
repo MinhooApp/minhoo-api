@@ -6,6 +6,46 @@ const toPositiveInt = (value: any): number | null => {
   return safe;
 };
 
+const toIsoDate = (value: any): string | null => {
+  if (value === undefined || value === null || value === "") return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  return date.toISOString();
+};
+
+const toLastMessage = (value: any) => {
+  if (!value || typeof value !== "object") return null;
+  const message = toPlain(value);
+
+  const id = toPositiveInt((message as any)?.id);
+  const chatId = toPositiveInt((message as any)?.chatId ?? (message as any)?.chat_id);
+  const senderId = toPositiveInt(
+    (message as any)?.senderId ?? (message as any)?.sender_id
+  );
+  const messageType = toText(
+    (message as any)?.messageType ?? (message as any)?.message_type
+  );
+
+  if (!id || !chatId || !senderId || !messageType) {
+    return null;
+  }
+
+  return {
+    id,
+    chatId,
+    senderId,
+    text: toText((message as any)?.text),
+    messageType,
+    mediaUrl: toText((message as any)?.mediaUrl ?? (message as any)?.media_url),
+    mediaMime: toText((message as any)?.mediaMime ?? (message as any)?.media_mime),
+    date: toIsoDate((message as any)?.date),
+    status: toText((message as any)?.status),
+    replyToMessageId: toPositiveInt(
+      (message as any)?.replyToMessageId ?? (message as any)?.reply_to_message_id
+    ),
+  };
+};
+
 const toText = (value: any): string | null => {
   if (value === null || value === undefined) return null;
   const text = String(value).trim();
@@ -53,6 +93,18 @@ export const serializeGroup = (
     toText((group as any)?.avatarUrl) ||
     toText((group as any)?.avatar_url) ||
     owner.avatar_url;
+  const lastMessage = toLastMessage(
+    (group as any)?.lastMessage ?? (group as any)?.last_message
+  );
+  const fallbackInteractionDate = toIsoDate(
+    (group as any)?.updatedAt ?? (group as any)?.createdAt ?? null
+  );
+  const lastInteractionAt =
+    toIsoDate(
+      (group as any)?.lastInteractionAt ??
+        (group as any)?.last_interaction_at ??
+        (lastMessage as any)?.date
+    ) ?? fallbackInteractionDate;
 
   const name = toText((group as any)?.name) || null;
   const id = toPositiveInt((group as any)?.id);
@@ -67,6 +119,8 @@ export const serializeGroup = (
     name,
     display_name: name || (id ? `Group ${id}` : null),
     description: toText((group as any)?.description),
+    groupDescription: toText((group as any)?.description),
+    group_description: toText((group as any)?.description),
     avatarUrl: groupAvatar,
     avatar_url: groupAvatar,
     display_avatar_url: groupAvatar,
@@ -88,6 +142,10 @@ export const serializeGroup = (
       opts && typeof opts.unreadCount === "number" && Number.isFinite(opts.unreadCount)
         ? Math.max(0, Math.trunc(opts.unreadCount))
         : 0,
+    lastMessage,
+    last_message: lastMessage,
+    lastInteractionAt,
+    last_interaction_at: lastInteractionAt,
     owner,
   };
 };

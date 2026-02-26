@@ -1,4 +1,9 @@
 import { Request, Response, formatResponse, repository } from "../_module/module";
+import {
+  emitChatsRefreshRealtime,
+  emitGroupUpdatedRealtime,
+} from "../../../libs/helper/realtime_dispatch";
+import { serializeGroup } from "../_shared/group_serializer";
 
 const toPositiveInt = (value: any): number | null => {
   const parsed = Number(value);
@@ -28,6 +33,13 @@ const normalizeWriteMode = (
   if (mode === "all_members") return "all_members";
   if (mode === "admins_only") return "admins_only";
   return null;
+};
+
+const setNoCacheHeaders = (res: Response) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  res.set("Surrogate-Control", "no-store");
 };
 
 export const update_group = async (req: Request, res: Response) => {
@@ -160,8 +172,14 @@ export const update_group = async (req: Request, res: Response) => {
       });
     }
 
-    const group = await repository.getActiveGroupById(groupId);
-    if (!group) {
+    setNoCacheHeaders(res);
+
+    const updated = await repository.updateGroupSettingsTransactional({
+      groupId,
+      payload: body,
+    });
+
+    if (!updated || !updated.group) {
       return formatResponse({
         res,
         success: false,
@@ -170,13 +188,83 @@ export const update_group = async (req: Request, res: Response) => {
       });
     }
 
-    await (group as any).update(body);
+    const serializedGroup = serializeGroup(updated.group);
+    const chatId =
+      toPositiveInt((updated as any)?.chatId) ??
+      toPositiveInt((serializedGroup as any)?.chatId) ??
+      toPositiveInt((serializedGroup as any)?.chat_id);
+
+    const updatedAtDate = new Date(
+      (updated as any)?.updatedAt ?? (serializedGroup as any)?.updatedAt ?? new Date()
+    );
+    const updatedAt = Number.isFinite(updatedAtDate.getTime())
+      ? updatedAtDate.toISOString()
+      : new Date().toISOString();
+    const version = Number.isFinite(updatedAtDate.getTime())
+      ? updatedAtDate.getTime()
+      : Date.now();
+
+    const groupPayload = {
+      ...serializedGroup,
+      id: toPositiveInt((serializedGroup as any)?.id) ?? groupId,
+      groupId,
+      chatId: chatId ?? null,
+      chat_id: chatId ?? null,
+      name: String((serializedGroup as any)?.name ?? "").trim() || null,
+      description:
+        (serializedGroup as any)?.description !== undefined
+          ? (serializedGroup as any)?.description
+          : null,
+      avatarUrl:
+        String(
+          (serializedGroup as any)?.avatarUrl ??
+            (serializedGroup as any)?.avatar_url ??
+            ""
+        ).trim() || null,
+      avatar_url:
+        String(
+          (serializedGroup as any)?.avatarUrl ??
+            (serializedGroup as any)?.avatar_url ??
+            ""
+        ).trim() || null,
+      updatedAt,
+      version,
+    };
+
+    const eventPayload = {
+      type: "group_updated" as const,
+      groupId,
+      chatId: chatId ?? null,
+      name: groupPayload.name,
+      description: groupPayload.description,
+      avatarUrl: groupPayload.avatarUrl,
+      joinMode:
+        (groupPayload as any)?.joinMode !== undefined
+          ? (groupPayload as any)?.joinMode
+          : null,
+      writeMode:
+        (groupPayload as any)?.writeMode !== undefined
+          ? (groupPayload as any)?.writeMode
+          : null,
+      updatedAt,
+      version,
+    };
+
+    emitGroupUpdatedRealtime(chatId ?? null, eventPayload, (updated as any).memberUserIds);
+
+    const memberUserIds = Array.isArray((updated as any).memberUserIds)
+      ? (updated as any).memberUserIds
+      : [];
+    for (const memberIdRaw of memberUserIds) {
+      const memberId = toPositiveInt(memberIdRaw);
+      if (memberId) emitChatsRefreshRealtime(memberId);
+    }
 
     return formatResponse({
       res,
       success: true,
       body: {
-        group,
+        group: groupPayload,
       },
     });
   } catch (error) {

@@ -13,12 +13,29 @@ const IMAGE_MAX_RESOLUTION = 2048;
 const IMAGE_FEED_WIDTH = 1080;
 const IMAGE_OUTPUT_FORMAT = "webp";
 const IMAGE_OUTPUT_QUALITY = 80;
+const IMAGE_PLAYBACK_REDIRECT_TTL_SECONDS = Math.max(
+  30,
+  Number(process.env.IMAGE_PLAYBACK_REDIRECT_TTL_SECONDS ?? 300) || 300
+);
+const IMAGE_PLAYBACK_REDIRECT_CACHE_TTL_MS = IMAGE_PLAYBACK_REDIRECT_TTL_SECONDS * 1000;
+const IMAGE_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS = Math.max(
+  100,
+  Number(process.env.IMAGE_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS ?? 5000) || 5000
+);
 
 const VIDEO_MAX_BYTES = 100 * 1024 * 1024;
 const VIDEO_MAX_DURATION_SECONDS = 60;
 const VIDEO_OUTPUT_RESOLUTION = "720p";
 const VIDEO_OUTPUT_CODEC = "H.264 MP4";
 const VIDEO_STREAMING = "HLS";
+const CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS = Math.max(
+  5000,
+  Number(process.env.CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS ?? 20000) || 20000
+);
+const VIDEO_PENDINGUPLOAD_STALE_SECONDS = Math.max(
+  10,
+  Number(process.env.VIDEO_PENDINGUPLOAD_STALE_SECONDS ?? 20) || 20
+);
 
 const AUDIO_MAX_BYTES = 10 * 1024 * 1024;
 const AUDIO_MAX_DURATION_SECONDS = 60;
@@ -107,6 +124,21 @@ const extractCloudflareError = (error: any) => {
     "cloudflare request failed";
 
   return String(message);
+};
+
+const isAxiosTimeoutError = (error: any) => {
+  const code = String(error?.code ?? "").trim().toUpperCase();
+  if (code === "ECONNABORTED") return true;
+  const message = String(error?.message ?? "").toLowerCase();
+  return message.includes("timeout");
+};
+
+const parseDateMs = (value: any): number | null => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const ms = Date.parse(raw);
+  if (!Number.isFinite(ms)) return null;
+  return ms;
 };
 
 const ensureCloudflareConfig = (kind: "images" | "media") => {
@@ -424,6 +456,55 @@ const normalizeVideoUid = (value: any): string | null => {
   return decoded.toLowerCase();
 };
 
+type ImagePlaybackRedirectCacheEntry = {
+  url: string;
+  expiresAt: number;
+};
+
+const imagePlaybackRedirectCache = new Map<string, ImagePlaybackRedirectCacheEntry>();
+
+const setImagePlaybackCacheHeaders = (res: Response) => {
+  const maxAge = IMAGE_PLAYBACK_REDIRECT_TTL_SECONDS;
+  const staleWhileRevalidate = Math.min(60, Math.max(10, Math.floor(maxAge / 3)));
+  res.set(
+    "Cache-Control",
+    `public, max-age=${maxAge}, stale-while-revalidate=${staleWhileRevalidate}`
+  );
+};
+
+const getCachedImagePlaybackRedirect = (imageId: string): string | null => {
+  const cached = imagePlaybackRedirectCache.get(imageId);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    imagePlaybackRedirectCache.delete(imageId);
+    return null;
+  }
+  return cached.url;
+};
+
+const saveImagePlaybackRedirect = (imageId: string, url: string) => {
+  const now = Date.now();
+
+  if (imagePlaybackRedirectCache.size >= IMAGE_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS) {
+    for (const [key, value] of imagePlaybackRedirectCache.entries()) {
+      if (value.expiresAt <= now) {
+        imagePlaybackRedirectCache.delete(key);
+      }
+    }
+  }
+
+  while (imagePlaybackRedirectCache.size >= IMAGE_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS) {
+    const oldestKey = imagePlaybackRedirectCache.keys().next().value;
+    if (!oldestKey) break;
+    imagePlaybackRedirectCache.delete(oldestKey);
+  }
+
+  imagePlaybackRedirectCache.set(imageId, {
+    url,
+    expiresAt: now + IMAGE_PLAYBACK_REDIRECT_CACHE_TTL_MS,
+  });
+};
+
 type StreamDownloadInfo = {
   status: string;
   url: string | null;
@@ -628,6 +709,7 @@ export const confirm_image_upload = async (req: Request, res: Response) => {
     const preferredVariant = variants.find((url: string) =>
       url.endsWith(`/${getImageVariant()}`)
     );
+    const directVariantUrl = preferredVariant ?? variants[0] ?? null;
     const playbackPath = buildImagePlaybackPath(result.id ?? imageId);
 
     return formatResponse({
@@ -639,13 +721,13 @@ export const confirm_image_upload = async (req: Request, res: Response) => {
           ready: !result.draft,
           uploaded: result.uploaded ?? null,
           variant: getImageVariant(),
-          url: preferredVariant ?? variants[0] ?? null,
+          url: directVariantUrl,
           playback_url: playbackPath,
           variants,
         },
         recommended_chat_payload: {
           message_type: "image",
-          media_url: playbackPath,
+          media_url: directVariantUrl ?? playbackPath,
           media_mime: "image/webp",
           media_duration_ms: null,
           media_size_bytes: parsePositiveInt((req.body as any)?.file_size_bytes),
@@ -748,7 +830,10 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
     const response = await axios.post(
       `${CLOUDFLARE_API_BASE}/accounts/${config.accountId}/stream/direct_upload`,
       payload,
-      { headers: cloudflareHeaders(config.token) }
+      {
+        headers: cloudflareHeaders(config.token),
+        timeout: CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS,
+      }
     );
 
     if (!response.data?.success) {
@@ -758,16 +843,30 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
     }
 
     const result = response.data?.result ?? {};
+    console.log(
+      `[media][video-direct-upload] userId=${req.userId ?? 0} uid=${String(result.uid ?? "")} hasUploadUrl=${Boolean(
+        result.uploadURL
+      )}`
+    );
     return formatResponse({
       res,
       success: true,
       body: {
         uid: result.uid ?? null,
         upload_url: result.uploadURL ?? null,
+        upload_expires_at: result.expiry ?? null,
         rules: mediaRules.video,
       },
     });
   } catch (error: any) {
+    if (isAxiosTimeoutError(error)) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 504,
+        message: "video direct upload init timeout, retry",
+      });
+    }
     return formatResponse({
       res,
       success: false,
@@ -801,7 +900,10 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
   try {
     const response = await axios.get(
       `${CLOUDFLARE_API_BASE}/accounts/${config.accountId}/stream/${uid}`,
-      { headers: cloudflareHeaders(config.token) }
+      {
+        headers: cloudflareHeaders(config.token),
+        timeout: CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS,
+      }
     );
 
     if (!response.data?.success) {
@@ -811,6 +913,49 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
     }
 
     const result = response.data?.result ?? {};
+    const readyToStream = Boolean(result.readyToStream);
+    const statusState = String((result as any)?.status?.state ?? "")
+      .trim()
+      .toLowerCase();
+    const createdAt = String((result as any)?.created ?? "").trim() || null;
+    const createdAtMs = parseDateMs(createdAt);
+    const ageSeconds =
+      createdAtMs != null
+        ? Math.max(0, Math.floor((Date.now() - createdAtMs) / 1000))
+        : null;
+
+    console.log(
+      `[media][video-confirm] userId=${req.userId ?? 0} uid=${uid} ready=${readyToStream} state=${statusState || "unknown"} ageSec=${
+        ageSeconds ?? -1
+      }`
+    );
+
+    if (
+      statusState === "pendingupload" &&
+      ageSeconds !== null &&
+      ageSeconds >= VIDEO_PENDINGUPLOAD_STALE_SECONDS
+    ) {
+      return res.status(409).json({
+        header: {
+          success: false,
+          authenticated: false,
+          code: 409,
+          messages: [
+            "Internal error, please consult the administrator",
+            "video upload is incomplete (pendingupload), retry upload",
+          ],
+        },
+        body: {
+          uid,
+          upload_state: statusState,
+          should_retry_upload: true,
+          retry_after_ms: 0,
+          created_at: createdAt,
+          age_seconds: ageSeconds,
+        },
+      });
+    }
+
     const duration = Number(result.duration ?? 0);
     if (Number.isFinite(duration) && duration > VIDEO_MAX_DURATION_SECONDS) {
       return formatResponse({
@@ -837,14 +982,19 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
       body: {
         video: {
           uid,
-          ready: !!result.readyToStream,
+          ready: readyToStream,
           duration_seconds: Number.isFinite(duration) ? duration : null,
           hls,
           playback_url: playbackPath,
           download_url: downloadPath,
           thumbnail,
           status: result.status ?? null,
+          upload_state: statusState || null,
+          created_at: createdAt,
+          age_seconds: ageSeconds,
         },
+        should_retry_upload: false,
+        retry_after_ms: readyToStream ? 0 : 2000,
         recommended_chat_payload: {
           message_type: "video",
           media_url: playbackPath,
@@ -859,6 +1009,14 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
+    if (isAxiosTimeoutError(error)) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 504,
+        message: "video confirm timeout, retry",
+      });
+    }
     return formatResponse({
       res,
       success: false,
@@ -1385,6 +1543,12 @@ export const image_playback = async (req: Request, res: Response) => {
     });
   }
 
+  const cachedRedirectTarget = getCachedImagePlaybackRedirect(imageId);
+  if (cachedRedirectTarget) {
+    setImagePlaybackCacheHeaders(res);
+    return res.redirect(302, cachedRedirectTarget);
+  }
+
   try {
     const response = await axios.get(
       `${CLOUDFLARE_API_BASE}/accounts/${config.accountId}/images/v1/${imageId}`,
@@ -1412,6 +1576,8 @@ export const image_playback = async (req: Request, res: Response) => {
       });
     }
 
+    saveImagePlaybackRedirect(imageId, redirectTarget);
+    setImagePlaybackCacheHeaders(res);
     return res.redirect(302, redirectTarget);
   } catch (error: any) {
     return formatResponse({

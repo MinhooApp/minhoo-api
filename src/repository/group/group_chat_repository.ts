@@ -1,6 +1,7 @@
-import { Op } from "sequelize";
+import { Op, Sequelize } from "sequelize";
 import Message from "../../_models/chat/message";
 import User from "../../_models/user/user";
+import sequelize from "../../_db/connection";
 import { pruneChatHistoryForChat } from "../chat/chat_repository";
 import {
   attachUserToGroupChat,
@@ -38,6 +39,89 @@ export type GroupMessagePayload = {
   mediaSizeBytes: number | null;
   waveform: number[] | null;
   metadata: Record<string, any> | null;
+  clientMessageId?: string | null;
+};
+
+const CLIENT_MESSAGE_ID_METADATA_KEY = "_clientMessageId";
+
+const normalizeClientMessageId = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+  return normalized;
+};
+
+const mergeClientMessageIdIntoMetadata = (
+  metadata: Record<string, any> | null | undefined,
+  clientMessageId: string | null
+): Record<string, any> | null => {
+  if (!clientMessageId) {
+    return metadata ?? null;
+  }
+
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    return {
+      ...metadata,
+      [CLIENT_MESSAGE_ID_METADATA_KEY]: clientMessageId,
+    };
+  }
+
+  return {
+    [CLIENT_MESSAGE_ID_METADATA_KEY]: clientMessageId,
+  };
+};
+
+const buildMessageInclude = () => [
+  {
+    model: User,
+    as: "sender",
+    required: false,
+    attributes: ["id", "name", "last_name", "username", "image_profil", "is_deleted"],
+  },
+  {
+    model: Message,
+    as: "replyTo",
+    required: false,
+    attributes: [
+      "id",
+      "text",
+      "messageType",
+      "mediaUrl",
+      "mediaMime",
+      "mediaDurationMs",
+      "mediaSizeBytes",
+      "waveform",
+      "metadata",
+      "senderId",
+      "date",
+    ],
+  },
+];
+
+const findGroupMessageByClientMessageId = async ({
+  chatId,
+  senderId,
+  clientMessageId,
+}: {
+  chatId: number;
+  senderId: number;
+  clientMessageId: string;
+}) => {
+  return Message.findOne({
+    where: {
+      chatId,
+      senderId,
+      [Op.and]: [
+        Sequelize.literal(
+          `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
+            clientMessageId
+          )}`
+        ),
+      ],
+    },
+    include: buildMessageInclude(),
+    order: [["id", "DESC"]],
+  });
 };
 
 export const getGroupMessagesPage = async ({
@@ -83,7 +167,10 @@ export const getGroupMessagesPage = async ({
 
   const messages = await Message.findAll({
     where,
-    order: [["id", "DESC"]],
+    order: [
+      ["date", "DESC"],
+      ["id", "DESC"],
+    ],
     limit: safeLimit,
     include: [
       {
@@ -160,6 +247,27 @@ export const createGroupMessage = async ({
     return { ok: false as const, reason: "group_not_found" as const };
   }
 
+  const normalizedClientMessageId = normalizeClientMessageId(payload?.clientMessageId);
+  if (normalizedClientMessageId) {
+    const existingMessage = await findGroupMessageByClientMessageId({
+      chatId,
+      senderId: senderUserId,
+      clientMessageId: normalizedClientMessageId,
+    });
+    if (existingMessage) {
+      const memberUserIds = await getActiveMemberUserIds(groupId);
+      return {
+        ok: true as const,
+        chatId,
+        message: existingMessage,
+        group: access.group,
+        policy: access.policy,
+        memberUserIds,
+        deduplicated: true,
+      };
+    }
+  }
+
   const now = new Date();
   const created = await Message.create({
     text: payload.text ?? null,
@@ -169,7 +277,10 @@ export const createGroupMessage = async ({
     mediaDurationMs: payload.mediaDurationMs ?? null,
     mediaSizeBytes: payload.mediaSizeBytes ?? null,
     waveform: payload.waveform ?? null,
-    metadata: payload.metadata ?? null,
+    metadata: mergeClientMessageIdIntoMetadata(
+      payload.metadata ?? null,
+      normalizedClientMessageId
+    ),
     senderId: senderUserId,
     chatId,
     date: now,
@@ -180,32 +291,7 @@ export const createGroupMessage = async ({
   await pruneChatHistoryForChat(chatId);
 
   const fullMessage = await Message.findByPk(Number((created as any).id), {
-    include: [
-      {
-        model: User,
-        as: "sender",
-        required: false,
-        attributes: ["id", "name", "last_name", "username", "image_profil", "is_deleted"],
-      },
-      {
-        model: Message,
-        as: "replyTo",
-        required: false,
-        attributes: [
-          "id",
-          "text",
-          "messageType",
-          "mediaUrl",
-          "mediaMime",
-          "mediaDurationMs",
-          "mediaSizeBytes",
-          "waveform",
-          "metadata",
-          "senderId",
-          "date",
-        ],
-      },
-    ],
+    include: buildMessageInclude(),
   });
 
   const memberUserIds = await getActiveMemberUserIds(groupId);
@@ -216,5 +302,6 @@ export const createGroupMessage = async ({
     group: access.group,
     policy: access.policy,
     memberUserIds,
+    deduplicated: false,
   };
 };

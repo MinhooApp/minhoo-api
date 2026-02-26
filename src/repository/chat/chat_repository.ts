@@ -36,6 +36,62 @@ export type ChatMessagePayload = {
   mediaSizeBytes?: number | null;
   waveform?: number[] | null;
   metadata?: Record<string, any> | null;
+  clientMessageId?: string | null;
+};
+
+const CLIENT_MESSAGE_ID_METADATA_KEY = "_clientMessageId";
+
+const normalizeClientMessageId = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+  return normalized;
+};
+
+const mergeClientMessageIdIntoMetadata = (
+  metadata: Record<string, any> | null | undefined,
+  clientMessageId: string | null
+): Record<string, any> | null => {
+  if (!clientMessageId) {
+    return metadata ?? null;
+  }
+
+  if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+    return {
+      ...metadata,
+      [CLIENT_MESSAGE_ID_METADATA_KEY]: clientMessageId,
+    };
+  }
+
+  return {
+    [CLIENT_MESSAGE_ID_METADATA_KEY]: clientMessageId,
+  };
+};
+
+const findMessageByClientMessageId = async ({
+  chatId,
+  senderId,
+  clientMessageId,
+}: {
+  chatId: number;
+  senderId: number;
+  clientMessageId: string;
+}) => {
+  return Message.findOne({
+    where: {
+      chatId,
+      senderId,
+      [Op.and]: [
+        Sequelize.literal(
+          `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
+            clientMessageId
+          )}`
+        ),
+      ],
+    },
+    attributes: ["id"],
+    order: [["id", "DESC"]],
+  });
 };
 
 
@@ -128,6 +184,26 @@ export const initNewChat = async (
     }
   }
 
+  const normalizedClientMessageId = normalizeClientMessageId(
+    messagePayload?.clientMessageId
+  );
+
+  if (normalizedClientMessageId) {
+    const existingMessage = await findMessageByClientMessageId({
+      chatId,
+      senderId: me,
+      clientMessageId: normalizedClientMessageId,
+    });
+    if (existingMessage) {
+      return {
+        chatId,
+        messageId: Number((existingMessage as any).id),
+        chat,
+        deduplicated: true,
+      };
+    }
+  }
+
   const createdMessage = await Message.create({
     text: messagePayload?.text ?? null,
     messageType: messagePayload?.messageType ?? "text",
@@ -136,7 +212,10 @@ export const initNewChat = async (
     mediaDurationMs: messagePayload?.mediaDurationMs ?? null,
     mediaSizeBytes: messagePayload?.mediaSizeBytes ?? null,
     waveform: messagePayload?.waveform ?? null,
-    metadata: messagePayload?.metadata ?? null,
+    metadata: mergeClientMessageIdIntoMetadata(
+      messagePayload?.metadata ?? null,
+      normalizedClientMessageId
+    ),
     senderId: me,
     chatId,
     date: now,
@@ -150,6 +229,7 @@ export const initNewChat = async (
     chatId,
     messageId: Number(createdMessage.id),
     chat,
+    deduplicated: false,
   };
 };
 
@@ -219,6 +299,94 @@ export const getSenderByMessageId = async (messageId: any) => {
   return messages;
 };
 
+export const resolveConversationByMessageId = async (
+  currentUserId: any,
+  messageId: any
+): Promise<{
+  conversationType: "direct" | "group";
+  chatId: number;
+  peerUserId: number | null;
+  groupId: number | null;
+  messageId: number;
+} | null> => {
+  const uid = Number(currentUserId);
+  const safeMessageId = Number(messageId);
+
+  if (!Number.isFinite(safeMessageId) || safeMessageId <= 0) {
+    return null;
+  }
+
+  const message = await Message.findByPk(safeMessageId, {
+    attributes: ["id", "chatId", "senderId"],
+  });
+  if (!message) return null;
+
+  const chatId = Number((message as any).chatId);
+  if (!Number.isFinite(chatId) || chatId <= 0) return null;
+
+  if (Number.isFinite(uid) && uid > 0) {
+    const membership = await Chat_User.findOne({
+      where: { chatId, userId: uid },
+      attributes: ["chatId"],
+    });
+    if (!membership) return null;
+  }
+
+  const group = await Group.findOne({
+    where: { chatId },
+    attributes: ["id", "isActive"],
+    order: [
+      ["isActive", "DESC"],
+      ["id", "DESC"],
+    ],
+  });
+
+  if (group) {
+    const groupId = Number((group as any).id);
+    return {
+      conversationType: "group",
+      chatId,
+      peerUserId: null,
+      groupId: Number.isFinite(groupId) && groupId > 0 ? groupId : null,
+      messageId: safeMessageId,
+    };
+  }
+
+  const participants = await Chat_User.findAll({
+    where: { chatId },
+    attributes: ["userId"],
+    order: [["userId", "ASC"]],
+    raw: true,
+  });
+
+  let peerUserId: number | null = null;
+  if (participants.length > 0) {
+    const participantIds = participants
+      .map((row: any) => Number(row.userId))
+      .filter((id: number) => Number.isFinite(id) && id > 0);
+
+    const other = participantIds.find((id: number) => id !== uid);
+    if (Number.isFinite(other as any) && (other as number) > 0) {
+      peerUserId = other as number;
+    }
+  }
+
+  if (!peerUserId) {
+    const senderId = Number((message as any).senderId);
+    if (Number.isFinite(senderId) && senderId > 0 && senderId !== uid) {
+      peerUserId = senderId;
+    }
+  }
+
+  return {
+    conversationType: "direct",
+    chatId,
+    peerUserId,
+    groupId: null,
+    messageId: safeMessageId,
+  };
+};
+
 export const getChatByUser = async (
   currentUserId: any,
   otherUserId: any,
@@ -237,7 +405,6 @@ export const getChatByUser = async (
 
   const chatId = existingChat[0].chatId;
 
-  // âœ… FIX: chat visible si deletedBy = 0 o = me (NO -1)
   const chat = await Chat.findOne({
     where: {
       id: chatId,
@@ -252,7 +419,7 @@ export const getChatByUser = async (
 
   const where: any = {
     chatId,
-    deletedBy: { [Op.in]: [0, me] }, // âœ… FIX: mensajes visibles
+    deletedBy: { [Op.in]: [0, me] },
   };
 
   if (Number.isFinite(beforeMessageId as any) && (beforeMessageId as number) > 0) {
@@ -261,10 +428,19 @@ export const getChatByUser = async (
 
   const messages = await Message.findAll({
     where,
-    order: [["id", "DESC"]],
+    order: [
+      ["date", "DESC"],
+      ["id", "DESC"],
+    ],
     limit,
     attributes: { exclude: excludeKeys },
     include: [
+      {
+        model: User,
+        as: "sender",
+        required: false,
+        attributes: ["id", "name", "last_name", "username", "image_profil", "is_deleted"],
+      },
       {
         model: Message,
         as: "replyTo",
@@ -287,6 +463,84 @@ export const getChatByUser = async (
   });
 
   return messages.reverse();
+};
+
+export const getDirectChatIdByUsers = async (
+  currentUserId: any,
+  otherUserId: any
+): Promise<number | null> => {
+  const me = Number(currentUserId);
+  const other = Number(otherUserId);
+
+  if (!Number.isFinite(me) || me <= 0 || !Number.isFinite(other) || other <= 0) {
+    return null;
+  }
+
+  const existingChat = await chatExist(me, other);
+  if (!existingChat?.length) return null;
+
+  const chatId = Number(existingChat[0].chatId);
+  if (!Number.isFinite(chatId) || chatId <= 0) return null;
+
+  const chat = await Chat.findOne({
+    where: {
+      id: chatId,
+      deletedBy: { [Op.in]: [0, me] },
+    },
+    attributes: ["id"],
+  });
+
+  if (!chat) return null;
+  return chatId;
+};
+
+export const getRelatedUserIdsByUser = async (
+  userId: number,
+  opts?: { includeSelf?: boolean }
+): Promise<number[]> => {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return [];
+
+  const memberships = await Chat_User.findAll({
+    where: { userId: uid },
+    attributes: ["chatId"],
+    raw: true,
+  });
+
+  const chatIds = Array.from(
+    new Set(
+      (memberships as any[])
+        .map((row) => Number((row as any)?.chatId))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    )
+  );
+
+  if (chatIds.length === 0) {
+    return opts?.includeSelf ? [uid] : [];
+  }
+
+  const participants = await Chat_User.findAll({
+    where: {
+      chatId: { [Op.in]: chatIds },
+    },
+    attributes: ["userId"],
+    raw: true,
+  });
+
+  const relatedUserIds = new Set<number>();
+  for (const row of participants as any[]) {
+    const relatedId = Number((row as any)?.userId);
+    if (!Number.isFinite(relatedId) || relatedId <= 0) continue;
+    relatedUserIds.add(relatedId);
+  }
+
+  if (!opts?.includeSelf) {
+    relatedUserIds.delete(uid);
+  } else {
+    relatedUserIds.add(uid);
+  }
+
+  return [...relatedUserIds];
 };
 
 const getActiveGroupChatIds = async (): Promise<number[]> => {
@@ -622,6 +876,46 @@ export const updateMessageTimestamps = async ({
     },
     { where: { id: messageId } }
   );
+};
+
+export const getMessageById = async (messageId: number) => {
+  const safeMessageId = Number(messageId);
+  if (!Number.isFinite(safeMessageId) || safeMessageId <= 0) return null;
+  return Message.findByPk(safeMessageId, {
+    attributes: ["id", "chatId", "senderId", "deletedBy"],
+  });
+};
+
+export const markMessageDeletedForAll = async (messageId: number) => {
+  const safeMessageId = Number(messageId);
+  if (!Number.isFinite(safeMessageId) || safeMessageId <= 0) return 0;
+  const [count] = await Message.update(
+    { deletedBy: -1 },
+    {
+      where: {
+        id: safeMessageId,
+      },
+    }
+  );
+  return Number(count) || 0;
+};
+
+export const getChatParticipantUserIds = async (chatId: number): Promise<number[]> => {
+  const safeChatId = Number(chatId);
+  if (!Number.isFinite(safeChatId) || safeChatId <= 0) return [];
+
+  const rows = await Chat_User.findAll({
+    where: { chatId: safeChatId },
+    attributes: ["userId"],
+    raw: true,
+  });
+
+  const unique = new Set<number>();
+  for (const row of rows as any[]) {
+    const uid = Number((row as any)?.userId);
+    if (Number.isFinite(uid) && uid > 0) unique.add(uid);
+  }
+  return [...unique];
 };
 
 // =======================================================

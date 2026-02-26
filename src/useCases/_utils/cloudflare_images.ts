@@ -2,6 +2,16 @@ import path from "path";
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const DEFAULT_VARIANT = "public";
+const IMAGE_ID_REGEX = /^[a-zA-Z0-9._-]{6,255}$/;
+const IMAGE_URL_CACHE_TTL_MS = Math.max(
+  30_000,
+  Number(process.env.CLOUDFLARE_IMAGE_URL_CACHE_TTL_MS ?? 5 * 60 * 1000) ||
+    5 * 60 * 1000
+);
+const IMAGE_URL_CACHE_MAX_ITEMS = Math.max(
+  100,
+  Number(process.env.CLOUDFLARE_IMAGE_URL_CACHE_MAX_ITEMS ?? 5000) || 5000
+);
 
 const MIME_BY_EXT: Record<string, string> = {
   ".jpg": "image/jpeg",
@@ -62,12 +72,102 @@ const pickVariantUrl = (variants: string[], variant: string) => {
   return preferred ?? variants[0] ?? null;
 };
 
+type ImageUrlCacheEntry = {
+  url: string;
+  expiresAt: number;
+};
+
+const imageUrlByIdCache = new Map<string, ImageUrlCacheEntry>();
+
+const normalizeImageId = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+  if (!IMAGE_ID_REGEX.test(normalized)) return null;
+  return normalized;
+};
+
+const getCachedImageUrlById = (imageId: string): string | null => {
+  const cached = imageUrlByIdCache.get(imageId);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    imageUrlByIdCache.delete(imageId);
+    return null;
+  }
+  return cached.url;
+};
+
+const setCachedImageUrlById = (imageId: string, url: string) => {
+  const now = Date.now();
+
+  if (imageUrlByIdCache.size >= IMAGE_URL_CACHE_MAX_ITEMS) {
+    for (const [key, value] of imageUrlByIdCache.entries()) {
+      if (value.expiresAt <= now) {
+        imageUrlByIdCache.delete(key);
+      }
+    }
+  }
+
+  while (imageUrlByIdCache.size >= IMAGE_URL_CACHE_MAX_ITEMS) {
+    const oldestKey = imageUrlByIdCache.keys().next().value;
+    if (!oldestKey) break;
+    imageUrlByIdCache.delete(oldestKey);
+  }
+
+  imageUrlByIdCache.set(imageId, {
+    url,
+    expiresAt: now + IMAGE_URL_CACHE_TTL_MS,
+  });
+};
+
 export const normalizeRemoteHttpUrl = (value: any): string | null => {
   if (value === undefined || value === null) return null;
   const normalized = String(value).trim();
   if (!normalized) return null;
   if (!/^https?:\/\//i.test(normalized)) return null;
   return normalized;
+};
+
+export const resolveCloudflareImageUrlById = async (
+  imageIdRaw: any
+): Promise<string | null> => {
+  const imageId = normalizeImageId(imageIdRaw);
+  if (!imageId) return null;
+
+  const cached = getCachedImageUrlById(imageId);
+  if (cached) return cached;
+
+  const accountId = getCloudflareAccountId();
+  const token = getImagesToken();
+  if (!accountId || !token) return null;
+
+  try {
+    const response = await fetch(
+      `${CLOUDFLARE_API_BASE}/accounts/${accountId}/images/v1/${encodeURIComponent(
+        imageId
+      )}`,
+      {
+        method: "GET",
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+
+    const payload: any = await response.json();
+    if (!response.ok || !payload?.success) return null;
+
+    const result = payload?.result ?? {};
+    const variants = Array.isArray(result?.variants) ? result.variants : [];
+    const resolved = pickVariantUrl(variants, getVariant());
+    if (!resolved) return null;
+
+    const resolvedUrl = String(resolved).trim();
+    if (!resolvedUrl) return null;
+
+    setCachedImageUrlById(imageId, resolvedUrl);
+    return resolvedUrl;
+  } catch {
+    return null;
+  }
 };
 
 export const uploadImageBufferToCloudflare = async ({

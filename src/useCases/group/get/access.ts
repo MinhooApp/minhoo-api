@@ -9,6 +9,13 @@ const toPositiveInt = (value: any): number | null => {
   return safe;
 };
 
+const setNoCacheHeaders = (res: Response) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  res.set("Surrogate-Control", "no-store");
+};
+
 export const group_access = async (req: Request, res: Response) => {
   try {
     const groupId = toPositiveInt((req.params as any)?.groupId);
@@ -20,6 +27,8 @@ export const group_access = async (req: Request, res: Response) => {
         message: "groupId must be a valid number",
       });
     }
+
+    setNoCacheHeaders(res);
 
     const userId = toPositiveInt((req as any)?.userId);
     const snapshot = await repository.getGroupAccessSnapshot(groupId, userId);

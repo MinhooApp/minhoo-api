@@ -2,6 +2,7 @@ import { Request, Response, formatResponse, sendNotification } from "../_module/
 import {
   buildMessagePayload,
   hydrateContactMetadata,
+  normalizeClientMessageId,
   toInt,
 } from "../../chat/add/add";
 import * as repository from "../../../repository/group/group_chat_repository";
@@ -41,7 +42,7 @@ export const send_group_message = async (req: Request, res: Response) => {
       });
     }
 
-    const payloadResult = buildMessagePayload(req.body);
+    const payloadResult = await buildMessagePayload(req.body);
     if (!payloadResult.ok) {
       return formatResponse({
         res,
@@ -52,6 +53,25 @@ export const send_group_message = async (req: Request, res: Response) => {
     }
 
     const messagePayload = payloadResult.payload;
+    const rawClientMessageId =
+      (req.body as any)?.clientMessageId ?? (req.body as any)?.client_message_id;
+    const hasClientMessageId =
+      rawClientMessageId !== undefined &&
+      rawClientMessageId !== null &&
+      String(rawClientMessageId).trim() !== "";
+    const clientMessageId = normalizeClientMessageId(rawClientMessageId);
+    if (hasClientMessageId && !clientMessageId) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "clientMessageId is invalid",
+      });
+    }
+    if (clientMessageId) {
+      (messagePayload as any).clientMessageId = clientMessageId;
+    }
+
     if (messagePayload.messageType === "contact") {
       const hydratedContact = await hydrateContactMetadata(
         (messagePayload.metadata as any) ?? null
@@ -114,54 +134,67 @@ export const send_group_message = async (req: Request, res: Response) => {
     }
 
     const serializedMessage = serializeGroupMessage(fullMessage);
+    const wasDeduplicated = Boolean((created as any).deduplicated);
 
-    emitChatMessageRealtime(
-      Number(created.chatId),
-      serializedMessage,
-      created.memberUserIds,
-      [senderUserId]
-    );
-    for (const userId of created.memberUserIds) {
-      emitChatsRefreshRealtime(userId);
+    if (!wasDeduplicated) {
+      emitChatMessageRealtime(
+        Number(created.chatId),
+        serializedMessage,
+        created.memberUserIds,
+        [senderUserId]
+      );
+      for (const userId of created.memberUserIds) {
+        emitChatsRefreshRealtime(userId);
+      }
     }
 
     const groupNameRaw = String((created as any)?.group?.name ?? "").trim();
+    const groupAvatarUrlRaw = String((created as any)?.group?.avatarUrl ?? "").trim();
     const groupLabel = groupNameRaw || `Group ${groupId}`;
     const previewRaw = String(payloadResult.notificationPreview ?? "").trim();
     const preview = previewRaw.length > 60 ? `${previewRaw.slice(0, 60)}...` : previewRaw;
     const notificationBody = preview
       ? `${groupLabel}: ${preview}`
       : `${groupLabel}: New message`;
-    const senderName = String((serializedMessage as any)?.sender_name ?? "").trim() || "New message";
+    const senderName =
+      String((serializedMessage as any)?.senderName ?? "").trim() ||
+      String((serializedMessage as any)?.sender_name ?? "").trim() ||
+      "New message";
     const normalizedChatId = Number(created.chatId);
     const createdMessageId = Number((serializedMessage as any)?.id ?? 0) || undefined;
 
     const targets = (created.memberUserIds as number[]).filter((uid) => uid !== senderUserId);
-    if (targets.length > 0) {
-      try {
-        await Promise.all(
-          targets.map((targetUserId) =>
-            sendNotification({
-              userId: targetUserId,
-              interactorId: senderUserId,
-              messageId: createdMessageId,
-              type: "message",
-              message: notificationBody,
-              senderName,
-              notificationScope: "group",
-              groupId,
-            })
-          )
+    if (!wasDeduplicated && targets.length > 0) {
+      // Push/notification must never block nor fail the group message response.
+      void Promise.all(
+        targets.map((targetUserId) =>
+          sendNotification({
+            userId: targetUserId,
+            interactorId: senderUserId,
+            chatId: normalizedChatId,
+            messageId: createdMessageId,
+            type: "message",
+            message: notificationBody,
+            senderName,
+            notificationScope: "group",
+            groupId,
+            groupName: groupLabel,
+            groupAvatarUrl: groupAvatarUrlRaw || "",
+          })
+        )
+      ).catch((pushError) => {
+        console.warn(
+          `[group][sendMessage] notification dispatch failed groupId=${groupId} chatId=${normalizedChatId} messageId=${createdMessageId}`,
+          pushError
         );
-      } catch (_error) {
-        // Do not fail group message delivery if push notification dispatch fails.
-      }
+      });
     }
 
     return formatResponse({
       res,
       success: true,
       body: {
+        chatId: normalizedChatId,
         group_id: groupId,
         chat_id: normalizedChatId,
         message: serializedMessage,

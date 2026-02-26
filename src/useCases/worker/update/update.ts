@@ -12,6 +12,11 @@ import {
   normalizeRemoteHttpUrl,
   uploadImageBufferToCloudflare,
 } from "../../_utils/cloudflare_images";
+import * as chatRepository from "../../../repository/chat/chat_repository";
+import {
+  emitChatsRefreshRealtime,
+  emitUserUpdatedRealtime,
+} from "../../../libs/helper/realtime_dispatch";
 
 const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
 const PROFILE_DEFAULT =
@@ -78,6 +83,64 @@ const parseOptionalString = (value: any): string | undefined => {
   if (value === undefined || value === null) return undefined;
   const parsed = String(value).trim();
   return parsed ? parsed : undefined;
+};
+
+const toPositiveInt = (value: any): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.trunc(parsed);
+};
+
+const toText = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized.length ? normalized : null;
+};
+
+const buildUserUpdatedRealtimePayload = (user: any, fallbackUserId: number) => {
+  const safeUser = user ?? {};
+  const resolvedUserId =
+    toPositiveInt((safeUser as any)?.id) ?? toPositiveInt(fallbackUserId) ?? 0;
+  const avatarUrl =
+    toText((safeUser as any)?.image_profil) ??
+    toText((safeUser as any)?.avatarUrl) ??
+    toText((safeUser as any)?.avatar_url);
+
+  return {
+    type: "user_updated" as const,
+    userId: resolvedUserId,
+    name: toText((safeUser as any)?.name),
+    lastName: toText((safeUser as any)?.last_name),
+    last_name: toText((safeUser as any)?.last_name),
+    username: toText((safeUser as any)?.username),
+    avatarUrl,
+    avatar_url: avatarUrl,
+    image_profil: avatarUrl,
+    updatedAt: new Date().toISOString(),
+  };
+};
+
+const emitProfileUpdatedRealtime = async (user: any, actorUserId: any) => {
+  const userId = toPositiveInt(actorUserId);
+  if (!userId) return;
+
+  try {
+    const relatedUserIds = await chatRepository.getRelatedUserIdsByUser(userId, {
+      includeSelf: true,
+    });
+    const targetUserIds =
+      Array.isArray(relatedUserIds) && relatedUserIds.length > 0
+        ? relatedUserIds
+        : [userId];
+    const payload = buildUserUpdatedRealtimePayload(user, userId);
+
+    emitUserUpdatedRealtime(payload, targetUserIds);
+    for (const targetUserId of targetUserIds) {
+      emitChatsRefreshRealtime(targetUserId);
+    }
+  } catch (error) {
+    console.error("[profile-realtime] failed to emit user update", error);
+  }
 };
 
 export const update = async (req: Request, res: Response) => {
@@ -256,6 +319,7 @@ export const update = async (req: Request, res: Response) => {
       }
 
       const user = await uRepository.get((req as any).userId);
+      await emitProfileUpdatedRealtime(user, (req as any).userId);
       return formatResponse({ res, success: true, body: { user } });
     } catch (error: any) {
       console.error(error);
@@ -287,6 +351,8 @@ export const visibleProfile = async (req: Request, res: Response) => {
 export const deleteImageProfile = async (req: Request, res: Response) => {
   try {
     await repository.deleteImageProfil(req.userId);
+    const user = await uRepository.get(req.userId);
+    await emitProfileUpdatedRealtime(user, req.userId);
     return formatResponse({ res: res, success: true, body: {} });
   } catch (error) {
     console.log(error);
@@ -525,6 +591,7 @@ export const updateProfile = async (req: Request, res: Response) => {
 
       const userUpdated = await uRepository.get((req as any).userId);
       const workerUpdated = await repository.worker((req as any).userId);
+      await emitProfileUpdatedRealtime(userUpdated, (req as any).userId);
 
       return formatResponse({
         res,

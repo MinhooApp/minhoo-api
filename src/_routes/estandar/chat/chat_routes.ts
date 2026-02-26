@@ -3,6 +3,7 @@ import {
   myChats,
   sendMessage,
   deleteChat,
+  deleteMessage,
   messages,
   getUserByMessage,
   pinChat,
@@ -11,8 +12,9 @@ import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
 const router = Router();
 
 router.get("/", TokenValidation(), myChats);
-router.get("/user/message/:id", TokenValidation(), getUserByMessage);
+router.get("/user/message/:messageId", TokenValidation(), getUserByMessage);
 router.get("/message/:id", TokenValidation(), messages);
+router.delete("/message/:messageId", TokenValidation(), deleteMessage);
 router.post("/", TokenValidation(), sendMessage);
 router.patch("/:id/pin", TokenValidation(), pinChat);
 router.delete("/:id", TokenValidation(), deleteChat);

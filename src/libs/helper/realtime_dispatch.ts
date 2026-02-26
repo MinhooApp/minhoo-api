@@ -33,7 +33,6 @@ const emitGlobal = (event: string, payload?: unknown) => {
     }
     return;
   }
-  // Fallback para escenarios donde aún no existe instancia local.
   getInternalSocket().emit(event, payload);
 };
 
@@ -124,7 +123,6 @@ const emitToUsersOutsideChat = (
       if (!roomSockets) continue;
 
       for (const socketId of roomSockets) {
-        // Evita duplicar eventos en sockets que ya están en la sala del chat.
         if (chatSockets.has(socketId)) continue;
         nsp.to(socketId).emit(event, payload);
       }
@@ -179,9 +177,44 @@ export const emitChatsRefreshRealtime = (userId: number) => {
   emitToUsers("chats", { userId }, [userId]);
 };
 
+export const emitGroupUpdatedRealtime = (
+  chatId: number | null,
+  payload: unknown,
+  memberUserIds?: Array<number | string | null | undefined>
+) => {
+  const cid = Number(chatId ?? 0);
+  const userIds = toUserIds(memberUserIds);
+
+  if (Number.isFinite(cid) && cid > 0) {
+    emitToChat(cid, `room/chat/${cid}`, payload);
+    emitToChat(cid, "group:updated", payload);
+  }
+
+  if (userIds.length > 0) {
+    emitToUsers("group:updated", payload, userIds);
+    for (const userId of userIds) {
+      emitToUsers(`chats/${userId}`, payload, [userId]);
+    }
+  }
+};
+
 export const emitNotificationRealtime = (userId: number, payload: unknown) => {
   emitToUsers(`notification/${userId}`, payload, [userId]);
   emitToUsers("notification", payload, [userId]);
+};
+
+export const emitUserUpdatedRealtime = (
+  payload: unknown,
+  userIds?: Array<number | string | null | undefined>
+) => {
+  const ids = toUserIds(userIds);
+  if (ids.length === 0) return;
+
+  emitToUsers("user:updated", payload, ids);
+  emitToUsers("user/updated", payload, ids);
+  for (const userId of ids) {
+    emitToUsers(`user/${userId}`, payload, [userId]);
+  }
 };
 
 const getRoomSizeAcrossNamespaces = (room: string): number => {

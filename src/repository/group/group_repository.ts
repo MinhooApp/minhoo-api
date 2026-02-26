@@ -293,22 +293,175 @@ export const ensureOwnerMember = async (groupId: number, ownerUserId: number) =>
   return existing;
 };
 
+const groupOwnerInclude = [
+  {
+    model: User,
+    as: "owner",
+    attributes: ["id", "name", "last_name", "username", "image_profil"],
+    required: false,
+  },
+];
+
+const enrichGroupsWithInteraction = async (groups: any[]) => {
+  if (!Array.isArray(groups) || groups.length === 0) {
+    return groups;
+  }
+
+  const chatIds = Array.from(
+    new Set(
+      (groups as any[])
+        .map((group) => toPositiveInt((group as any)?.chatId))
+        .filter(
+          (chatId): chatId is number =>
+            Number.isFinite(chatId as any) && (chatId as number) > 0
+        )
+    )
+  );
+
+  const latestMessageByChatId = new Map<number, any>();
+  if (chatIds.length > 0) {
+    const latestCandidates = await Message.findAll({
+      where: {
+        chatId: { [Op.in]: chatIds },
+        deletedBy: { [Op.not]: -1 },
+      },
+      attributes: [
+        "id",
+        "chatId",
+        "senderId",
+        "text",
+        "messageType",
+        "mediaUrl",
+        "mediaMime",
+        "date",
+        "status",
+        "replyToMessageId",
+      ],
+      order: [
+        ["chatId", "ASC"],
+        ["date", "DESC"],
+        ["id", "DESC"],
+      ],
+      raw: true,
+    });
+
+    for (const row of latestCandidates as any[]) {
+      const cid = Number((row as any)?.chatId);
+      if (!Number.isFinite(cid) || cid <= 0) continue;
+      if (!latestMessageByChatId.has(cid)) {
+        latestMessageByChatId.set(cid, row);
+      }
+    }
+  }
+
+  const toDateMs = (value: any): number => {
+    if (!value) return 0;
+    const ms = new Date(value).getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  };
+
+  for (const group of groups as any[]) {
+    const chatId = toPositiveInt((group as any)?.chatId);
+    const latestMessage = chatId ? latestMessageByChatId.get(chatId) ?? null : null;
+    const groupUpdatedAt = (group as any)?.updatedAt ?? (group as any)?.createdAt ?? null;
+    const interactionDateMs = Math.max(
+      toDateMs(groupUpdatedAt),
+      toDateMs((latestMessage as any)?.date)
+    );
+    const lastInteractionAt =
+      interactionDateMs > 0 ? new Date(interactionDateMs).toISOString() : null;
+
+    if (typeof group.setDataValue === "function") {
+      group.setDataValue("lastMessage", latestMessage);
+      group.setDataValue("lastInteractionAt", lastInteractionAt);
+      group.setDataValue("_lastInteractionOrderMs", interactionDateMs);
+    } else {
+      (group as any).lastMessage = latestMessage;
+      (group as any).lastInteractionAt = lastInteractionAt;
+      (group as any)._lastInteractionOrderMs = interactionDateMs;
+    }
+  }
+
+  (groups as any[]).sort((a: any, b: any) => {
+    const aOrder = Number((a as any)?._lastInteractionOrderMs ?? 0);
+    const bOrder = Number((b as any)?._lastInteractionOrderMs ?? 0);
+    if (aOrder !== bOrder) return bOrder - aOrder;
+    return Number((b as any)?.id ?? 0) - Number((a as any)?.id ?? 0);
+  });
+
+  for (const group of groups as any[]) {
+    if (typeof group.setDataValue === "function") {
+      group.setDataValue("_lastInteractionOrderMs", undefined);
+    } else {
+      delete (group as any)._lastInteractionOrderMs;
+    }
+  }
+
+  return groups;
+};
+
 export const myGroups = async (ownerUserId: number) => {
-  return Group.findAll({
+  const groups = await Group.findAll({
     where: {
       ownerUserId,
       isActive: true,
     },
-    include: [
-      {
-        model: User,
-        as: "owner",
-        attributes: ["id", "name", "last_name", "username", "image_profil"],
-        required: false,
-      },
-    ],
+    include: groupOwnerInclude as any,
     order: [["id", "DESC"]],
   });
+  return enrichGroupsWithInteraction(groups as any[]);
+};
+
+export const myGroupsByUser = async (userId: number) => {
+  const uid = toPositiveInt(userId);
+  if (!uid) return [];
+
+  const memberRows = await GroupMember.findAll({
+    where: {
+      userId: uid,
+      isActive: true,
+    },
+    attributes: ["groupId"],
+    raw: true,
+  });
+
+  const memberGroupIds = Array.from(
+    new Set(
+      (memberRows as any[])
+        .map((row) => toPositiveInt((row as any)?.groupId))
+        .filter((groupId): groupId is number => Number.isFinite(groupId as any) && (groupId as number) > 0)
+    )
+  );
+
+  const [ownedGroups, joinedGroups] = await Promise.all([
+    Group.findAll({
+      where: {
+        ownerUserId: uid,
+        isActive: true,
+      },
+      include: groupOwnerInclude as any,
+      order: [["id", "DESC"]],
+    }),
+    memberGroupIds.length > 0
+      ? Group.findAll({
+          where: {
+            id: { [Op.in]: memberGroupIds },
+            isActive: true,
+          },
+          include: groupOwnerInclude as any,
+          order: [["id", "DESC"]],
+        })
+      : Promise.resolve([] as any[]),
+  ]);
+
+  const byId = new Map<number, any>();
+  for (const group of [...(ownedGroups as any[]), ...(joinedGroups as any[])]) {
+    const groupId = toPositiveInt((group as any)?.id);
+    if (!groupId || byId.has(groupId)) continue;
+    byId.set(groupId, group);
+  }
+
+  return enrichGroupsWithInteraction([...byId.values()]);
 };
 
 export const getActiveGroupById = async (groupId: number) => {
@@ -442,6 +595,75 @@ export const updateOwnedGroup = async (
   if (!group) return null;
   await group.update(payload);
   return group;
+};
+
+export const updateGroupSettingsTransactional = async ({
+  groupId,
+  payload,
+}: {
+  groupId: number;
+  payload: Partial<{
+    name: string;
+    description: string | null;
+    avatarUrl: string | null;
+    joinMode: "private" | "public_with_approval";
+    writeMode: "all_members" | "admins_only";
+  }>;
+}) => {
+  const transaction = await sequelize.transaction();
+  try {
+    const group = await Group.findOne({
+      where: {
+        id: groupId,
+        isActive: true,
+      },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!group) {
+      await transaction.rollback();
+      return null;
+    }
+
+    const now = new Date();
+    await group.update({ ...(payload as any), updatedAt: now } as any, { transaction });
+
+    const chatId = await ensureGroupChatRoom(groupId, transaction);
+    if (chatId) {
+      await Chat.update(
+        { updatedAt: now } as any,
+        {
+          where: { id: chatId },
+          transaction,
+        }
+      );
+
+      await Chat_User.update(
+        { updatedAt: now } as any,
+        {
+          where: { chatId },
+          transaction,
+        }
+      );
+    }
+
+    await transaction.commit();
+
+    const refreshedGroup = await getActiveGroupById(groupId);
+    if (!refreshedGroup) return null;
+
+    const memberUserIds = await getActiveMemberUserIds(groupId);
+    return {
+      group: refreshedGroup,
+      chatId: toPositiveInt((refreshedGroup as any)?.chatId) ?? chatId ?? null,
+      memberUserIds,
+      updatedAt: now,
+    };
+  } catch (error) {
+    await transaction.rollback();
+    throw error;
+  }
 };
 
 export const getAnyMembership = async (groupId: number, userId: number) => {

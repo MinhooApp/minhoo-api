@@ -4,22 +4,58 @@ import {
   formatResponse,
   repository,
 } from "../_module/module";
+import { createHash } from "crypto";
 import {
   emitChatStatusRealtime,
   emitChatsRefreshRealtime,
 } from "../../../libs/helper/realtime_dispatch";
+import { serializeMessagesToCanonical } from "../_shared/message_contract";
+
+const setNoCacheHeaders = (res: Response) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  res.set("Surrogate-Control", "no-store");
+};
+
+const buildWeakEtag = (payload: any) => {
+  const hash = createHash("sha1").update(JSON.stringify(payload ?? {})).digest("hex");
+  return `W/"${hash}"`;
+};
+
+const isEtagFresh = (req: Request, etag: string): boolean => {
+  const raw = String(req.headers["if-none-match"] ?? "").trim();
+  if (!raw) return false;
+  if (raw === "*") return true;
+  const tags = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return tags.includes(etag);
+};
 
 export const myChats = async (req: Request, res: Response) => {
   const startedAt = Date.now();
   try {
+    setNoCacheHeaders(res);
+
     const chats = await repository.getUserChats(req.userId, req.userId);
     console.log(
       `[perf][myChats] userId=${req.userId} chats=${Array.isArray(chats) ? chats.length : 0} totalMs=${Date.now() - startedAt}`
     );
+
+    const body = { chatsByUser: chats };
+    const etag = buildWeakEtag(body);
+    res.set("ETag", etag);
+    if (isEtagFresh(req, etag)) {
+      res.status(304).end();
+      return;
+    }
+
     return formatResponse({
       res,
       success: true,
-      body: { chatsByUser: chats },
+      body,
     });
   } catch (error) {
     console.log(error);
@@ -28,36 +64,43 @@ export const myChats = async (req: Request, res: Response) => {
 };
 
 export const messages = async (req: Request, res: Response) => {
-  const { id } = req.params; // id = userId del otro usuario
+  const { id } = req.params;
   const otherUserId = Number(id);
 
-  // ✅ NUEVO: paginación (sin romper si no mandan query)
   const limitRaw = req.query.limit;
   const limitParsed = parseInt(String(limitRaw ?? "50"), 10);
-  const limit = Number.isFinite(limitParsed) ? Math.max(1, Math.min(limitParsed, 200)) : 50;
+  const limit = Number.isFinite(limitParsed)
+    ? Math.max(1, Math.min(limitParsed, 200))
+    : 50;
 
   const beforeRaw = req.query.beforeMessageId;
   const beforeMessageIdParsed =
     beforeRaw == null ? null : parseInt(String(beforeRaw), 10);
-  const beforeMessageId =
-    Number.isFinite(beforeMessageIdParsed as any) ? (beforeMessageIdParsed as number) : null;
+  const beforeMessageId = Number.isFinite(beforeMessageIdParsed as any)
+    ? (beforeMessageIdParsed as number)
+    : null;
 
   try {
-    // ✅ ahora pasamos opciones (si tu repo aún no las usa, NO rompe)
-    const messages = await repository.getChatByUser(req.userId, id, {
+    setNoCacheHeaders(res);
+
+    const messageRows = await repository.getChatByUser(req.userId, id, {
       limit,
       beforeMessageId,
     });
 
-    // chatId para emitir eventos
-    const chatId = messages.length > 0 ? messages[0].chatId : null;
+    let chatId =
+      messageRows.length > 0
+        ? Number((messageRows[0] as any).chatId) || null
+        : null;
 
-    // ✅ al abrir sala se marcan como READ los mensajes recibidos pendientes
-    // para que el emisor vea ✔✔ azul dentro y fuera del chat.
-    if (chatId != null && messages && messages.length > 0) {
+    if (!chatId) {
+      chatId = await repository.getDirectChatIdByUsers(req.userId, id);
+    }
+
+    if (chatId != null && messageRows && messageRows.length > 0) {
       const pendingToRead: any[] = [];
 
-      for (const m of messages as any[]) {
+      for (const m of messageRows as any[]) {
         const isMine = String(m.senderId) === String(req.userId);
         const status = (m.status ?? "sent") as string;
 
@@ -99,7 +142,6 @@ export const messages = async (req: Request, res: Response) => {
         }
       }
 
-      // ✅ fuerza refresh de lista de chats para ambos lados (fuera de sala)
       if (Number.isFinite(otherUserId) && otherUserId > 0) {
         emitChatsRefreshRealtime(otherUserId);
       }
@@ -107,9 +149,8 @@ export const messages = async (req: Request, res: Response) => {
     }
 
     const payload = {
-      chatId: messages.length > 0 ? messages[0].chatId : null,
-      messages,
-      // opcional útil para el cliente:
+      chatId,
+      messages: serializeMessagesToCanonical(messageRows, { includeLegacy: true }),
       paging: {
         limit,
         beforeMessageId,
@@ -125,20 +166,38 @@ export const messages = async (req: Request, res: Response) => {
 
 export const getUserByMessage = async (req: Request, res: Response) => {
   try {
-    const { id } = req.params;
-    const response = await repository.getSenderByMessageId(id);
-    const user = (response as any)?.sender ?? null;
-    if (!user) {
+    setNoCacheHeaders(res);
+
+    const rawMessageId = (req.params as any)?.messageId ?? (req.params as any)?.id;
+    const messageId = Number(rawMessageId);
+
+    if (!Number.isFinite(messageId) || messageId <= 0) {
       return formatResponse({
         res,
         success: false,
-        message: "User not found",
+        code: 400,
+        message: "messageId must be a valid number",
       });
     }
+
+    const response = await repository.resolveConversationByMessageId(
+      req.userId,
+      messageId
+    );
+
+    if (!response) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 404,
+        message: "message not found",
+      });
+    }
+
     return formatResponse({
       res,
       success: true,
-      body: { user },
+      body: response,
     });
   } catch (error) {
     console.log(error);

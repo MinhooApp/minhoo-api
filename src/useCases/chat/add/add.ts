@@ -5,12 +5,19 @@ import {
   repository,
   sendNotification,
 } from "../_module/module";
-import { normalizeRemoteHttpUrl } from "../../_utils/cloudflare_images";
+import {
+  normalizeRemoteHttpUrl,
+  resolveCloudflareImageUrlById,
+} from "../../_utils/cloudflare_images";
 import {
   emitChatMessageRealtime,
   emitChatsRefreshRealtime,
 } from "../../../libs/helper/realtime_dispatch";
 import User from "../../../_models/user/user";
+import {
+  serializeMessageToCanonical,
+  serializeMessagesToCanonical,
+} from "../_shared/message_contract";
 
 type ChatMessageType =
   | "text"
@@ -35,6 +42,7 @@ export type MessagePayload = {
   mediaSizeBytes: number | null;
   waveform: number[] | null;
   metadata: Record<string, any> | null;
+  clientMessageId?: string | null;
 };
 
 const VOICE_MAX_DURATION_MS = 60 * 1000;
@@ -44,6 +52,7 @@ const VIDEO_MAX_DURATION_MS = 60 * 1000;
 const VIDEO_MAX_SIZE_BYTES = 100 * 1024 * 1024;
 const DOCUMENT_MAX_SIZE_BYTES = 20 * 1024 * 1024;
 const WAVEFORM_MAX_POINTS = 256;
+const CLIENT_MESSAGE_ID_MAX_LENGTH = 128;
 
 const DOCUMENT_ALLOWED_MIME_TYPES = new Set<string>([
   "application/pdf",
@@ -73,6 +82,18 @@ const resolveAvatarUrl = (rawValue: string): string | null => {
   return null;
 };
 
+const extractImageIdFromPlaybackMediaUrl = (rawValue: string): string | null => {
+  try {
+    const parsed = new URL(rawValue, "http://local");
+    if (!parsed.pathname.includes("/api/v1/media/image/play")) return null;
+    const imageIdRaw = String(parsed.searchParams.get("id") ?? "").trim();
+    if (!/^[a-zA-Z0-9._-]{6,255}$/.test(imageIdRaw)) return null;
+    return imageIdRaw;
+  } catch {
+    return null;
+  }
+};
+
 export const toInt = (v: any): number | null => {
   if (v === null || v === undefined) return null;
   if (typeof v === "number") return Number.isFinite(v) ? v : null;
@@ -87,6 +108,15 @@ export const toPositiveInt = (v: any): number | null => {
   const parsed = toInt(v);
   if (!parsed || parsed <= 0) return null;
   return parsed;
+};
+
+export const normalizeClientMessageId = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+  if (normalized.length > CLIENT_MESSAGE_ID_MAX_LENGTH) return null;
+  if (!/^[A-Za-z0-9._:-]+$/.test(normalized)) return null;
+  return normalized;
 };
 
 const parseContactMetadata = (value: any): ContactMetadata | undefined => {
@@ -149,10 +179,18 @@ const parseMessageType = (value: any): ChatMessageType | null => {
   return null;
 };
 
-const resolveChatMediaUrl = (
+const resolveChatMediaUrl = async (
   messageType: Exclude<ChatMessageType, "text">,
   rawValue: string
-): string | null => {
+): Promise<string | null> => {
+  if (messageType === "image") {
+    const imageId = extractImageIdFromPlaybackMediaUrl(rawValue);
+    if (imageId) {
+      const resolvedDirectUrl = await resolveCloudflareImageUrlById(imageId);
+      if (resolvedDirectUrl) return resolvedDirectUrl;
+    }
+  }
+
   const remote = normalizeRemoteHttpUrl(rawValue);
   if (remote) return remote;
 
@@ -198,9 +236,11 @@ const parseWaveform = (value: any): number[] | null | undefined => {
   return out.length ? out : null;
 };
 
-export const buildMessagePayload = (
+export const buildMessagePayload = async (
   body: any
-): { ok: true; payload: MessagePayload; notificationPreview: string } | { ok: false; error: string } => {
+): Promise<
+  { ok: true; payload: MessagePayload; notificationPreview: string } | { ok: false; error: string }
+> => {
   const messageType =
     parseMessageType((body as any)?.message_type ?? (body as any)?.messageType) ??
     null;
@@ -266,9 +306,7 @@ export const buildMessagePayload = (
   const mediaUrlRaw = String(
     (body as any)?.media_url ?? (body as any)?.mediaUrl ?? ""
   ).trim();
-  const mediaUrl = (() => {
-    return resolveChatMediaUrl(messageType, mediaUrlRaw);
-  })();
+  const mediaUrl = await resolveChatMediaUrl(messageType, mediaUrlRaw);
 
   if (!mediaUrl) {
     if (messageType === "voice") {
@@ -479,7 +517,7 @@ export const sendMessage = async (req: Request, res: Response) => {
     });
   }
 
-  const payloadResult = buildMessagePayload(req.body);
+  const payloadResult = await buildMessagePayload(req.body);
   if (!payloadResult.ok) {
     return formatResponse({
       res,
@@ -490,6 +528,24 @@ export const sendMessage = async (req: Request, res: Response) => {
   }
 
   const messagePayload = payloadResult.payload;
+  const rawClientMessageId =
+    (req.body as any)?.clientMessageId ?? (req.body as any)?.client_message_id;
+  const hasClientMessageId =
+    rawClientMessageId !== undefined &&
+    rawClientMessageId !== null &&
+    String(rawClientMessageId).trim() !== "";
+  const clientMessageId = normalizeClientMessageId(rawClientMessageId);
+  if (hasClientMessageId && !clientMessageId) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "clientMessageId is invalid",
+    });
+  }
+  if (clientMessageId) {
+    messagePayload.clientMessageId = clientMessageId;
+  }
 
   // ✅ aceptar reply (camelCase + snake_case)
   const replyToMessageId =
@@ -541,6 +597,7 @@ export const sendMessage = async (req: Request, res: Response) => {
 
     const chatId = Number((created as any).chatId);
     const createdMessageId = Number((created as any).messageId);
+    const wasDeduplicated = Boolean((created as any).deduplicated);
     const fullMessage = await repository.getSenderByMessageId(createdMessageId);
     if (!fullMessage) {
       return formatResponse({
@@ -559,12 +616,18 @@ export const sendMessage = async (req: Request, res: Response) => {
       }
     }
 
-    emitChatMessageRealtime(chatId, fullMessage, [req.userId, receiverUserId]);
-    emitChatsRefreshRealtime(receiverUserId);
-    emitChatsRefreshRealtime(req.userId);
+    const serializedMessage = serializeMessageToCanonical(fullMessage, {
+      includeLegacy: true,
+    });
+
+    if (!wasDeduplicated) {
+      emitChatMessageRealtime(chatId, serializedMessage, [req.userId, receiverUserId]);
+      emitChatsRefreshRealtime(receiverUserId);
+      emitChatsRefreshRealtime(req.userId);
+    }
 
     const senderId = req.userId;
-    const senderFromMessage = (fullMessage as any)?.sender;
+    const senderFromMessage = (serializedMessage as any)?.sender;
 
     let fullName = buildFullName(senderFromMessage);
     if (!fullName || fullName.split(" ").length < 2) {
@@ -591,22 +654,31 @@ export const sendMessage = async (req: Request, res: Response) => {
       rawPreview.length > 60 ? `${rawPreview.slice(0, 60)}...` : rawPreview;
     const notificationBody = snippet || "You have a new message";
 
-    await sendNotification({
-      userId: receiverUserId,
-      interactorId: senderId,
-      messageId: createdMessageId,
-      type: "message",
-      message: notificationBody,
-      senderName,
-      notificationScope: "direct",
-      peerUserId: senderId,
-    });
+    // Push/notification must never block nor fail the message send response.
+    if (!wasDeduplicated) {
+      void sendNotification({
+        userId: receiverUserId,
+        interactorId: senderId,
+        chatId,
+        messageId: createdMessageId,
+        type: "message",
+        message: notificationBody,
+        senderName,
+        notificationScope: "direct",
+        peerUserId: senderId,
+      }).catch((pushError) => {
+        console.warn(
+          `[chat][sendMessage] notification dispatch failed chatId=${chatId} messageId=${createdMessageId} senderId=${senderId} receiverUserId=${receiverUserId}`,
+          pushError
+        );
+      });
+    }
 
     const messages = await repository.getChatByUser(req.userId, receiverUserId);
 
     const payload = {
       chatId: messages.length > 0 ? messages[0].chatId : chatId,
-      messages,
+      messages: serializeMessagesToCanonical(messages, { includeLegacy: true }),
     };
 
     return formatResponse({ res, success: true, body: payload });

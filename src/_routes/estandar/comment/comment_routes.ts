@@ -3,6 +3,7 @@ import { add, deleteComment } from '../../../useCases/comment/_controller/contro
 import { TokenValidation } from '../../../libs/middlewares/verify_jwt';
 const router = Router();
 router.post('/', TokenValidation(), add);
+router.delete('/group/:groupId/:id', TokenValidation(), deleteComment);
 router.delete('/:id', TokenValidation(), deleteComment);
 
 

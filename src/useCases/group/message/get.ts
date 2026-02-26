@@ -89,23 +89,32 @@ export const group_messages = async (req: Request, res: Response) => {
     const [activeMembers, unreadCount] = await Promise.all([
       groupRepository.countActiveMembers(groupId),
       viewerUserId && response.policy.is_member
-        ? groupRepository.countUnreadMessagesByChat(Number(response.chatId), Number(viewerUserId))
+        ? groupRepository.countUnreadMessagesByChat(
+            Number(response.chatId),
+            Number(viewerUserId)
+          )
         : Promise.resolve(0),
     ]);
+
+    const normalizedChatId = Number(response.chatId) || 0;
+    const serializedMessages = serializeGroupMessages(response.messages as any[]);
 
     return formatResponse({
       res,
       success: true,
       body: {
+        chatId: normalizedChatId,
+        messages: serializedMessages,
+
+        // legacy response fields
         group_id: groupId,
-        chat_id: response.chatId,
+        chat_id: normalizedChatId,
         group: serializeGroup(response.group, {
           activeMembers: Number(activeMembers) || 0,
           unreadCount: Number(unreadCount) || 0,
         }),
         access: response.policy,
         unread_count: Number(unreadCount) || 0,
-        messages: serializeGroupMessages(response.messages as any[]),
         paging: {
           limit,
           beforeMessageId: beforeMessageId ?? null,
