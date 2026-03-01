@@ -10,6 +10,11 @@ const chatsRefreshDebounceMs = Math.max(
   0,
   Number(process.env.CHATS_REFRESH_DEBOUNCE_MS ?? 1200) || 1200
 );
+const ENABLE_GENERIC_CHAT_EVENTS =
+  String(process.env.ENABLE_GENERIC_CHAT_EVENTS ?? "1").trim() !== "0";
+const ENABLE_GENERIC_CHAT_EVENTS_OUTSIDE_ACTIVE_CHAT =
+  String(process.env.ENABLE_GENERIC_CHAT_EVENTS_OUTSIDE_ACTIVE_CHAT ?? "0").trim() ===
+  "1";
 
 const toUserIds = (userIds?: Array<number | string | null | undefined>): number[] => {
   if (!userIds || userIds.length === 0) return [];
@@ -142,10 +147,14 @@ export const emitChatMessageRealtime = (
   const genericEvent = "chat";
   emitToChatExcludingUsers(chatId, roomEvent, payload, excludeUserIds);
   emitToChatExcludingUsers(chatId, legacyEvent, payload, excludeUserIds);
-  emitToChatExcludingUsers(chatId, genericEvent, payload, excludeUserIds);
+  if (ENABLE_GENERIC_CHAT_EVENTS) {
+    emitToChatExcludingUsers(chatId, genericEvent, payload, excludeUserIds);
+  }
   emitToUsersOutsideChat(chatId, roomEvent, payload, userIds);
   emitToUsersOutsideChat(chatId, legacyEvent, payload, userIds);
-  emitToUsersOutsideChat(chatId, genericEvent, payload, userIds);
+  if (ENABLE_GENERIC_CHAT_EVENTS && ENABLE_GENERIC_CHAT_EVENTS_OUTSIDE_ACTIVE_CHAT) {
+    emitToUsersOutsideChat(chatId, genericEvent, payload, userIds);
+  }
 };
 
 export const emitChatStatusRealtime = (
@@ -159,10 +168,14 @@ export const emitChatStatusRealtime = (
   const genericEvent = "chat:status";
   emitToChat(chatId, roomEvent, payload);
   emitToChat(chatId, legacyEvent, payload);
-  emitToChat(chatId, genericEvent, payload);
+  if (ENABLE_GENERIC_CHAT_EVENTS) {
+    emitToChat(chatId, genericEvent, payload);
+  }
   emitToUsersOutsideChat(chatId, roomEvent, payload, userIds);
   emitToUsersOutsideChat(chatId, legacyEvent, payload, userIds);
-  emitToUsersOutsideChat(chatId, genericEvent, payload, userIds);
+  if (ENABLE_GENERIC_CHAT_EVENTS && ENABLE_GENERIC_CHAT_EVENTS_OUTSIDE_ACTIVE_CHAT) {
+    emitToUsersOutsideChat(chatId, genericEvent, payload, userIds);
+  }
 };
 
 export const emitChatsRefreshRealtime = (userId: number) => {

@@ -113,7 +113,7 @@ const findGroupMessageByClientMessageId = async ({
       senderId,
       [Op.and]: [
         Sequelize.literal(
-          `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
+          `JSON_UNQUOTE(JSON_EXTRACT(\`Message\`.\`metadata\`, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
             clientMessageId
           )}`
         ),
@@ -129,11 +129,13 @@ export const getGroupMessagesPage = async ({
   viewerUserId,
   limit,
   beforeMessageId,
+  sort,
 }: {
   groupId: number;
   viewerUserId?: number | null;
   limit?: number;
   beforeMessageId?: number | null;
+  sort?: "asc" | "desc" | null;
 }) => {
   const access = await getGroupAccessSnapshot(groupId, viewerUserId ?? null);
   if (!access) {
@@ -156,6 +158,7 @@ export const getGroupMessagesPage = async ({
   const safeLimit = normalizeLimit(limit, 20, 200);
   const safeBefore = toPositiveInt(beforeMessageId);
   const uid = toPositiveInt(viewerUserId);
+  const normalizedSort = String(sort ?? "asc").toLowerCase() === "desc" ? "desc" : "asc";
 
   const where: any = {
     chatId,
@@ -200,11 +203,15 @@ export const getGroupMessagesPage = async ({
     ],
   });
 
-  const ordered = [...messages].reverse();
+  const normalizedMessages = normalizedSort === "desc" ? [...messages] : [...messages].reverse();
+  const minMessageId = (messages as any[])
+    .map((item) => Number((item as any)?.id))
+    .filter((id) => Number.isFinite(id) && id > 0)
+    .reduce((min, id) => (id < min ? id : min), Number.POSITIVE_INFINITY);
   const nextCursor =
-    ordered.length > 0
+    Number.isFinite(minMessageId)
       ? {
-          beforeMessageId: Number((ordered[0] as any)?.id),
+          beforeMessageId: Number(minMessageId),
         }
       : null;
 
@@ -213,7 +220,8 @@ export const getGroupMessagesPage = async ({
     group: access.group,
     policy: access.policy,
     chatId,
-    messages: ordered,
+    sort: normalizedSort,
+    messages: normalizedMessages,
     nextCursor,
   };
 };

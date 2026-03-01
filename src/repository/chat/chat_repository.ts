@@ -83,7 +83,7 @@ const findMessageByClientMessageId = async ({
       senderId,
       [Op.and]: [
         Sequelize.literal(
-          `JSON_UNQUOTE(JSON_EXTRACT(metadata, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
+          `JSON_UNQUOTE(JSON_EXTRACT(\`Message\`.\`metadata\`, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
             clientMessageId
           )}`
         ),
@@ -390,7 +390,7 @@ export const resolveConversationByMessageId = async (
 export const getChatByUser = async (
   currentUserId: any,
   otherUserId: any,
-  opts?: { limit?: number; beforeMessageId?: number | null }
+  opts?: { limit?: number; beforeMessageId?: number | null; sort?: "asc" | "desc" | null }
 ) => {
   const me = Number(currentUserId);
   const other = Number(otherUserId);
@@ -416,6 +416,7 @@ export const getChatByUser = async (
   const limit = Math.max(1, Math.min(Number(opts?.limit ?? 50) || 50, 200));
   const beforeMessageId =
     opts?.beforeMessageId == null ? null : Number(opts?.beforeMessageId);
+  const sort = String(opts?.sort ?? "asc").toLowerCase() === "desc" ? "desc" : "asc";
 
   const where: any = {
     chatId,
@@ -462,6 +463,9 @@ export const getChatByUser = async (
     ],
   });
 
+  if (sort === "desc") {
+    return messages;
+  }
   return messages.reverse();
 };
 

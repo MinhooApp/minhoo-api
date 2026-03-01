@@ -33,12 +33,15 @@ export const group_messages = async (req: Request, res: Response) => {
     const viewerUserId = toPositiveInt((req as any)?.userId);
     const limit = normalizeLimit((req.query as any)?.limit);
     const beforeMessageId = toPositiveInt((req.query as any)?.beforeMessageId);
+    const sortRaw = String((req.query as any)?.sort ?? "").toLowerCase();
+    const sort: "asc" | "desc" = sortRaw === "desc" ? "desc" : "asc";
 
     const response = await repository.getGroupMessagesPage({
       groupId,
       viewerUserId,
       limit,
       beforeMessageId,
+      sort,
     });
 
     if (!response.ok) {
@@ -118,6 +121,7 @@ export const group_messages = async (req: Request, res: Response) => {
         paging: {
           limit,
           beforeMessageId: beforeMessageId ?? null,
+          sort: response.sort,
           next_cursor: response.nextCursor,
         },
       },

@@ -53,9 +53,19 @@ type ReactionMap = Record<string, number[]>;
 
 const chatRoom = (chatId: number) => `chat_${chatId}`;
 const userRoom = (userId: number) => `user_${userId}`;
+const CHAT_ROOM_REGEX = /^chat_\d+$/;
 const ALLOW_SOCKET_USERID_FALLBACK =
   String(process.env.ALLOW_SOCKET_USERID_FALLBACK ?? "1").trim() !== "0";
 const SESSION_VALIDATION_TTL_MS = 15 * 1000;
+
+function leaveOtherChatRooms(socket: Socket, keepChatId: number) {
+  const keepRoom = chatRoom(keepChatId);
+  for (const room of socket.rooms) {
+    if (room === socket.id || room === keepRoom) continue;
+    if (!CHAT_ROOM_REGEX.test(room)) continue;
+    socket.leave(room);
+  }
+}
 
 function buildStatusPayload(params: {
   chatId: number;
@@ -471,17 +481,17 @@ function emitChatHybrid(socket: Socket, chatId: number, event: string, data: any
 
   // Compatibilidad extra con clientes que escuchan evento genérico.
   if (/^chat\/\d+$/.test(event)) {
+    // Solo dentro del room activo para evitar mezcla entre conversaciones.
     socket.to(chatRoom(chatId)).emit("chat", data);
-    void emitLegacyChatEventToParticipants(socket, chatId, "chat", data).catch(() => undefined);
   } else if (/^chat\/status\/\d+$/.test(event)) {
+    // Solo dentro del room activo para evitar mezcla entre conversaciones.
     socket.to(chatRoom(chatId)).emit("chat:status", data);
-    void emitLegacyChatEventToParticipants(socket, chatId, "chat:status", data).catch(() => undefined);
   } else if (/^chat\/typing\/\d+$/.test(event)) {
+    // Solo dentro del room activo para evitar mezcla entre conversaciones.
     socket.to(chatRoom(chatId)).emit("chat:typing", data);
-    void emitLegacyChatEventToParticipants(socket, chatId, "chat:typing", data).catch(() => undefined);
   } else if (/^chat\/reaction\/\d+$/.test(event)) {
+    // Solo dentro del room activo para evitar mezcla entre conversaciones.
     socket.to(chatRoom(chatId)).emit("chat:reaction", data);
-    void emitLegacyChatEventToParticipants(socket, chatId, "chat:reaction", data).catch(() => undefined);
   }
 }
 
@@ -672,6 +682,7 @@ export const socketController = (socket: Socket) => {
           return;
         }
 
+        leaveOtherChatRooms(socket, chatId);
         socket.join(chatRoom(chatId));
 
         const roomSize = socket.nsp.adapter.rooms.get(chatRoom(chatId))?.size ?? 0;
@@ -784,6 +795,7 @@ export const socketController = (socket: Socket) => {
         return;
       }
 
+      leaveOtherChatRooms(socket, chatId);
       socket.join(chatRoom(chatId));
 
       const lastMessageId = parseLastMessageId(payload);

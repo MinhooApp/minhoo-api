@@ -79,6 +79,8 @@ export const messages = async (req: Request, res: Response) => {
   const beforeMessageId = Number.isFinite(beforeMessageIdParsed as any)
     ? (beforeMessageIdParsed as number)
     : null;
+  const sortRaw = String((req.query as any)?.sort ?? "").toLowerCase();
+  const sort: "asc" | "desc" = sortRaw === "desc" ? "desc" : "asc";
 
   try {
     setNoCacheHeaders(res);
@@ -86,6 +88,7 @@ export const messages = async (req: Request, res: Response) => {
     const messageRows = await repository.getChatByUser(req.userId, id, {
       limit,
       beforeMessageId,
+      sort,
     });
 
     let chatId =
@@ -154,6 +157,7 @@ export const messages = async (req: Request, res: Response) => {
       paging: {
         limit,
         beforeMessageId,
+        sort,
       },
     };
 
