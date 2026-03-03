@@ -50,9 +50,23 @@ export const my_groups = async (req: Request, res: Response) => {
         const groupId = Number((group as any)?.id);
         if (!Number.isFinite(groupId) || groupId <= 0) return;
         const chatId = Number((group as any)?.chatId ?? 0);
+        const membershipStatus = String(
+          (typeof (group as any)?.getDataValue === "function"
+            ? (group as any).getDataValue("membershipStatus") ??
+              (group as any).getDataValue("membership_status")
+            : undefined) ??
+            (group as any)?.membershipStatus ??
+            (group as any)?.membership_status ??
+            "member"
+        )
+          .trim()
+          .toLowerCase();
+        const isPending = membershipStatus === "pending";
         const [count, unread] = await Promise.all([
           repository.countActiveMembers(groupId),
-          repository.countUnreadMessagesByChat(chatId, userId),
+          isPending
+            ? Promise.resolve(0)
+            : repository.countUnreadMessagesByChat(chatId, userId),
         ]);
         activeMembersByGroupId.set(groupId, Number(count) || 0);
         unreadByGroupId.set(groupId, Number(unread) || 0);

@@ -63,6 +63,49 @@ export const myChats = async (req: Request, res: Response) => {
   }
 };
 
+export const starredChats = async (req: Request, res: Response) => {
+  try {
+    setNoCacheHeaders(res);
+
+    const limitRaw = req.query.limit;
+    const limitParsed = parseInt(String(limitRaw ?? "20"), 10);
+    const limit = Number.isFinite(limitParsed)
+      ? Math.max(1, Math.min(limitParsed, 100))
+      : 20;
+
+    const beforePinnedAtRaw = String((req.query as any)?.beforePinnedAt ?? "").trim();
+    const beforePinnedAt = beforePinnedAtRaw.length > 0 ? beforePinnedAtRaw : null;
+
+    const beforeChatIdParsed = parseInt(String((req.query as any)?.beforeChatId ?? ""), 10);
+    const beforeChatId = Number.isFinite(beforeChatIdParsed) ? beforeChatIdParsed : null;
+
+    const response = await repository.getUserStarredChats({
+      currentUserId: req.userId,
+      meId: req.userId,
+      limit,
+      beforePinnedAt,
+      beforeChatId,
+    });
+
+    return formatResponse({
+      res,
+      success: true,
+      body: {
+        chatsByUser: response.chats,
+        paging: {
+          limit,
+          beforePinnedAt,
+          beforeChatId,
+          next_cursor: response.paging.nextCursor,
+        },
+      },
+    });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res, success: false, message: error });
+  }
+};
+
 export const messages = async (req: Request, res: Response) => {
   const { id } = req.params;
   const otherUserId = Number(id);

@@ -108,6 +108,32 @@ export const serializeGroup = (
 
   const name = toText((group as any)?.name) || null;
   const id = toPositiveInt((group as any)?.id);
+  const membershipStatus =
+    toText((group as any)?.membershipStatus ?? (group as any)?.membership_status) ||
+    "member";
+  const pendingRequestId = toPositiveInt(
+    (group as any)?.pendingRequestId ?? (group as any)?.pending_request_id
+  );
+  const pendingRequestStatus = toText(
+    (group as any)?.pendingRequestStatus ?? (group as any)?.pending_request_status
+  );
+  const pendingRequestAt = toIsoDate(
+    (group as any)?.pendingRequestAt ?? (group as any)?.pending_request_at
+  );
+  const canViewChatRaw = (group as any)?.canViewChat ?? (group as any)?.can_view_chat;
+  const canInteractRaw = (group as any)?.canInteract ?? (group as any)?.can_interact;
+  const canViewChat =
+    typeof canViewChatRaw === "boolean"
+      ? canViewChatRaw
+      : membershipStatus === "pending"
+      ? false
+      : null;
+  const canInteract =
+    typeof canInteractRaw === "boolean"
+      ? canInteractRaw
+      : membershipStatus === "pending"
+      ? false
+      : null;
 
   return {
     ...group,
@@ -132,6 +158,19 @@ export const serializeGroup = (
     join_mode: toText((group as any)?.joinMode),
     writeMode: toText((group as any)?.writeMode),
     write_mode: toText((group as any)?.writeMode),
+    membershipStatus,
+    membership_status: membershipStatus,
+    is_pending: membershipStatus === "pending",
+    pendingRequestId,
+    pending_request_id: pendingRequestId,
+    pendingRequestStatus,
+    pending_request_status: pendingRequestStatus,
+    pendingRequestAt,
+    pending_request_at: pendingRequestAt,
+    canViewChat,
+    can_view_chat: canViewChat,
+    canInteract,
+    can_interact: canInteract,
     isActive: Boolean((group as any)?.isActive),
     is_active: Boolean((group as any)?.isActive),
     active_members:

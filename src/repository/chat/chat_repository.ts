@@ -547,10 +547,11 @@ export const getRelatedUserIdsByUser = async (
   return [...relatedUserIds];
 };
 
+// Chat-only mode:
+// exclude any chat room linked to groups (active or inactive) from DM flows.
 const getActiveGroupChatIds = async (): Promise<number[]> => {
   const rows = await Group.findAll({
     where: {
-      isActive: true,
       chatId: {
         [Op.not]: null,
       },
@@ -566,6 +567,36 @@ const getActiveGroupChatIds = async (): Promise<number[]> => {
         .filter((id) => Number.isFinite(id) && id > 0)
     )
   );
+};
+
+const getBlockedUserIdsForUser = async (userId: number): Promise<number[]> => {
+  const uid = Number(userId);
+  if (!Number.isFinite(uid) || uid <= 0) return [];
+
+  const rows = await UserBlock.findAll({
+    where: {
+      [Op.or]: [{ blocker_id: uid }, { blocked_id: uid }],
+    },
+    attributes: ["blocker_id", "blocked_id"],
+    raw: true,
+  });
+
+  const blocked = new Set<number>();
+  for (const row of rows as any[]) {
+    const blocker = Number((row as any).blocker_id);
+    const blockedId = Number((row as any).blocked_id);
+
+    if (blocker === uid && Number.isFinite(blockedId) && blockedId > 0) {
+      blocked.add(blockedId);
+      continue;
+    }
+
+    if (blockedId === uid && Number.isFinite(blocker) && blocker > 0) {
+      blocked.add(blocker);
+    }
+  }
+
+  return [...blocked];
 };
 
 /**
@@ -749,6 +780,204 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
   });
 
   return chats;
+};
+
+export const getUserStarredChats = async ({
+  currentUserId,
+  meId = -1,
+  limit = 20,
+  beforePinnedAt = null,
+  beforeChatId = null,
+}: {
+  currentUserId: number;
+  meId?: any;
+  limit?: number;
+  beforePinnedAt?: string | null;
+  beforeChatId?: number | null;
+}) => {
+  const me = Number(meId);
+  const uid = Number(currentUserId);
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 100));
+  const groupChatIds = await getActiveGroupChatIds();
+  const blockedUserIds =
+    Number.isFinite(me) && me > 0 ? await getBlockedUserIdsForUser(me) : [];
+
+  const userWhere: any = {
+    id: {
+      [Op.ne]: uid,
+      ...(blockedUserIds.length ? { [Op.notIn]: blockedUserIds } : {}),
+    },
+    is_deleted: false,
+  };
+
+  const cursorDate =
+    typeof beforePinnedAt === "string" && beforePinnedAt.trim()
+      ? new Date(beforePinnedAt)
+      : null;
+  const safeCursorPinnedAt =
+    cursorDate && Number.isFinite(cursorDate.getTime()) ? cursorDate : null;
+  const parsedCursorChatId =
+    beforeChatId == null ? null : Number(beforeChatId);
+  const safeCursorChatId =
+    Number.isFinite(parsedCursorChatId as any) && (parsedCursorChatId as number) > 0
+      ? (parsedCursorChatId as number)
+      : null;
+
+  const where: any = {
+    userId: uid,
+    [Op.and]: [{ pinnedAt: { [Op.ne]: null } }],
+  };
+
+  if (safeCursorPinnedAt && safeCursorChatId) {
+    where[Op.and].push({
+      [Op.or]: [
+        { pinnedAt: { [Op.lt]: safeCursorPinnedAt } },
+        {
+          [Op.and]: [
+            { pinnedAt: safeCursorPinnedAt },
+            { chatId: { [Op.lt]: safeCursorChatId } },
+          ],
+        },
+      ],
+    });
+  } else if (safeCursorPinnedAt) {
+    where[Op.and].push({
+      pinnedAt: { [Op.lt]: safeCursorPinnedAt },
+    });
+  }
+
+  const rows = await Chat_User.findAll({
+    attributes: [
+      "userId",
+      "chatId",
+      "pinnedAt",
+      "pinnedOrder",
+      "createdAt",
+      "updatedAt",
+    ],
+    where,
+    include: [
+      {
+        model: Chat,
+        where: {
+          ...(groupChatIds.length
+            ? {
+                id: {
+                  [Op.notIn]: groupChatIds,
+                },
+              }
+            : {}),
+          deletedBy: { [Op.in]: [0, uid] },
+        },
+        include: [
+          {
+            model: User,
+            as: "users",
+            where: userWhere,
+            attributes: {
+              exclude: ["password", "auth_token", "temp_code", "created_temp_code"],
+            },
+            through: { attributes: [] },
+            required: true,
+          },
+        ],
+      },
+    ],
+    order: [
+      ["pinnedAt", "DESC"],
+      ["chatId", "DESC"],
+    ],
+    limit: safeLimit + 1,
+  });
+
+  const hasMore = rows.length > safeLimit;
+  const chats = hasMore ? rows.slice(0, safeLimit) : rows;
+
+  const chatIds = (chats as any[])
+    .map((row: any) => Number(row.chatId ?? row.get?.("chatId")))
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
+  const latestMessageByChatId = new Map<number, any>();
+  if (chatIds.length > 0) {
+    const latestCandidates = await Message.findAll({
+      where: {
+        chatId: { [Op.in]: chatIds },
+        deletedBy: { [Op.in]: [0, uid] },
+      },
+      attributes: [
+        "id",
+        "chatId",
+        "senderId",
+        "text",
+        "messageType",
+        "mediaUrl",
+        "mediaMime",
+        "mediaDurationMs",
+        "mediaSizeBytes",
+        "waveform",
+        "metadata",
+        "date",
+        "deletedBy",
+        "status",
+        "deliveredAt",
+        "readAt",
+        "replyToMessageId",
+        "reactions",
+      ],
+      order: [
+        ["chatId", "ASC"],
+        ["date", "DESC"],
+        ["id", "DESC"],
+      ],
+      raw: true,
+    });
+
+    for (const row of latestCandidates as any[]) {
+      const cid = Number(row.chatId);
+      if (!Number.isFinite(cid) || cid <= 0) continue;
+      if (!latestMessageByChatId.has(cid)) {
+        latestMessageByChatId.set(cid, row);
+      }
+    }
+  }
+
+  for (const chat of chats as any[]) {
+    const chatId = Number(chat.chatId ?? chat.get?.("chatId"));
+    if (!Number.isFinite(chatId)) continue;
+    const lastMessage = latestMessageByChatId.get(chatId) ?? null;
+    if (chat.Chat) {
+      if (typeof chat.Chat.setDataValue === "function") {
+        chat.Chat.setDataValue("messages", lastMessage ? [lastMessage] : []);
+      }
+      chat.Chat.messages = lastMessage ? [lastMessage] : [];
+    }
+  }
+
+  let nextCursor: { beforePinnedAt: string; beforeChatId: number } | null = null;
+  if (hasMore && chats.length > 0) {
+    const tail: any = chats[chats.length - 1];
+    const tailPinnedAt = tail?.pinnedAt ? new Date(tail.pinnedAt) : null;
+    const tailChatId = Number(tail?.chatId ?? tail?.get?.("chatId"));
+    if (
+      tailPinnedAt &&
+      Number.isFinite(tailPinnedAt.getTime()) &&
+      Number.isFinite(tailChatId) &&
+      tailChatId > 0
+    ) {
+      nextCursor = {
+        beforePinnedAt: tailPinnedAt.toISOString(),
+        beforeChatId: tailChatId,
+      };
+    }
+  }
+
+  return {
+    chats,
+    paging: {
+      limit: safeLimit,
+      nextCursor,
+    },
+  };
 };
 
 export const setChatPinned = async ({

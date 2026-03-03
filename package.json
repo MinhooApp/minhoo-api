@@ -8,6 +8,7 @@
     "start": "concurrently \"tsc -w\" \"node ./dist/app.js\"",
     "build": "tsc",
     "start:prod": "node ./dist/app.js",
+    "test:chat:realtime": "node ./scripts/test-chat-realtime.js",
     "create-migration": "sequelize-cli migration:generate --name",
     "migration": "npx sequelize-cli db:migrate"
   },

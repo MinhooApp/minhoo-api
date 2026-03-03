@@ -391,11 +391,9 @@ function emitChatsRefresh(socket: Socket, userId: number) {
     delivered++;
   }
 
-  // Fallback para clientes legacy sin bind de userId en socket.data.
-  if (delivered === 0) {
-    socket.broadcast.emit(`chats/${userId}`);
-    socket.broadcast.emit("chats", { userId });
-  }
+  // Seguridad/realtime: nunca hacer broadcast global de refresco de chats.
+  // Si no hay sockets autenticados del usuario, simplemente no se emite.
+  if (delivered === 0) return;
 }
 
 function emitChatStatusToUserSockets(
@@ -889,9 +887,20 @@ export const socketController = (socket: Socket) => {
     }
   });
 
-  // ✅ lista de chats (se mantiene igual)
-  socket.on("chats", (userId: number) => {
-    socket.broadcast.emit(`chats/${userId}`);
+  // ✅ refresh de lista de chats del usuario autenticado
+  socket.on("chats", async (payload: any) => {
+    try {
+      const payloadUserId = parseUserId(payload);
+      const actorUserId = await requireAuthenticatedUser(
+        socket,
+        "chats",
+        payloadUserId
+      );
+      if (!actorUserId) return;
+      emitChatsRefresh(socket, actorUserId);
+    } catch (e) {
+      console.log("❌ chats event error", e);
+    }
   });
 
   /**

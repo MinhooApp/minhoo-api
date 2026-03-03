@@ -307,9 +307,31 @@ const enrichGroupsWithInteraction = async (groups: any[]) => {
     return groups;
   }
 
+  const readField = (group: any, ...keys: string[]) => {
+    for (const key of keys) {
+      if (!key) continue;
+      if (group && typeof group.getDataValue === "function") {
+        const value = group.getDataValue(key);
+        if (value !== undefined) return value;
+      }
+      if (group && Object.prototype.hasOwnProperty.call(group, key)) {
+        const value = (group as any)[key];
+        if (value !== undefined) return value;
+      }
+    }
+    return undefined;
+  };
+
+  const getMembershipStatus = (group: any) =>
+    String(readField(group, "membershipStatus", "membership_status") ?? "")
+      .trim()
+      .toLowerCase();
+  const isPendingGroup = (group: any) => getMembershipStatus(group) === "pending";
+
   const chatIds = Array.from(
     new Set(
       (groups as any[])
+        .filter((group) => !isPendingGroup(group))
         .map((group) => toPositiveInt((group as any)?.chatId))
         .filter(
           (chatId): chatId is number =>
@@ -361,13 +383,18 @@ const enrichGroupsWithInteraction = async (groups: any[]) => {
   };
 
   for (const group of groups as any[]) {
+    const pending = isPendingGroup(group);
     const chatId = toPositiveInt((group as any)?.chatId);
-    const latestMessage = chatId ? latestMessageByChatId.get(chatId) ?? null : null;
-    const groupUpdatedAt = (group as any)?.updatedAt ?? (group as any)?.createdAt ?? null;
-    const interactionDateMs = Math.max(
-      toDateMs(groupUpdatedAt),
-      toDateMs((latestMessage as any)?.date)
-    );
+    const latestMessage =
+      !pending && chatId ? latestMessageByChatId.get(chatId) ?? null : null;
+    const groupUpdatedAt =
+      pending
+        ? readField(group, "pendingRequestAt", "pending_request_at", "updatedAt", "createdAt") ??
+          null
+        : (group as any)?.updatedAt ?? (group as any)?.createdAt ?? null;
+    const interactionDateMs = pending
+      ? toDateMs(groupUpdatedAt)
+      : Math.max(toDateMs(groupUpdatedAt), toDateMs((latestMessage as any)?.date));
     const lastInteractionAt =
       interactionDateMs > 0 ? new Date(interactionDateMs).toISOString() : null;
 
@@ -416,20 +443,42 @@ export const myGroupsByUser = async (userId: number) => {
   const uid = toPositiveInt(userId);
   if (!uid) return [];
 
-  const memberRows = await GroupMember.findAll({
-    where: {
-      userId: uid,
-      isActive: true,
-    },
-    attributes: ["groupId"],
-    raw: true,
-  });
+  const [memberRows, pendingRequests] = await Promise.all([
+    GroupMember.findAll({
+      where: {
+        userId: uid,
+        isActive: true,
+      },
+      attributes: ["groupId"],
+      raw: true,
+    }),
+    GroupJoinRequest.findAll({
+      where: {
+        userId: uid,
+        status: "pending",
+      },
+      attributes: ["id", "groupId", "status", "createdAt", "updatedAt"],
+      include: [
+        {
+          model: Group,
+          as: "group",
+          where: { isActive: true },
+          include: groupOwnerInclude as any,
+          required: true,
+        },
+      ],
+      order: [["id", "DESC"]],
+    }),
+  ]);
 
   const memberGroupIds = Array.from(
     new Set(
       (memberRows as any[])
         .map((row) => toPositiveInt((row as any)?.groupId))
-        .filter((groupId): groupId is number => Number.isFinite(groupId as any) && (groupId as number) > 0)
+        .filter(
+          (groupId): groupId is number =>
+            Number.isFinite(groupId as any) && (groupId as number) > 0
+        )
     )
   );
 
@@ -458,6 +507,53 @@ export const myGroupsByUser = async (userId: number) => {
   for (const group of [...(ownedGroups as any[]), ...(joinedGroups as any[])]) {
     const groupId = toPositiveInt((group as any)?.id);
     if (!groupId || byId.has(groupId)) continue;
+    if (typeof (group as any).setDataValue === "function") {
+      (group as any).setDataValue("membershipStatus", "member");
+      (group as any).setDataValue("membership_status", "member");
+    } else {
+      (group as any).membershipStatus = "member";
+      (group as any).membership_status = "member";
+    }
+    byId.set(groupId, group);
+  }
+
+  for (const request of pendingRequests as any[]) {
+    const group = (request as any)?.group;
+    const groupId = toPositiveInt((group as any)?.id);
+    if (!groupId || byId.has(groupId)) continue;
+
+    const pendingRequestId = toPositiveInt((request as any)?.id);
+    const pendingRequestAt =
+      (request as any)?.createdAt ?? (request as any)?.updatedAt ?? null;
+
+    if (typeof (group as any).setDataValue === "function") {
+      (group as any).setDataValue("membershipStatus", "pending");
+      (group as any).setDataValue("membership_status", "pending");
+      (group as any).setDataValue("pendingRequestId", pendingRequestId);
+      (group as any).setDataValue("pending_request_id", pendingRequestId);
+      (group as any).setDataValue("pendingRequestStatus", "pending");
+      (group as any).setDataValue("pending_request_status", "pending");
+      (group as any).setDataValue("pendingRequestAt", pendingRequestAt);
+      (group as any).setDataValue("pending_request_at", pendingRequestAt);
+      (group as any).setDataValue("canViewChat", false);
+      (group as any).setDataValue("can_view_chat", false);
+      (group as any).setDataValue("canInteract", false);
+      (group as any).setDataValue("can_interact", false);
+    } else {
+      (group as any).membershipStatus = "pending";
+      (group as any).membership_status = "pending";
+      (group as any).pendingRequestId = pendingRequestId;
+      (group as any).pending_request_id = pendingRequestId;
+      (group as any).pendingRequestStatus = "pending";
+      (group as any).pending_request_status = "pending";
+      (group as any).pendingRequestAt = pendingRequestAt;
+      (group as any).pending_request_at = pendingRequestAt;
+      (group as any).canViewChat = false;
+      (group as any).can_view_chat = false;
+      (group as any).canInteract = false;
+      (group as any).can_interact = false;
+    }
+
     byId.set(groupId, group);
   }
 
@@ -756,11 +852,21 @@ export const getGroupAccessSnapshot = async (groupId: number, userId?: number | 
   let role: GroupActorRole = "none";
   let isMember = false;
   let isAdmin = false;
+  let hasPendingRequest = false;
+  let pendingRequestId: number | null = null;
 
   if (hasUser) {
     role = await getActorRoleInGroup(groupId, uid);
     isMember = role !== "none";
     isAdmin = role === "owner" || role === "admin";
+    if (!isMember) {
+      const pending = await getPendingJoinRequestByUser(groupId, uid);
+      if (pending) {
+        hasPendingRequest = true;
+        const parsed = Number((pending as any)?.id);
+        pendingRequestId = Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+      }
+    }
   }
 
   const joinMode = String((group as any).joinMode ?? "public_with_approval");
@@ -780,6 +886,8 @@ export const getGroupAccessSnapshot = async (groupId: number, userId?: number | 
       is_member: isMember,
       is_admin: isAdmin,
       role,
+      has_pending_request: hasPendingRequest,
+      pending_request_id: pendingRequestId,
       can_view_chat: canViewChat,
       can_interact: canInteract,
     },
@@ -1002,6 +1110,37 @@ export const getPendingJoinRequestByUser = async (groupId: number, userId: numbe
   });
 };
 
+export const cancelPendingJoinRequestByUser = async ({
+  groupId,
+  userId,
+}: {
+  groupId: number;
+  userId: number;
+}) => {
+  const group = await getActiveGroupById(groupId);
+  if (!group) return { ok: false as const, reason: "group_not_found" as const };
+
+  const request = await GroupJoinRequest.findOne({
+    where: {
+      groupId,
+      userId,
+      status: "pending",
+    },
+  });
+  if (!request) {
+    return { ok: false as const, reason: "pending_not_found" as const };
+  }
+
+  await request.update({
+    status: "rejected",
+    reviewedByUserId: null,
+    reviewedAt: new Date(),
+    note: "canceled by requester",
+  });
+
+  return { ok: true as const, request };
+};
+
 export const reviewJoinRequest = async ({
   groupId,
   requestId,
@@ -1166,6 +1305,31 @@ export const removeMemberByAdmin = async ({
 
   await targetMembership.update({ isActive: false });
   await detachUserFromGroupChat(groupId, targetUserId);
+  return { ok: true as const };
+};
+
+export const leaveGroupByUser = async ({
+  groupId,
+  userId,
+}: {
+  groupId: number;
+  userId: number;
+}) => {
+  const group = await getActiveGroupById(groupId);
+  if (!group) return { ok: false as const, reason: "group_not_found" as const };
+
+  const ownerUserId = Number((group as any).ownerUserId);
+  if (userId === ownerUserId) {
+    return { ok: false as const, reason: "owner_cannot_leave" as const };
+  }
+
+  const membership = await getActiveMembership(groupId, userId);
+  if (!membership) {
+    return { ok: false as const, reason: "not_member" as const };
+  }
+
+  await membership.update({ isActive: false });
+  await detachUserFromGroupChat(groupId, userId);
   return { ok: true as const };
 };
 

@@ -11,6 +11,18 @@ const toBool = (v: any): boolean | null => {
 };
 
 export const pinChat = async (req: Request, res: Response) => {
+  return updateChatStarState(req, res, "pin");
+};
+
+export const starChat = async (req: Request, res: Response) => {
+  return updateChatStarState(req, res, "starred");
+};
+
+const updateChatStarState = async (
+  req: Request,
+  res: Response,
+  source: "pin" | "starred"
+) => {
   const chatId = Number(req.params.id);
   if (!Number.isFinite(chatId) || chatId <= 0) {
     return formatResponse({
@@ -20,19 +32,22 @@ export const pinChat = async (req: Request, res: Response) => {
     });
   }
 
-  const pinned = toBool(req.body?.pinned) ?? true;
+  const pinned = toBool(req.body?.pinned);
+  const starred = toBool(req.body?.starred);
+  const enabled = (source === "starred" ? starred : pinned) ?? starred ?? pinned ?? true;
 
   try {
-    console.log("[pinChat] request", {
+    console.log("[chatStar] request", {
       userId: req.userId,
       chatId,
-      pinned,
+      enabled,
       body: req.body,
+      source,
     });
     const row = await repository.setChatPinned({
       userId: req.userId,
       chatId,
-      pinned,
+      pinned: enabled,
     });
 
     if (!row) {
@@ -43,15 +58,21 @@ export const pinChat = async (req: Request, res: Response) => {
       });
     }
 
-    console.log("[pinChat] updated", {
+    console.log("[chatStar] updated", {
       userId: req.userId,
       chatId,
       pinnedAt: row.pinnedAt,
+      source,
     });
     return formatResponse({
       res,
       success: true,
-      body: { chatId, pinnedAt: row.pinnedAt, pinned },
+      body: {
+        chatId,
+        pinnedAt: row.pinnedAt,
+        pinned: enabled,
+        starred: enabled,
+      },
     });
   } catch (error) {
     console.log(error);
