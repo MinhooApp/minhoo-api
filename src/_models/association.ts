@@ -24,6 +24,11 @@ import Service_Worker from "./service/service_worker";
 import Verification from "./verification/verification";
 import Notification from "./notification/notification";
 import UserBlock from "./block/block";
+import Reel from "./reel/reel";
+import ReelLike from "./reel/reel_like";
+import ReelSave from "./reel/reel_save";
+import ReelComment from "./reel/reel_comment";
+import ReelView from "./reel/reel_view";
 const ver = Verification;
 console.log(ver.toString());
 
@@ -68,6 +73,34 @@ User.hasMany(SavedPost, { as: "saved_posts", foreignKey: "userId" });
 SavedPost.belongsTo(User, { as: "user", foreignKey: "userId" });
 Post.hasMany(SavedPost, { as: "saves", foreignKey: "postId" });
 SavedPost.belongsTo(Post, { as: "post", foreignKey: "postId" });
+
+//Association Reel with User
+User.hasMany(Reel, { as: "reels", foreignKey: "userId" });
+Reel.belongsTo(User, { as: "user", foreignKey: "userId" });
+
+//Association ReelLike with User/Reel
+User.hasMany(ReelLike, { as: "reel_likes", foreignKey: "userId" });
+ReelLike.belongsTo(User, { as: "user", foreignKey: "userId" });
+Reel.hasMany(ReelLike, { as: "reel_likes", foreignKey: "reelId" });
+ReelLike.belongsTo(Reel, { as: "reel", foreignKey: "reelId" });
+
+//Association ReelSave with User/Reel
+User.hasMany(ReelSave, { as: "reel_saves", foreignKey: "userId" });
+ReelSave.belongsTo(User, { as: "user", foreignKey: "userId" });
+Reel.hasMany(ReelSave, { as: "reel_saves", foreignKey: "reelId" });
+ReelSave.belongsTo(Reel, { as: "reel", foreignKey: "reelId" });
+
+//Association ReelComment with User/Reel
+User.hasMany(ReelComment, { as: "reel_comments", foreignKey: "userId" });
+ReelComment.belongsTo(User, { as: "comment_user", foreignKey: "userId" });
+Reel.hasMany(ReelComment, { as: "reel_comments", foreignKey: "reelId" });
+ReelComment.belongsTo(Reel, { as: "reel", foreignKey: "reelId" });
+
+//Association ReelView with User/Reel
+User.hasMany(ReelView, { as: "reel_views", foreignKey: "userId" });
+ReelView.belongsTo(User, { as: "viewer_user", foreignKey: "userId" });
+Reel.hasMany(ReelView, { as: "reel_views", foreignKey: "reelId" });
+ReelView.belongsTo(Reel, { as: "reel", foreignKey: "reelId" });
 
 //Association Like with Comment
 Comment.hasMany(Like, { as: "likes", foreignKey: "commentId" });
