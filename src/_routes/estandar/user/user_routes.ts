@@ -8,6 +8,7 @@ const router = Router();
 import {
   get,
   gets,
+  search_profiles,
   myData,
   follow,
   follow_by_id,
@@ -34,6 +35,7 @@ import {
 } from "../../../useCases/user/_controller/controller";
 
 router.get("/", TokenValidation(), gets);
+router.get("/search", TokenOptional(), search_profiles);
 router.post("/follow", TokenValidation(), follow);
 router.post("/:id/follow", TokenValidation(), follow_by_id);
 router.delete("/:id/follow", TokenValidation(), unfollow_by_id);

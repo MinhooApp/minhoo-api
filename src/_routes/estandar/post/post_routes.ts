@@ -5,6 +5,7 @@ import {
   add,
   get,
   gets,
+  getsSuggested,
   like,
   deletePost,
   deletePostAdmin,
@@ -15,6 +16,7 @@ const router = Router();
 router.post("/", TokenValidation(), add);
 //router.get("/", gets);
 router.get("/", TokenOptional(), gets);
+router.get("/suggested", TokenOptional(), getsSuggested);
 router.put("/like/:id", TokenValidation(), like);
 router.get("/:id", TokenOptional(), get);
 router.delete("/admin/:id", TokenValidation([8088]), deletePostAdmin);

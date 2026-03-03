@@ -3,6 +3,7 @@ import { block_user, unblock_user, remove_follower, delete_account, unfollow_by_
 import {
   get,
   gets,
+  search_profiles,
   validatePhone,
   myData,
   follows,
@@ -26,6 +27,7 @@ import {
 export {
   get,
   gets,
+  search_profiles,
   validatePhone,
   myData,
   follow,

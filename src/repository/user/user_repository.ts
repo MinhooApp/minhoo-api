@@ -7,6 +7,7 @@ import Worker from "../../_models/worker/worker";
 import Follower from "../../_models/follower/follower";
 import Category from "../../_models/category/category";
 import { Op, Sequelize } from "sequelize";
+import sequelize from "../../_db/connection";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
@@ -34,6 +35,199 @@ export const gets = async () => {
     include: userIncludes(),
   });
   return user;
+};
+
+export const search_profiles = async (
+  query: any = "",
+  meId: any = -1,
+  page: any = 0,
+  size: any = 20
+) => {
+  const pageNumber = Number.isFinite(Number(page)) && Number(page) >= 0 ? Math.floor(Number(page)) : 0;
+  const sizeNumber = Number.isFinite(Number(size)) ? Math.floor(Number(size)) : 20;
+  const limit = Math.min(Math.max(sizeNumber, 1), 100);
+  const offset = pageNumber * limit;
+  const search = String(query ?? "").trim();
+  const where: any = {
+    available: true,
+    disabled: false,
+    is_deleted: false,
+  };
+  const and: any[] = [];
+  const order: any[] = [];
+
+  if (search.length) {
+    const tokens = search.split(/\s+/).filter(Boolean).slice(0, 5);
+    const tokenClauses = tokens.map((token) => {
+      const like = `%${token}%`;
+      return {
+        [Op.or]: [
+          { name: { [Op.like]: like } },
+          { last_name: { [Op.like]: like } },
+          { username: { [Op.like]: like } },
+        ],
+      };
+    });
+
+    // UX rule:
+    // - 1 token: match in any field (OR)
+    // - 2+ tokens: each token must appear in any field (AND across tokens)
+    if (tokenClauses.length === 1) {
+      and.push(tokenClauses[0]);
+    } else if (tokenClauses.length > 1) {
+      and.push(...tokenClauses);
+    }
+
+    // Relevance ranking for search:
+    // exact username > username prefix > username contains > name/last_name contains
+    const queryLower = search.toLowerCase();
+    const exact = sequelize.escape(queryLower);
+    const prefix = sequelize.escape(`${queryLower}%`);
+    const contains = sequelize.escape(`%${queryLower}%`);
+    order.push([
+      Sequelize.literal(`
+        CASE
+          WHEN \`user\`.\`username\` IS NOT NULL AND LOWER(\`user\`.\`username\`) = ${exact} THEN 0
+          WHEN \`user\`.\`username\` IS NOT NULL AND LOWER(\`user\`.\`username\`) LIKE ${prefix} THEN 1
+          WHEN \`user\`.\`username\` IS NOT NULL AND LOWER(\`user\`.\`username\`) LIKE ${contains} THEN 2
+          WHEN \`user\`.\`name\` IS NOT NULL AND LOWER(\`user\`.\`name\`) LIKE ${contains} THEN 3
+          WHEN \`user\`.\`last_name\` IS NOT NULL AND LOWER(\`user\`.\`last_name\`) LIKE ${contains} THEN 4
+          ELSE 5
+        END
+      `),
+      "ASC",
+    ]);
+  }
+
+  const viewerId = Number(meId);
+  if (Number.isFinite(viewerId) && viewerId > 0) {
+    const blocks = await UserBLock.findAll({
+      where: {
+        [Op.or]: [{ blocker_id: viewerId }, { blocked_id: viewerId }],
+      },
+      attributes: ["blocker_id", "blocked_id"],
+      raw: true,
+    });
+
+    const blockedUserIds = new Set<number>();
+    blocks.forEach((row: any) => {
+      const blockerId = Number(row.blocker_id);
+      const blockedId = Number(row.blocked_id);
+      if (blockerId === viewerId && Number.isFinite(blockedId)) {
+        blockedUserIds.add(blockedId);
+      }
+      if (blockedId === viewerId && Number.isFinite(blockerId)) {
+        blockedUserIds.add(blockerId);
+      }
+    });
+
+    if (blockedUserIds.size > 0) {
+      and.push({ id: { [Op.notIn]: Array.from(blockedUserIds) } });
+    }
+  }
+
+  if (and.length > 0) {
+    where[Op.and] = and;
+  }
+
+  if (!search.length) {
+    // Empty query => show a random discovery list.
+    order.push([Sequelize.literal("RAND()"), "ASC"]);
+  } else {
+    order.push(
+      [Sequelize.literal("CASE WHEN `user`.`username` IS NULL OR `user`.`username` = '' THEN 1 ELSE 0 END"), "ASC"],
+      ["username", "ASC"],
+      ["name", "ASC"],
+      ["last_name", "ASC"],
+      ["id", "DESC"]
+    );
+  }
+
+  return User.findAndCountAll({
+    where,
+    attributes: [
+      "id",
+      "name",
+      "last_name",
+      "username",
+      "image_profil",
+      "verified",
+      "rate",
+      "job_category_ids",
+      "job_categories_labels",
+    ],
+    include: [
+      {
+        model: Worker,
+        as: "worker",
+        where: { available: true },
+        required: false,
+        attributes: ["id"],
+        include: [
+          {
+            model: Category,
+            as: "categories",
+            attributes: ["id", "name", "es_name"],
+            through: { attributes: [] },
+            required: false,
+          },
+        ],
+      },
+    ],
+    limit,
+    offset,
+    distinct: true,
+    order,
+  }).then((result: any) => {
+    const rows = (result.rows ?? []).map((row: any) => {
+      const plain = typeof row?.toJSON === "function" ? row.toJSON() : row;
+      const username =
+        plain?.username === null || plain?.username === undefined
+          ? null
+          : String(plain.username).trim() || null;
+
+      const userCategoryIds = Array.isArray(plain?.job_category_ids)
+        ? plain.job_category_ids
+        : [];
+      const userCategoryLabels = Array.isArray(plain?.job_categories_labels)
+        ? plain.job_categories_labels
+        : [];
+
+      const workerCategories = Array.isArray(plain?.worker?.categories)
+        ? plain.worker.categories
+        : [];
+      const workerCategoryIds = workerCategories
+        .map((cat: any) => Number(cat?.id))
+        .filter((id: number) => Number.isFinite(id));
+      const workerCategoryLabels = workerCategories
+        .map((cat: any) => String(cat?.name ?? cat?.es_name ?? "").trim())
+        .filter((name: string) => !!name);
+
+      const category_ids =
+        userCategoryIds.length > 0
+          ? userCategoryIds
+          : Array.from(new Set(workerCategoryIds));
+      const categories_labels =
+        userCategoryLabels.length > 0
+          ? userCategoryLabels
+          : Array.from(new Set(workerCategoryLabels));
+
+      return {
+        ...plain,
+        username,
+        user_name: username,
+        username_handle: username ? `@${username}` : null,
+        category_ids,
+        categories: categories_labels,
+        categories_labels,
+      };
+    });
+
+    return {
+      count: result.count,
+      rows,
+    };
+  });
 };
 
 /* 🔹 Paginación de usuarios visibles */

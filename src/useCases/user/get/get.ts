@@ -72,6 +72,41 @@ export const gets = async (req: Request, res: Response) => {
   }
 };
 
+export const search_profiles = async (req: Request, res: Response) => {
+  try {
+    const qRaw =
+      (req.query as any)?.q ??
+      (req.query as any)?.query ??
+      (req.query as any)?.search ??
+      (req.query as any)?.term ??
+      (req.query as any)?.text ??
+      (req.body as any)?.q ??
+      (req.body as any)?.query ??
+      "";
+    const pageRaw = (req.query as any)?.page ?? 0;
+    const sizeRaw = (req.query as any)?.size ?? 20;
+    const page = Number.isFinite(Number(pageRaw)) && Number(pageRaw) >= 0 ? Math.floor(Number(pageRaw)) : 0;
+    const sizeNumber = Number.isFinite(Number(sizeRaw)) ? Math.floor(Number(sizeRaw)) : 20;
+    const size = Math.min(Math.max(sizeNumber, 1), 100);
+    const query = String(qRaw ?? "").trim();
+    const users: any = await repository.search_profiles(query, req.userId ?? -1, page, size);
+
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        query,
+        page,
+        size,
+        count: users.count,
+        users: users.rows,
+      },
+    });
+  } catch (error) {
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
 export const get = async (req: Request, res: Response) => {
   const { id } = req.params;
 

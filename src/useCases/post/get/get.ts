@@ -78,6 +78,27 @@ export const gets = async (req: Request, res: Response) => {
   }
 };
 
+export const getsSuggested = async (req: Request, res: Response) => {
+  try {
+    const { page = 0, size = 10 } = req.query;
+    const posts = await repository.getsSuggested(page, size, req.userId);
+    await attachSavedFlags(req.userId, posts.rows);
+
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        page: +page,
+        size: +size,
+        count: posts.count,
+        posts: posts.rows,
+      },
+    });
+  } catch (error) {
+    return formatResponse({ res: res, success: false, message: error });
+  }
+};
+
 export const get = async (req: Request, res: Response) => {
   const { id } = req.params;
   try {

@@ -2,7 +2,7 @@ import Post from "../../_models/post/post";
 import Like from "../../_models/like/like";
 import { postInclude } from "./post_include";
 import MediaPost from "../../_models/post/media_post";
-import { Op } from "sequelize";
+import { Op, Sequelize } from "sequelize";
 
 import { whereNotBlockedExists } from "../user/block_where";
 
@@ -109,6 +109,59 @@ export const gets = async (page: any = 0, size: any = 10, meId: any = -1) => {
     replacements: { meId },
     order: [["created_date", "DESC"]],
     attributes: { exclude: excludeKeys },
+  });
+
+  return post;
+};
+
+export const getsSuggested = async (
+  page: any = 0,
+  size: any = 10,
+  meId: any = -1
+) => {
+  const option = {
+    limit: +size,
+    offset: +page * +size,
+  };
+
+  const where: any = {
+    is_delete: false,
+    ...whereNotBlockedExists(meId, "`post`.`userId`"),
+  };
+
+  const viewerId = Number(meId);
+  if (Number.isFinite(viewerId) && viewerId > 0) {
+    where.userId = { [Op.ne]: viewerId };
+  }
+
+  const post = await Post.findAndCountAll({
+    where,
+    ...option,
+    include: postInclude,
+    replacements: { meId },
+    distinct: true,
+    attributes: {
+      exclude: excludeKeys,
+      include: [
+        [
+          Sequelize.literal(
+            "(SELECT COUNT(1) FROM likes l WHERE l.postId = `post`.`id`)"
+          ),
+          "likes_count",
+        ],
+        [
+          Sequelize.literal(
+            "(SELECT COUNT(1) FROM comments c WHERE c.postId = `post`.`id` AND c.is_delete = 0)"
+          ),
+          "comments_count",
+        ],
+      ],
+    },
+    order: [
+      [Sequelize.literal("likes_count"), "DESC"],
+      [Sequelize.literal("comments_count"), "DESC"],
+      ["created_date", "DESC"],
+    ],
   });
 
   return post;

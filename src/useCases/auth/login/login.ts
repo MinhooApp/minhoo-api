@@ -10,6 +10,7 @@ import {
 } from "../_module/module";
 import { getSocketInstance } from "../../../_sockets/socket_instance";
 import User from "../../../_models/user/user";
+import * as followerRepo from "../../../repository/follower/follower_repository";
 
 const normalizeDeviceToken = (raw: any): string => {
   const value = String(raw ?? "").trim();
@@ -166,11 +167,48 @@ export const login = async (req: Request, res: Response) => {
             : null,
       });
 
+      const loginUserId = Number((user as any)?.id ?? (user as any)?.get?.("id"));
+      let counts: { followersCount: number; followingCount: number } | null = null;
+      if (Number.isFinite(loginUserId) && loginUserId > 0) {
+        counts = await followerRepo.getCounts(loginUserId);
+        const fields = {
+          followers_count: counts.followersCount,
+          followings_count: counts.followingCount,
+          following_count: counts.followingCount,
+          followersCount: counts.followersCount,
+          followingsCount: counts.followingCount,
+          followingCount: counts.followingCount,
+        };
+
+        if (typeof (user as any)?.setDataValue === "function") {
+          Object.entries(fields).forEach(([key, value]) => {
+            (user as any).setDataValue(key, value);
+          });
+        } else if (user) {
+          Object.assign(user as any, fields);
+        }
+      }
+
       const totalMs = Date.now() - startedAt;
       console.log(
         `[perf][login] email=${email} totalMs=${totalMs} lookupMs=${userLookupMs}`
       );
-      return formatResponse({ res: res, success: true, body: { user } });
+      return formatResponse({
+        res: res,
+        success: true,
+        body: {
+          user,
+          counts: counts
+            ? {
+                followersCount: counts.followersCount,
+                followingCount: counts.followingCount,
+                followers_count: counts.followersCount,
+                followings_count: counts.followingCount,
+                following_count: counts.followingCount,
+              }
+            : null,
+        },
+      });
     }
   } catch (error) {
     console.log(error);
