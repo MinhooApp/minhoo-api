@@ -7,6 +7,17 @@ import { Op, Sequelize } from "sequelize";
 import { whereNotBlockedExists } from "../user/block_where";
 
 const excludeKeys = ["createdAt", "updatedAt"];
+const commentCountAttribute = [
+  Sequelize.literal(
+    "(SELECT COUNT(1) FROM comments c WHERE c.postId = `post`.`id` AND c.is_delete = 0)"
+  ),
+  "comments_count",
+] as const;
+const toCounter = (value: any) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+};
 
 type MediaItem = { url: string; is_img: boolean };
 
@@ -142,23 +153,10 @@ export const getsSuggested = async (
     distinct: true,
     attributes: {
       exclude: excludeKeys,
-      include: [
-        [
-          Sequelize.literal(
-            "(SELECT COUNT(1) FROM likes l WHERE l.postId = `post`.`id`)"
-          ),
-          "likes_count",
-        ],
-        [
-          Sequelize.literal(
-            "(SELECT COUNT(1) FROM comments c WHERE c.postId = `post`.`id` AND c.is_delete = 0)"
-          ),
-          "comments_count",
-        ],
-      ],
+      include: [commentCountAttribute],
     },
     order: [
-      [Sequelize.literal("likes_count"), "DESC"],
+      ["likes_count", "DESC"],
       [Sequelize.literal("comments_count"), "DESC"],
       ["created_date", "DESC"],
     ],
@@ -175,7 +173,10 @@ export const getOne = async (id: any, meId: any) => {
     },
     replacements: { meId },
     include: postInclude,
-    attributes: { exclude: excludeKeys },
+    attributes: {
+      exclude: excludeKeys,
+      include: [commentCountAttribute],
+    },
   });
 
   return post;
@@ -190,6 +191,10 @@ export const get = async (id: any, meId: any = -1) => {
     },
     replacements: { meId },
     include: postInclude,
+    attributes: {
+      exclude: excludeKeys,
+      include: [commentCountAttribute],
+    },
   });
 
   return post;
@@ -205,6 +210,10 @@ export const getOneByUser = async (id: any, userId: any, meId: any = -1) => {
     },
     replacements: { meId },
     include: postInclude,
+    attributes: {
+      exclude: excludeKeys,
+      include: [commentCountAttribute],
+    },
   });
 
   return post;
@@ -226,15 +235,79 @@ export const deletePost = async (id: any) => {
 };
 
 export const toggleLike = async (userId: any, postId: any) => {
+  const postNumericId = Number(postId);
+  if (!Number.isFinite(postNumericId) || postNumericId <= 0) {
+    return { notFound: true, liked: false, likesCount: 0 };
+  }
+
+  const post = await Post.findOne({
+    where: { id: postNumericId, is_delete: false },
+    attributes: ["id", "likes_count"],
+  });
+  if (!post) {
+    return { notFound: true, liked: false, likesCount: 0 };
+  }
+
   const existingFollow = await Like.findOne({
-    where: { userId, postId },
+    where: { userId, postId: postNumericId },
   });
 
   if (existingFollow) {
     await existingFollow.destroy();
-    return false;
+    await Post.update(
+      {
+        likes_count: Sequelize.literal(
+          "GREATEST(COALESCE(likes_count, 0) - 1, 0)"
+        ),
+      },
+      { where: { id: postNumericId } }
+    );
+
+    const refreshed = await Post.findByPk(postNumericId, {
+      attributes: ["likes_count"],
+    });
+    return {
+      notFound: false,
+      liked: false,
+      likesCount: toCounter((refreshed as any)?.likes_count),
+    };
   } else {
-    await Like.create({ userId, postId });
-    return true;
+    await Like.create({ userId, postId: postNumericId });
+    await Post.increment({ likes_count: 1 }, { where: { id: postNumericId } });
+
+    const refreshed = await Post.findByPk(postNumericId, {
+      attributes: ["likes_count"],
+    });
+    return {
+      notFound: false,
+      liked: true,
+      likesCount: toCounter((refreshed as any)?.likes_count),
+    };
   }
+};
+
+export const sharePost = async (postIdRaw: any) => {
+  const postId = Number(postIdRaw);
+  if (!Number.isFinite(postId) || postId <= 0) {
+    return { found: false, sharesCount: 0 };
+  }
+
+  const post = await Post.findOne({
+    where: { id: postId, is_delete: false },
+    attributes: ["id", "shares_count"],
+  });
+  if (!post) {
+    return { found: false, sharesCount: 0 };
+  }
+
+  await Post.increment({ shares_count: 1 }, { where: { id: postId } });
+
+  const refreshed = await Post.findByPk(postId, {
+    attributes: ["shares_count"],
+  });
+
+  return {
+    found: true,
+    sharesCount: toCounter((refreshed as any)?.shares_count),
+  };
 };

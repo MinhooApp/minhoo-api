@@ -106,6 +106,7 @@ ReelView.belongsTo(Reel, { as: "reel", foreignKey: "reelId" });
 Comment.hasMany(Like, { as: "likes", foreignKey: "commentId" });
 Like.belongsTo(Comment, { as: "comment", foreignKey: "commentId" });
 
+
 //Association User with Category
 User.belongsToMany(Category, { through: "user_category" });
 Category.belongsToMany(User, { through: "user_category" });
@@ -248,6 +249,10 @@ Notification.belongsTo(User, { as: "interactor", foreignKey: "interactorId" });
 // Asociación Notification con Post
 Post.hasMany(Notification, { as: "notifications", foreignKey: "postId" });
 Notification.belongsTo(Post, { as: "post", foreignKey: "postId" });
+
+// Asociación Notification con Reel
+Reel.hasMany(Notification, { as: "notifications", foreignKey: "reelId" });
+Notification.belongsTo(Reel, { as: "reel", foreignKey: "reelId" });
 
 // Asociación Notification con Comment
 Comment.hasMany(Notification, { as: "notifications", foreignKey: "commentId" });

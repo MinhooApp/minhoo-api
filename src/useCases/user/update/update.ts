@@ -5,14 +5,8 @@ import {
   Response,
   formatResponse,
   repository,
-  followerRepo,
-  sendNotification,
 } from "../_module/module";
-import * as chatRepository from "../../../repository/chat/chat_repository";
-import {
-  emitChatsRefreshRealtime,
-  emitUserUpdatedRealtime,
-} from "../../../libs/helper/realtime_dispatch";
+import { emitProfileUpdatedRealtime } from "../_shared/profile_realtime";
 
 export const activeAlerts = async (req: Request, res: Response) => {
   try {
@@ -50,63 +44,12 @@ const isCooldownActive = (lastUpdated: Date | null) => {
   return diffDays < 180;
 };
 
-const toPositiveInt = (value: any): number | null => {
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed) || parsed <= 0) return null;
-  return Math.trunc(parsed);
-};
-
 const toText = (value: any): string | null => {
   if (value === undefined || value === null) return null;
   const normalized = String(value).trim();
   return normalized.length ? normalized : null;
 };
 
-const buildUserUpdatedRealtimePayload = (user: any, fallbackUserId: number) => {
-  const safeUser = user ?? {};
-  const resolvedUserId =
-    toPositiveInt((safeUser as any)?.id) ?? toPositiveInt(fallbackUserId) ?? 0;
-  const avatarUrl =
-    toText((safeUser as any)?.image_profil) ??
-    toText((safeUser as any)?.avatarUrl) ??
-    toText((safeUser as any)?.avatar_url);
-
-  return {
-    type: "user_updated" as const,
-    userId: resolvedUserId,
-    name: toText((safeUser as any)?.name),
-    lastName: toText((safeUser as any)?.last_name),
-    last_name: toText((safeUser as any)?.last_name),
-    username: toText((safeUser as any)?.username),
-    avatarUrl,
-    avatar_url: avatarUrl,
-    image_profil: avatarUrl,
-    updatedAt: new Date().toISOString(),
-  };
-};
-
-const emitProfileUpdatedRealtime = async (user: any, actorUserId: any) => {
-  const userId = toPositiveInt(actorUserId);
-  if (!userId) return;
-
-  try {
-    const relatedUserIds = await chatRepository.getRelatedUserIdsByUser(userId, {
-      includeSelf: true,
-    });
-    const targetUserIds =
-      Array.isArray(relatedUserIds) && relatedUserIds.length > 0
-        ? relatedUserIds
-        : [userId];
-    const payload = buildUserUpdatedRealtimePayload(user, userId);
-
-    emitUserUpdatedRealtime(payload, targetUserIds);
-    for (const targetUserId of targetUserIds) {
-      emitChatsRefreshRealtime(targetUserId);
-    }
-  } catch (error) {
-    console.error("[profile-realtime] failed to emit user update", error);
-  }
-};
 
 export const update_username = async (req: Request, res: Response) => {
   try {
@@ -160,7 +103,12 @@ export const update_username = async (req: Request, res: Response) => {
 
     const updated = await repository.updateUsername(req.userId, username);
     const refreshedUser = await repository.get(req.userId);
-    await emitProfileUpdatedRealtime(refreshedUser, req.userId);
+    await emitProfileUpdatedRealtime({
+      user: refreshedUser,
+      userId: req.userId,
+      includeRelatedUsers: true,
+      emitChatsRefresh: true,
+    });
     return formatResponse({
       res,
       success: true,
@@ -211,7 +159,12 @@ export const delete_profile_image = async (req: Request, res: Response) => {
 
     await repository.update(req.userId, { image_profil: PROFILE_DEFAULT });
     const updated = await repository.get(req.userId);
-    await emitProfileUpdatedRealtime(updated, req.userId);
+    await emitProfileUpdatedRealtime({
+      user: updated,
+      userId: req.userId,
+      includeRelatedUsers: true,
+      emitChatsRefresh: true,
+    });
 
     return formatResponse({
       res,
@@ -314,7 +267,12 @@ export const update_profile = async (req: Request, res: Response) => {
 
     await repository.update(req.userId, body);
     const user = await repository.get(req.userId);
-    await emitProfileUpdatedRealtime(user, req.userId);
+    await emitProfileUpdatedRealtime({
+      user,
+      userId: req.userId,
+      includeRelatedUsers: true,
+      emitChatsRefresh: true,
+    });
 
     return formatResponse({
       res,
@@ -349,7 +307,6 @@ export const update_visibility = async (req: Request, res: Response) => {
 
     await repository.update(req.userId, body);
     const user = await repository.get(req.userId);
-
     return formatResponse({
       res,
       success: true,
@@ -360,3 +317,4 @@ export const update_visibility = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
+

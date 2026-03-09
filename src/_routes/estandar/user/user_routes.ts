@@ -1,10 +1,7 @@
 import Router from "express";
+import User from "../../../_models/user/user";
 import TokenOptional from "../../../libs/middlewares/optional_jwt";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
-import fs from "fs/promises";
-
-const router = Router();
-
 import {
   get,
   gets,
@@ -30,9 +27,61 @@ import {
   profile_completion,
   update_visibility,
   delete_account,
-  // âœ… NUEVO (asegÃºrate de exportarlo desde tu controller)
   get_blocked_users,
 } from "../../../useCases/user/_controller/controller";
+import {
+  buildCanonicalShareUrl,
+  buildDisplayName,
+  buildShortText,
+  renderShareLandingPage,
+  resolveShareAssetUrl,
+  resolveStoreFallback,
+} from "../../../libs/share_page";
+
+const router = Router();
+
+const buildUserSharePage = async (req: any) => {
+  const userId = String(req.params.id ?? "").trim();
+  const deepLink = `minhoo://profile/${userId}`;
+  const fallbackUrl = resolveStoreFallback(req);
+  const canonicalUrl = buildCanonicalShareUrl(req);
+
+  const basePayload = {
+    pageTitle: "View this profile on Minhoo",
+    metaDescription: "Open this profile in Minhoo.",
+    metaImageUrl: null,
+    canonicalUrl,
+    deepLink,
+    fallbackUrl,
+    ogType: "profile",
+    headline: "A profile was shared with you",
+    bodyText: "To view this profile, you'll need the Minhoo app.",
+    subText: "Open the app if you already have it, or install it to continue.",
+  };
+
+  const numericUserId = Number(userId);
+  if (!Number.isFinite(numericUserId) || numericUserId <= 0) return basePayload;
+
+  const user = await User.findOne({
+    where: { id: numericUserId, available: true, is_deleted: false },
+    attributes: ["id", "name", "last_name", "username", "image_profil", "about"],
+  });
+
+  if (!user) return basePayload;
+
+  const displayName = buildDisplayName(user);
+  const username = String((user as any).username ?? "").trim();
+  const profileFallback = username
+    ? `Open ${displayName}'s Minhoo profile.`
+    : "Open this profile in Minhoo.";
+
+  return {
+    ...basePayload,
+    pageTitle: `View ${displayName} on Minhoo`,
+    metaDescription: buildShortText((user as any).about, profileFallback),
+    metaImageUrl: resolveShareAssetUrl(req, (user as any).image_profil ?? null),
+  };
+};
 
 router.get("/", TokenValidation(), gets);
 router.get("/search", TokenOptional(), search_profiles);
@@ -58,71 +107,22 @@ router.delete("/account", TokenValidation(), delete_account);
 router.delete("/follower/:followerId", TokenValidation(), remove_follower);
 router.post("/remove-follower", TokenValidation(), remove_follower);
 router.delete("/:id/follower", TokenValidation(), remove_follower);
-
-/**
- * âœ… NUEVO: LISTAR MIS BLOQUEADOS (para el front)
- * GET /user/blocked
- */
 router.get("/blocked", TokenValidation(), get_blocked_users);
-
 router.get("/share/:id", async (req, res) => {
-  const userId = req.params.id;
-
-  const userAgent = req.headers["user-agent"] || "";
-  const isAndroid = /android/i.test(userAgent);
-  const isIOS = /iphone|ipad|ipod/i.test(userAgent);
-
-  const deepLink = `minhoo://profile/${userId}`;
-  const fallbackAndroid =
-    "https://play.google.com/store/apps/details?id=aud.minhoo.io";
-  const fallbackIOS = "https://apps.apple.com/app/6748967902";
-  const fallback = isAndroid ? fallbackAndroid : fallbackIOS;
-
-  const filePath = "./src/public/html/share/share.html";
-
   try {
-    let html = await fs.readFile(filePath, "utf8");
-    html = html
-      .replace(/{{deepLink}}/g, deepLink)
-      .replace(/{{fallback}}/g, fallback);
-
-    res.setHeader("Content-Type", "text/html");
+    const html = await renderShareLandingPage(await buildUserSharePage(req));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(html);
   } catch (error) {
-    console.error("âŒ Error loading HTML file:", error);
+    console.error("❌ Error rendering profile share page:", error);
     res.status(500).send("Internal Server Error");
   }
 });
-
-/**
- * âœ… BLOCK / UNBLOCK (robusto para cualquier front)
- *
- * - Block:
- *   DELETE /user/block/:blocked_id
- *
- * - Unblock:
- *   PATCH  /user/unblock/:blocked_id
- *   DELETE /user/unblock/:blocked_id
- *
- * Nota: Mantengo tus rutas exactamente como las tienes, solo documentadas.
- */
 router.delete("/block/:blocked_id", TokenValidation(), block_user);
-
-// Clientes nuevos (PATCH)
 router.patch("/unblock/:blocked_id", TokenValidation(), unblock_user);
-
-// Clientes viejos (DELETE)
 router.delete("/unblock/:blocked_id", TokenValidation(), unblock_user);
-
-/**
- * âœ… LEGACY: /delete/:id/:flag
- * flag = 0 -> bloquear
- * flag = 1 -> desbloquear
- */
 router.delete("/delete/:id/:flag", TokenValidation(), (req: any, res: any) => {
   const { id, flag } = req.params;
-
-  // Normalizamos el nombre del parÃ¡metro para tus controladores actuales
   req.params.blocked_id = id;
 
   if (flag === "0") return block_user(req, res);

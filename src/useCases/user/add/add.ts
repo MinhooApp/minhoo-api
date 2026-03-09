@@ -6,6 +6,7 @@ import {
   followerRepo,
   sendNotification,
 } from "../_module/module";
+import { emitProfileUpdatedRealtime } from "../_shared/profile_realtime";
 
 export const follow = async (req: Request, res: Response) => {
   const { userId } = req.body;
@@ -22,6 +23,25 @@ export const follow = async (req: Request, res: Response) => {
         message: `${myData!.name} ${myData!.last_name} started following you`,
       });
     }
+
+    const targetCounts = await followerRepo.getCounts(Number(userId));
+    const viewerCounts = await followerRepo.getCounts(Number(req.userId));
+    const recipientIds = [Number(userId), Number(req.userId)];
+
+    await Promise.all([
+      emitProfileUpdatedRealtime({
+        userId,
+        counts: targetCounts,
+        targetUserIds: recipientIds,
+        action: "follow_counts_updated",
+      }),
+      emitProfileUpdatedRealtime({
+        userId: req.userId,
+        counts: viewerCounts,
+        targetUserIds: recipientIds,
+        action: "follow_counts_updated",
+      }),
+    ]);
 
     return formatResponse({
       res: res,
@@ -82,6 +102,22 @@ export const follow_by_id = async (req: Request, res: Response) => {
     const relationship = await followerRepo.getRelationship(req.userId, targetId);
     const targetCounts = await followerRepo.getCounts(targetId);
     const viewerCounts = await followerRepo.getCounts(req.userId);
+    const recipientIds = [targetId, Number(req.userId)];
+
+    await Promise.all([
+      emitProfileUpdatedRealtime({
+        userId: targetId,
+        counts: targetCounts,
+        targetUserIds: recipientIds,
+        action: "follow_counts_updated",
+      }),
+      emitProfileUpdatedRealtime({
+        userId: req.userId,
+        counts: viewerCounts,
+        targetUserIds: recipientIds,
+        action: "follow_counts_updated",
+      }),
+    ]);
 
     return formatResponse({
       res,

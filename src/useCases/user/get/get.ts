@@ -5,6 +5,57 @@ import {
   repository,
   followerRepo,
 } from "../_module/module";
+import * as savedRepository from "../../../repository/saved/saved_repository";
+
+const normalizeSavedCounter = (value: any) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  return Math.floor(n);
+};
+
+const setSavedFlagOnPost = (post: any, isSaved: boolean) => {
+  if (!post) return;
+  if (typeof (post as any).setDataValue === "function") {
+    (post as any).setDataValue("is_saved", isSaved);
+    return;
+  }
+  (post as any).is_saved = isSaved;
+};
+
+const setSavedCountOnPost = (post: any, count: number) => {
+  if (!post) return;
+  if (typeof (post as any).setDataValue === "function") {
+    (post as any).setDataValue("saved_count", count);
+    (post as any).setDataValue("savedCount", count);
+    return;
+  }
+  (post as any).saved_count = count;
+  (post as any).savedCount = count;
+};
+
+const attachSavedStateToUserPosts = async (viewerIdRaw: any, user: any) => {
+  const posts = Array.isArray((user as any)?.posts) ? (user as any).posts : [];
+  if (!posts.length) return;
+
+  const postIds = posts
+    .map((post: any) => Number(post?.id))
+    .filter((postId: number) => Number.isFinite(postId) && postId > 0);
+
+  posts.forEach((post: any) => {
+    setSavedCountOnPost(post, normalizeSavedCounter((post as any)?.saves_count));
+  });
+
+  const viewerId = Number(viewerIdRaw);
+  if (!Number.isFinite(viewerId) || viewerId <= 0) {
+    posts.forEach((post: any) => setSavedFlagOnPost(post, false));
+    return;
+  }
+
+  const savedSet = await savedRepository.getSavedPostIdSet(viewerId, postIds);
+  posts.forEach((post: any) => {
+    setSavedFlagOnPost(post, savedSet.has(Number(post?.id)));
+  });
+};
 
 const enrichUserFollowCounts = async (user: any) => {
   if (!user) return null;
@@ -112,6 +163,7 @@ export const get = async (req: Request, res: Response) => {
 
   try {
     const user = await repository.get(id, req.userId);
+    await attachSavedStateToUserPosts(req.userId, user);
     const counts = await enrichUserFollowCounts(user);
     const breakdown = {
       name: !!user?.name,
@@ -171,6 +223,7 @@ export const get = async (req: Request, res: Response) => {
 export const myData = async (req: Request, res: Response) => {
   try {
     const user = await repository.get(req.userId);
+    await attachSavedStateToUserPosts(req.userId, user);
     const counts = await enrichUserFollowCounts(user);
     const breakdown = {
       name: !!user?.name,

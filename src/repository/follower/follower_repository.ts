@@ -20,6 +20,17 @@ const buildBlockLiteral = (viewerId: number, columnSql: string) =>
         (ub.blocker_id = ${columnSql} AND ub.blocked_id = :viewerId)
     )
   `);
+
+const toPositiveInt = (value: any): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const safe = Math.trunc(parsed);
+  return safe > 0 ? safe : null;
+};
+
+const toPlain = (row: any) =>
+  row && typeof row.toJSON === "function" ? row.toJSON() : row;
+
 export const add = async (body: any) => {
   const follower = await Follower.create(body);
   return follower;
@@ -121,9 +132,20 @@ export const removeFollower = async (userId: any, followerId: any) => {
   return { removed: true, rowsAffected };
 };
 
+
+
+
+
+
+
+
 export const getRelationship = async (viewerId: number, targetId: number) => {
   if (!Number.isFinite(viewerId) || !Number.isFinite(targetId)) {
-    return { isFollowing: false, isFollowedBy: false, isMutual: false };
+    return {
+      isFollowing: false,
+      isFollowedBy: false,
+      isMutual: false,
+    };
   }
 
   const rows = await Follower.findAll({
@@ -143,7 +165,11 @@ export const getRelationship = async (viewerId: number, targetId: number) => {
     (r: any) => Number(r.userId) === Number(viewerId) && Number(r.followerId) === Number(targetId)
   );
 
-  return { isFollowing, isFollowedBy, isMutual: isFollowing && isFollowedBy };
+  return {
+    isFollowing,
+    isFollowedBy,
+    isMutual: isFollowing && isFollowedBy,
+  };
 };
 
 export const getCounts = async (userId: number) => {

@@ -5,6 +5,7 @@ import {
   repository,
   followerRepo,
 } from "../_module/module";
+import { emitProfileUpdatedRealtime } from "../_shared/profile_realtime";
 import bcryptjs from "bcryptjs";
 import sequelize from "../../../_db/connection";
 import User from "../../../_models/user/user";
@@ -127,12 +128,31 @@ export const remove_follower = async (req: Request, res: Response) => {
       });
     }
 
+    const ownerCounts = await followerRepo.getCounts(req.userId);
+    const followerCounts = await followerRepo.getCounts(followerId);
+    const recipientIds = [Number(req.userId), Number(followerId)];
+
+    await Promise.all([
+      emitProfileUpdatedRealtime({
+        userId: req.userId,
+        counts: ownerCounts,
+        targetUserIds: recipientIds,
+        action: "follow_counts_updated",
+      }),
+      emitProfileUpdatedRealtime({
+        userId: followerId,
+        counts: followerCounts,
+        targetUserIds: recipientIds,
+        action: "follow_counts_updated",
+      }),
+    ]);
+
     return formatResponse({
       res,
       success: true,
       body: {
         removed: true,
-        followersCount: (await followerRepo.getCounts(req.userId)).followersCount,
+        followersCount: ownerCounts.followersCount,
       },
       message: "removed",
     });
@@ -141,6 +161,7 @@ export const remove_follower = async (req: Request, res: Response) => {
     return formatResponse({ res, success: false, message: error });
   }
 };
+
 
 export const unfollow_by_id = async (req: Request, res: Response) => {
   const rawId = (req.params as any)?.id;
@@ -170,6 +191,22 @@ export const unfollow_by_id = async (req: Request, res: Response) => {
     const relationship = await followerRepo.getRelationship(req.userId, targetId);
     const targetCounts = await followerRepo.getCounts(targetId);
     const viewerCounts = await followerRepo.getCounts(req.userId);
+    const recipientIds = [targetId, Number(req.userId)];
+
+    await Promise.all([
+      emitProfileUpdatedRealtime({
+        userId: targetId,
+        counts: targetCounts,
+        targetUserIds: recipientIds,
+        action: "follow_counts_updated",
+      }),
+      emitProfileUpdatedRealtime({
+        userId: req.userId,
+        counts: viewerCounts,
+        targetUserIds: recipientIds,
+        action: "follow_counts_updated",
+      }),
+    ]);
 
     return formatResponse({
       res,
@@ -264,6 +301,7 @@ export const delete_account = async (req: Request, res: Response) => {
         { is_available: false },
         { where: { userId }, transaction: t }
       );
+
     });
 
     return formatResponse({

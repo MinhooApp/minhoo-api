@@ -1,6 +1,9 @@
 import sequelize from "../../_db/connection";
 import { DataTypes, Model, Optional } from "sequelize";
-import { TypeNotification } from "_models/notification/type_notification";
+import {
+  TypeNotification,
+  TypeNotificationEnum,
+} from "./type_notification";
 
 interface NotificationAttributes {
   id: number;
@@ -8,6 +11,7 @@ interface NotificationAttributes {
   interactorId: number;
   serviceId?: number;
   postId?: number;
+  reelId?: number;
   offerId?: number;
   type: TypeNotification;
   message: string;
@@ -33,6 +37,7 @@ class Notification
   public interactorId!: number;
   public serviceId?: number;
   public postId?: number;
+  public reelId?: number;
   public offerId?: number;
   public type!: TypeNotification;
   public message!: string;
@@ -69,19 +74,16 @@ Notification.init(
       type: DataTypes.INTEGER,
       allowNull: true,
     },
+    reelId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
     offerId: {
       type: DataTypes.INTEGER,
       allowNull: true,
     },
     type: {
-      type: DataTypes.ENUM(
-        "postulation",
-        "comment",
-        "offerAccepted",
-        "like",
-        "admin",
-        "message"
-      ),
+      type: DataTypes.ENUM(...TypeNotificationEnum),
       allowNull: false,
     },
     message: {
