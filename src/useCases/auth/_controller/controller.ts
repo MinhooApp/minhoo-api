@@ -2,6 +2,7 @@ import {
   login,
   logout,
   logoutDevice,
+  saveDeviceToken,
   changePass,
   validateSesion,
 } from "../login/login";
@@ -22,6 +23,7 @@ export {
   login,
   logout,
   logoutDevice,
+  saveDeviceToken,
   changePass,
   requestRestorePassword,
   validateRestorePassword,

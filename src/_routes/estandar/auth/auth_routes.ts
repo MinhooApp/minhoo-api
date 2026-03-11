@@ -7,6 +7,7 @@ import {
   login,
   logout,
   logoutDevice,
+  saveDeviceToken,
   requestRestorePassword,
   validateRestorePassword,
   restorePassword,
@@ -75,6 +76,7 @@ router.post("/image", signUp);
 router.post("/login", login);
 router.post("/logout", TokenValidation(), logout);
 router.post("/logout/device", logoutDevice);
+router.post("/device-token", TokenValidation(), saveDeviceToken);
 router.post("/session/logout", TokenValidation(), logout);
 router.post("/signout", TokenValidation(), logout);
 

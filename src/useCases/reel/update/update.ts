@@ -1,5 +1,11 @@
 import crypto from "crypto";
-import { Request, Response, formatResponse, repository } from "../_module/module";
+import {
+  Request,
+  Response,
+  formatResponse,
+  repository,
+  sendNotification,
+} from "../_module/module";
 
 const toSessionKey = (req: Request) => {
   const bodyKey = String((req.body as any)?.session_key ?? (req.body as any)?.sessionKey ?? "").trim();
@@ -20,6 +26,12 @@ const toSessionKey = (req: Request) => {
     .slice(0, 40);
 };
 
+const getReelOwnerId = (reel: any): number => {
+  const ownerId = Number(reel?.user?.id ?? reel?.userId ?? reel?.user_id ?? 0);
+  if (!Number.isFinite(ownerId) || ownerId <= 0) return 0;
+  return ownerId;
+};
+
 export const toggle_reel_star = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -32,6 +44,34 @@ export const toggle_reel_star = async (req: Request, res: Response) => {
         code: 404,
         message: "reel not found",
       });
+    }
+
+    const ownerUserId = getReelOwnerId((result as any)?.reel);
+    const actorUserId = Number(req.userId ?? 0);
+    const shouldNotifyOwner =
+      Boolean((result as any)?.starred) &&
+      ownerUserId > 0 &&
+      actorUserId > 0 &&
+      ownerUserId !== actorUserId;
+
+    if (shouldNotifyOwner) {
+      try {
+        await sendNotification({
+          userId: ownerUserId,
+          interactorId: actorUserId,
+          reelId: Number(id),
+          type: "like",
+          message: "Has starred your Orbit.",
+          deeplink: `orbit/${Number(id)}`,
+        });
+      } catch (notifyError) {
+        console.error(
+          `[reel_star] notification failed ownerId=${ownerUserId} interactorId=${actorUserId} reelId=${Number(
+            id
+          )}`,
+          notifyError
+        );
+      }
     }
 
     return formatResponse({
@@ -63,6 +103,34 @@ export const save_reel = async (req: Request, res: Response) => {
         code: 404,
         message: "reel not found",
       });
+    }
+
+    const ownerUserId = getReelOwnerId((result as any)?.reel);
+    const actorUserId = Number(req.userId ?? 0);
+    const shouldNotifyOwner =
+      Boolean((result as any)?.created) &&
+      ownerUserId > 0 &&
+      actorUserId > 0 &&
+      ownerUserId !== actorUserId;
+
+    if (shouldNotifyOwner) {
+      try {
+        await sendNotification({
+          userId: ownerUserId,
+          interactorId: actorUserId,
+          reelId: Number(id),
+          type: "like",
+          message: "Has saved your Orbit.",
+          deeplink: `orbit/${Number(id)}`,
+        });
+      } catch (notifyError) {
+        console.error(
+          `[reel_save] notification failed ownerId=${ownerUserId} interactorId=${actorUserId} reelId=${Number(
+            id
+          )}`,
+          notifyError
+        );
+      }
     }
 
     return formatResponse({

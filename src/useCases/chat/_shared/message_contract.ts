@@ -28,6 +28,14 @@ const normalizeVideoUid = (value: any): string | null => {
   return normalized;
 };
 
+const normalizeVideoStorageKey = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = decodeURIComponent(String(value).trim());
+  if (!normalized) return null;
+  if (!/^[a-zA-Z0-9._-]+$/.test(normalized)) return null;
+  return normalized;
+};
+
 const extractVideoUidFromMediaUrl = (rawUrl: string | null): string | null => {
   if (!rawUrl) return null;
 
@@ -49,8 +57,29 @@ const extractVideoUidFromMediaUrl = (rawUrl: string | null): string | null => {
   return null;
 };
 
+const extractVideoKeyFromMediaUrl = (rawUrl: string | null): string | null => {
+  if (!rawUrl) return null;
+
+  try {
+    const parsed = new URL(rawUrl, "http://local");
+    const keyFromQuery = normalizeVideoStorageKey(parsed.searchParams.get("key"));
+    if (keyFromQuery) return keyFromQuery;
+
+    const uidRaw = String(parsed.searchParams.get("uid") ?? "").trim();
+    if (uidRaw && !normalizeVideoUid(uidRaw)) {
+      return normalizeVideoStorageKey(uidRaw);
+    }
+  } catch {
+    return null;
+  }
+
+  return null;
+};
+
 const buildVideoDownloadPath = (uid: string) =>
   `/api/v1/media/video/download?uid=${encodeURIComponent(uid)}`;
+const buildR2VideoDownloadPath = (key: string) =>
+  `/api/v1/media/video/download?key=${encodeURIComponent(key)}`;
 
 const buildVideoThumbnailUrl = (uid: string) =>
   `https://videodelivery.net/${encodeURIComponent(uid)}/thumbnails/thumbnail.jpg?time=1s`;
@@ -89,8 +118,12 @@ const resolveVideoDownloadUrl = (message: any, mediaUrl: string | null): string 
   if (explicitDownloadUrl) return explicitDownloadUrl;
 
   const uid = extractVideoUidFromMediaUrl(mediaUrl);
-  if (!uid) return null;
-  return buildVideoDownloadPath(uid);
+  if (uid) return buildVideoDownloadPath(uid);
+
+  const key = extractVideoKeyFromMediaUrl(mediaUrl);
+  if (key) return buildR2VideoDownloadPath(key);
+
+  return null;
 };
 
 const resolveVideoThumbnailFields = (
@@ -206,6 +239,38 @@ const resolveContact = (message: any): Record<string, any> | null => {
   return null;
 };
 
+const resolveShare = (message: any): Record<string, any> | null => {
+  const messageType = toText((message as any)?.messageType)?.toLowerCase();
+  if (messageType !== "share") return null;
+
+  const fromShare = (message as any)?.share;
+  if (fromShare && typeof fromShare === "object" && !Array.isArray(fromShare)) {
+    return fromShare;
+  }
+
+  const metadata = (message as any)?.metadata;
+  if (!metadata) return null;
+
+  if (typeof metadata === "object" && !Array.isArray(metadata)) {
+    return metadata;
+  }
+
+  if (typeof metadata === "string") {
+    const trimmed = metadata.trim();
+    if (!trimmed) return null;
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return parsed;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+};
+
 const resolveSenderFields = (message: any) => {
   const sender = toPlain((message as any)?.sender);
   const senderId =
@@ -259,6 +324,7 @@ export type CanonicalChatMessage = {
   readAt: Date | string | null;
   replyToMessageId: number | null;
   contact: Record<string, any> | null;
+  share: Record<string, any> | null;
   senderName: string | null;
   senderUsername: string | null;
   senderAvatarUrl: string | null;
@@ -311,6 +377,7 @@ export const serializeMessageToCanonical = (
     readAt: toDateValue((message as any)?.readAt),
     replyToMessageId: toPositiveInt((message as any)?.replyToMessageId),
     contact: resolveContact(message),
+    share: resolveShare(message),
     senderName: senderFields.senderName,
     senderUsername: senderFields.senderUsername,
     senderAvatarUrl: senderFields.senderAvatarUrl,
@@ -396,6 +463,7 @@ export const serializeMessageToCanonical = (
       (message as any)?.metadata ??
       null,
     contact: canonical.contact,
+    share: canonical.share,
   };
 };
 

@@ -216,6 +216,13 @@ export const emitNotificationRealtime = (userId: number, payload: unknown) => {
   emitToUsers("notification", payload, [userId]);
 };
 
+export const emitNotificationDeletedRealtime = (userId: number, payload: unknown) => {
+  emitToUsers(`notification/${userId}`, payload, [userId]);
+  emitToUsers("notification", payload, [userId]);
+  emitToUsers(`notification/deleted/${userId}`, payload, [userId]);
+  emitToUsers("notification/deleted", payload, [userId]);
+};
+
 export const emitUserUpdatedRealtime = (
   payload: unknown,
   userIds?: Array<number | string | null | undefined>

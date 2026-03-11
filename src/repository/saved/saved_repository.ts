@@ -1,4 +1,4 @@
-import { Op } from "sequelize";
+import { Op, Sequelize } from "sequelize";
 import MediaPost from "../../_models/post/media_post";
 import Post from "../../_models/post/post";
 import SavedPost from "../../_models/post/saved_post";
@@ -13,6 +13,12 @@ const normalizeLimit = (value: any, fallback = 20, max = 50) => {
 const normalizePage = (value: any, fallback = 0) => {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return fallback;
+  return Math.floor(n);
+};
+
+const normalizeCounter = (value: any) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
   return Math.floor(n);
 };
 
@@ -63,7 +69,7 @@ const buildSavedPostsQuery = (videoOnly: boolean) => {
 export const getVisiblePost = async (postId: number) => {
   return Post.findOne({
     where: { id: postId, is_delete: false },
-    attributes: ["id", "userId", "is_delete"],
+    attributes: ["id", "userId", "is_delete", "saves_count", "likes_count"],
   });
 };
 
@@ -72,14 +78,46 @@ export const savePost = async (userId: number, postId: number) => {
     where: { userId, postId },
     defaults: { userId, postId },
   });
-  return { row, created };
+
+  if (created) {
+    await Post.increment({ saves_count: 1 }, { where: { id: postId } });
+  }
+
+  const refreshed = await Post.findByPk(postId, {
+    attributes: ["saves_count"],
+  });
+
+  return {
+    row,
+    created,
+    savesCount: normalizeCounter((refreshed as any)?.saves_count),
+  };
 };
 
 export const removeSavedPost = async (userId: number, postId: number) => {
   const deleted = await SavedPost.destroy({
     where: { userId, postId },
   });
-  return { removed: deleted > 0 };
+
+  if (deleted > 0) {
+    await Post.update(
+      {
+        saves_count: Sequelize.literal(
+          "GREATEST(COALESCE(saves_count, 0) - 1, 0)"
+        ),
+      },
+      { where: { id: postId } }
+    );
+  }
+
+  const refreshed = await Post.findByPk(postId, {
+    attributes: ["saves_count"],
+  });
+
+  return {
+    removed: deleted > 0,
+    savesCount: normalizeCounter((refreshed as any)?.saves_count),
+  };
 };
 
 export const getSavedPostIdSet = async (userId: number, postIds: number[]) => {
@@ -215,11 +253,9 @@ const listSaved = async ({
     .map((postId) => postById.get(postId))
     .filter(Boolean);
 
-  const countMap = await getSavedCountsMap(postIds);
   orderedPosts.forEach((post: any) => setSavedFlag(post, true));
   orderedPosts.forEach((post: any) => {
-    const postId = Number(post?.id);
-    setSavedCount(post, countMap.get(postId) ?? 0);
+    setSavedCount(post, normalizeCounter((post as any)?.saves_count));
   });
 
   return {

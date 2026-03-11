@@ -15,6 +15,7 @@ export const workerIncludes: Includeable[] = [
       "name",
       "email",
       "last_name",
+      "username",
       "image_profil",
       "verified",
     ],

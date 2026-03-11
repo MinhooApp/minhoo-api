@@ -5,6 +5,7 @@ import {
   reel_by_id,
   reel_comments,
   my_reels,
+  user_reels,
   reels_saved,
   reel_download,
 } from "../get/get";
@@ -25,6 +26,7 @@ export {
   reel_by_id,
   reel_comments,
   my_reels,
+  user_reels,
   reels_saved,
   reel_download,
   toggle_reel_star,

@@ -304,6 +304,33 @@ export const clearUuidIfMatch = async (id: number, uuid: string) => {
   return affected;
 };
 
+/* 🔹 Guarda/actualiza uuid push token para usuario autenticado */
+export const assignUuid = async (id: number, uuid: string) => {
+  const userId = Number(id);
+  const token = String(uuid ?? "").trim();
+  if (!Number.isFinite(userId) || userId <= 0 || token.length < 20) return 0;
+
+  // Un token de dispositivo solo debe pertenecer a una cuenta activa.
+  await User.update(
+    { uuid: null },
+    {
+      where: {
+        uuid: token,
+        id: { [Op.ne]: userId },
+      },
+    }
+  );
+
+  const [affected] = await User.update(
+    { uuid: token },
+    {
+      where: { id: userId },
+    }
+  );
+
+  return affected;
+};
+
 /* 🔹 Activa/desactiva alertas personales */
 export const activeAlerts = async (id: any) => {
   const userTemp = await User.findOne({

@@ -22,12 +22,22 @@ const IMAGE_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS = Math.max(
   100,
   Number(process.env.IMAGE_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS ?? 5000) || 5000
 );
+const VIDEO_PLAYBACK_REDIRECT_TTL_SECONDS = Math.max(
+  30,
+  Number(process.env.VIDEO_PLAYBACK_REDIRECT_TTL_SECONDS ?? 300) || 300
+);
+const VIDEO_PLAYBACK_REDIRECT_CACHE_TTL_MS = VIDEO_PLAYBACK_REDIRECT_TTL_SECONDS * 1000;
+const VIDEO_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS = Math.max(
+  100,
+  Number(process.env.VIDEO_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS ?? 5000) || 5000
+);
 
 const VIDEO_MAX_BYTES = 100 * 1024 * 1024;
 const VIDEO_MAX_DURATION_SECONDS = 60;
 const VIDEO_OUTPUT_RESOLUTION = "720p";
 const VIDEO_OUTPUT_CODEC = "H.264 MP4";
 const VIDEO_STREAMING = "HLS";
+const VIDEO_R2_STREAMING = "Progressive MP4";
 const CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS = Math.max(
   5000,
   Number(process.env.CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS ?? 20000) || 20000
@@ -100,6 +110,19 @@ const getMediaToken = () =>
       ""
   ).trim();
 
+
+const getStreamPlaybackBaseUrl = () => {
+  const raw = String(
+    process.env.CLOUDFLARE_STREAM_PLAYBACK_BASE_URL ??
+      process.env.CLOUDFLARE_STREAM_PLAYBACK_HOST ??
+      ""
+  )
+    .trim()
+    .replace(/\/+$/, "");
+  if (!raw) return null;
+  return /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+};
+
 const getImageVariant = () =>
   String(process.env.CLOUDFLARE_IMAGES_VARIANT ?? "public").trim() || "public";
 
@@ -170,6 +193,9 @@ const ensureCloudflareConfig = (kind: "images" | "media") => {
 
 const R2_REGION = "auto";
 const R2_SERVICE = "s3";
+const VIDEO_UPLOAD_TTL_SECONDS = 60 * 15;
+const VIDEO_PLAY_TTL_SECONDS = 60 * 10;
+const VIDEO_DOWNLOAD_TTL_SECONDS = 60 * 10;
 const AUDIO_UPLOAD_TTL_SECONDS = 60 * 15;
 const AUDIO_PLAY_TTL_SECONDS = 60 * 10;
 const DOCUMENT_UPLOAD_TTL_SECONDS = 60 * 15;
@@ -377,8 +403,29 @@ const normalizeObjectKey = (value: any): string | null => {
   if (!/^[a-zA-Z0-9._-]+$/.test(decoded)) return null;
   return decoded;
 };
+const normalizeVideoStorageKey = normalizeObjectKey;
 const normalizeAudioKey = normalizeObjectKey;
 const normalizeDocumentKey = normalizeObjectKey;
+
+const pickVideoExt = (contentType: string): string => {
+  const lower = contentType.toLowerCase();
+  if (lower.includes("quicktime")) return ".mov";
+  if (lower.includes("webm")) return ".webm";
+  if (lower.includes("ogg")) return ".ogv";
+  if (lower.includes("x-matroska") || lower.includes("mkv")) return ".mkv";
+  return ".mp4";
+};
+
+const buildChatVideoObjectKey = (userId: any, contentType: string) => {
+  const uid = Number(userId);
+  const safeUid = Number.isFinite(uid) && uid > 0 ? uid : 0;
+  const prefix = String(process.env.CLOUDFLARE_R2_VIDEO_PREFIX ?? "chat-video")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "");
+  const ext = pickVideoExt(contentType);
+  const rand = randomBytes(8).toString("hex");
+  return `${prefix}-${safeUid}-${Date.now()}-${rand}${ext}`;
+};
 
 const pickAudioExt = (contentType: string): string => {
   const lower = contentType.toLowerCase();
@@ -439,6 +486,14 @@ const buildVideoPlaybackPath = (uid: string) =>
   `/api/v1/media/video/play?uid=${encodeURIComponent(uid)}`;
 const buildVideoDownloadPath = (uid: string) =>
   `/api/v1/media/video/download?uid=${encodeURIComponent(uid)}`;
+const buildR2VideoPlaybackPath = (key: string) =>
+  `/api/v1/media/video/play?key=${encodeURIComponent(key)}`;
+const buildR2VideoDownloadPath = (key: string) =>
+  `/api/v1/media/video/download?key=${encodeURIComponent(key)}`;
+
+const normalizeMediaContext = (value: any): string => String(value ?? "feed").trim().toLowerCase();
+const shouldUseR2ForVideoContext = (context: string) =>
+  context === "chat" || context === "chat-video";
 
 const normalizeImageId = (value: any): string | null => {
   if (value === undefined || value === null) return null;
@@ -456,15 +511,15 @@ const normalizeVideoUid = (value: any): string | null => {
   return decoded.toLowerCase();
 };
 
-type ImagePlaybackRedirectCacheEntry = {
+type PlaybackRedirectCacheEntry = {
   url: string;
   expiresAt: number;
 };
 
-const imagePlaybackRedirectCache = new Map<string, ImagePlaybackRedirectCacheEntry>();
+const imagePlaybackRedirectCache = new Map<string, PlaybackRedirectCacheEntry>();
+const videoPlaybackRedirectCache = new Map<string, PlaybackRedirectCacheEntry>();
 
-const setImagePlaybackCacheHeaders = (res: Response) => {
-  const maxAge = IMAGE_PLAYBACK_REDIRECT_TTL_SECONDS;
+const setPlaybackCacheHeaders = (res: Response, maxAge: number) => {
   const staleWhileRevalidate = Math.min(60, Math.max(10, Math.floor(maxAge / 3)));
   res.set(
     "Cache-Control",
@@ -472,37 +527,82 @@ const setImagePlaybackCacheHeaders = (res: Response) => {
   );
 };
 
-const getCachedImagePlaybackRedirect = (imageId: string): string | null => {
-  const cached = imagePlaybackRedirectCache.get(imageId);
+const setImagePlaybackCacheHeaders = (res: Response) => {
+  setPlaybackCacheHeaders(res, IMAGE_PLAYBACK_REDIRECT_TTL_SECONDS);
+};
+
+const setVideoPlaybackCacheHeaders = (res: Response) => {
+  setPlaybackCacheHeaders(res, VIDEO_PLAYBACK_REDIRECT_TTL_SECONDS);
+};
+
+const getCachedPlaybackRedirect = (
+  cache: Map<string, PlaybackRedirectCacheEntry>,
+  key: string
+): string | null => {
+  const cached = cache.get(key);
   if (!cached) return null;
   if (cached.expiresAt <= Date.now()) {
-    imagePlaybackRedirectCache.delete(imageId);
+    cache.delete(key);
     return null;
   }
   return cached.url;
 };
 
-const saveImagePlaybackRedirect = (imageId: string, url: string) => {
+const getCachedImagePlaybackRedirect = (imageId: string): string | null => {
+  return getCachedPlaybackRedirect(imagePlaybackRedirectCache, imageId);
+};
+
+const getCachedVideoPlaybackRedirect = (uid: string): string | null => {
+  return getCachedPlaybackRedirect(videoPlaybackRedirectCache, uid);
+};
+
+const savePlaybackRedirect = (
+  cache: Map<string, PlaybackRedirectCacheEntry>,
+  key: string,
+  url: string,
+  maxItems: number,
+  ttlMs: number
+) => {
   const now = Date.now();
 
-  if (imagePlaybackRedirectCache.size >= IMAGE_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS) {
-    for (const [key, value] of imagePlaybackRedirectCache.entries()) {
+  if (cache.size >= maxItems) {
+    for (const [entryKey, value] of cache.entries()) {
       if (value.expiresAt <= now) {
-        imagePlaybackRedirectCache.delete(key);
+        cache.delete(entryKey);
       }
     }
   }
 
-  while (imagePlaybackRedirectCache.size >= IMAGE_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS) {
-    const oldestKey = imagePlaybackRedirectCache.keys().next().value;
+  while (cache.size >= maxItems) {
+    const oldestKey = cache.keys().next().value;
     if (!oldestKey) break;
-    imagePlaybackRedirectCache.delete(oldestKey);
+    cache.delete(oldestKey);
   }
 
-  imagePlaybackRedirectCache.set(imageId, {
+  cache.set(key, {
     url,
-    expiresAt: now + IMAGE_PLAYBACK_REDIRECT_CACHE_TTL_MS,
+    expiresAt: now + ttlMs,
   });
+};
+
+const saveImagePlaybackRedirect = (imageId: string, url: string) => {
+  savePlaybackRedirect(
+    imagePlaybackRedirectCache,
+    imageId,
+    url,
+    IMAGE_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS,
+    IMAGE_PLAYBACK_REDIRECT_CACHE_TTL_MS
+  );
+};
+
+const saveVideoPlaybackRedirect = (uid: string, url: string) => {
+  savePlaybackRedirect(
+    videoPlaybackRedirectCache,
+    uid,
+    url,
+    VIDEO_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS,
+    VIDEO_PLAYBACK_REDIRECT_CACHE_TTL_MS
+  );
 };
 
 type StreamDownloadInfo = {
@@ -793,16 +893,6 @@ export const delete_image_asset = async (req: Request, res: Response) => {
 };
 
 export const create_video_direct_upload = async (req: Request, res: Response) => {
-  const config = ensureCloudflareConfig("media");
-  if (!config.ok) {
-    return formatResponse({
-      res,
-      success: false,
-      code: 500,
-      message: config.message,
-    });
-  }
-
   const fileSize = parsePositiveInt((req.body as any)?.file_size_bytes);
   if (fileSize !== null && fileSize > VIDEO_MAX_BYTES) {
     return formatResponse({
@@ -810,6 +900,84 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
       success: false,
       code: 400,
       message: `video exceeds ${VIDEO_MAX_BYTES} bytes`,
+    });
+  }
+
+  const context = normalizeMediaContext((req.body as any)?.context);
+  const useR2 = shouldUseR2ForVideoContext(context);
+  const contentType = String((req.body as any)?.content_type ?? "").trim().toLowerCase();
+  if (contentType && !contentType.startsWith("video/")) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "content_type must be a video/* mime type",
+    });
+  }
+
+  if (useR2) {
+    const config = ensureR2Config();
+    if (!config.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 500,
+        message: config.message,
+      });
+    }
+
+    try {
+      const safeContentType = contentType || "video/mp4";
+      const objectKey =
+        normalizeVideoStorageKey((req.body as any)?.object_key) ??
+        buildChatVideoObjectKey(req.userId, safeContentType);
+      const uploadUrl = buildR2PresignedUrl({
+        method: "PUT",
+        bucket: config.bucket,
+        endpoint: config.endpoint,
+        key: objectKey,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        expiresSeconds: VIDEO_UPLOAD_TTL_SECONDS,
+      });
+
+      return formatResponse({
+        res,
+        success: true,
+        body: {
+          uid: objectKey,
+          key: objectKey,
+          object_key: objectKey,
+          content_type: safeContentType,
+          upload_url: uploadUrl,
+          upload_expires_at: null,
+          playback_url: buildR2VideoPlaybackPath(objectKey),
+          download_url: buildR2VideoDownloadPath(objectKey),
+          delivery: "r2",
+          context,
+          rules: {
+            ...mediaRules.video,
+            streaming: VIDEO_R2_STREAMING,
+          },
+        },
+      });
+    } catch (error: any) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 502,
+        message: error?.message ?? "video direct upload init failed",
+      });
+    }
+  }
+
+  const config = ensureCloudflareConfig("media");
+  if (!config.ok) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 500,
+      message: config.message,
     });
   }
 
@@ -821,7 +989,7 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
       meta: {
         userId: String(req.userId ?? ""),
         app: "minhoo",
-        context: String((req.body as any)?.context ?? "feed"),
+        context,
       },
     };
 
@@ -877,6 +1045,151 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
 };
 
 export const confirm_video_upload = async (req: Request, res: Response) => {
+  const context = normalizeMediaContext((req.body as any)?.context);
+  const requestedKey =
+    normalizeVideoStorageKey((req.body as any)?.object_key) ??
+    normalizeVideoStorageKey((req.body as any)?.key);
+  const requestedUid = normalizeVideoUid((req.body as any)?.uid);
+  const requestedKeyFromUid = !requestedUid
+    ? normalizeVideoStorageKey((req.body as any)?.uid)
+    : null;
+  const useR2 =
+    shouldUseR2ForVideoContext(context) ||
+    (!requestedUid && Boolean(requestedKey || requestedKeyFromUid));
+
+  if (useR2) {
+    const config = ensureR2Config();
+    if (!config.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 500,
+        message: config.message,
+      });
+    }
+
+    const objectKey = requestedKey ?? requestedKeyFromUid;
+    if (!objectKey) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "object_key (or uid) is required",
+      });
+    }
+
+    try {
+      const headUrl = buildR2PresignedUrl({
+        method: "HEAD",
+        bucket: config.bucket,
+        endpoint: config.endpoint,
+        key: objectKey,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        expiresSeconds: 60,
+      });
+      const headResponse = await fetch(headUrl, { method: "HEAD" });
+      if (!headResponse.ok) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 409,
+          message: `video object is not available yet (${headResponse.status})`,
+        });
+      }
+
+      const sizeBytesRaw = Number(headResponse.headers.get("content-length") ?? 0);
+      const sizeBytes =
+        Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : null;
+      if (sizeBytes !== null && sizeBytes > VIDEO_MAX_BYTES) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 409,
+          message: `video exceeds ${VIDEO_MAX_BYTES} bytes`,
+        });
+      }
+
+      const mime = String(headResponse.headers.get("content-type") ?? "").trim() || null;
+      if (mime && !mime.toLowerCase().startsWith("video/")) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 409,
+          message: "uploaded object is not a video/* mime type",
+        });
+      }
+
+      const durationMsInput = parsePositiveInt(
+        (req.body as any)?.media_duration_ms ?? (req.body as any)?.mediaDurationMs
+      );
+      const durationSecondsInput = parsePositiveInt(
+        (req.body as any)?.duration_seconds ?? (req.body as any)?.durationSeconds
+      );
+      const durationMs =
+        durationMsInput ??
+        (durationSecondsInput !== null ? Math.floor(durationSecondsInput * 1000) : null);
+      if (durationMs !== null && durationMs > VIDEO_MAX_DURATION_SECONDS * 1000) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 409,
+          message: `video duration exceeds ${VIDEO_MAX_DURATION_SECONDS}s`,
+        });
+      }
+
+      const playbackPath = buildR2VideoPlaybackPath(objectKey);
+      const downloadPath = buildR2VideoDownloadPath(objectKey);
+      const thumbnailUrl = String(
+        (req.body as any)?.thumbnail_url ?? (req.body as any)?.thumbnailUrl ?? ""
+      ).trim() || null;
+
+      return formatResponse({
+        res,
+        success: true,
+        body: {
+          video: {
+            uid: objectKey,
+            key: objectKey,
+            object_key: objectKey,
+            delivery: "r2",
+            ready: true,
+            duration_seconds: durationMs !== null ? Math.floor(durationMs / 1000) : null,
+            hls: null,
+            playback_url: playbackPath,
+            download_url: downloadPath,
+            thumbnail: thumbnailUrl,
+            status: { state: "ready" },
+            upload_state: "ready",
+          },
+          should_retry_upload: false,
+          retry_after_ms: 0,
+          recommended_chat_payload: {
+            message_type: "video",
+            media_url: playbackPath,
+            media_mime: mime && mime.startsWith("video/") ? mime : "video/mp4",
+            media_duration_ms: durationMs,
+            media_size_bytes: sizeBytes,
+            metadata: {
+              delivery: "r2",
+              thumbnail_url: thumbnailUrl,
+            },
+          },
+          recommended_download: {
+            media_url: downloadPath,
+          },
+        },
+      });
+    } catch (error: any) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 502,
+        message: error?.message ?? "video confirm failed",
+      });
+    }
+  }
+
   const config = ensureCloudflareConfig("media");
   if (!config.ok) {
     return formatResponse({
@@ -887,7 +1200,7 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
     });
   }
 
-  const uid = normalizeVideoUid((req.body as any)?.uid);
+  const uid = requestedUid;
   if (!uid) {
     return formatResponse({
       res,
@@ -966,15 +1279,24 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
       });
     }
 
+    const directPlaybackBaseUrl = getStreamPlaybackBaseUrl();
     const hls =
       result?.playback?.hls ??
-      (uid ? `https://videodelivery.net/${uid}/manifest/video.m3u8` : null);
+      (uid && directPlaybackBaseUrl
+        ? `${directPlaybackBaseUrl}/${uid}/manifest/video.m3u8`
+        : uid
+        ? `https://videodelivery.net/${uid}/manifest/video.m3u8`
+        : null);
     const thumbnail =
       result?.thumbnail ??
       (uid ? `https://videodelivery.net/${uid}/thumbnails/thumbnail.jpg?time=1s` : null);
 
     const playbackPath = buildVideoPlaybackPath(uid);
     const downloadPath = buildVideoDownloadPath(uid);
+
+    if (readyToStream && hls) {
+      saveVideoPlaybackRedirect(uid, hls);
+    }
 
     return formatResponse({
       res,
@@ -985,7 +1307,8 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
           ready: readyToStream,
           duration_seconds: Number.isFinite(duration) ? duration : null,
           hls,
-          playback_url: playbackPath,
+          playback_url: hls,
+          proxy_playback_url: playbackPath,
           download_url: downloadPath,
           thumbnail,
           status: result.status ?? null,
@@ -1027,6 +1350,68 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
 };
 
 export const delete_video_asset = async (req: Request, res: Response) => {
+  const rawUid = String((req.params as any)?.uid ?? (req.query as any)?.uid ?? "").trim();
+  const explicitKey =
+    normalizeVideoStorageKey((req.query as any)?.key) ??
+    normalizeVideoStorageKey((req.params as any)?.key);
+  const uid = normalizeVideoUid(rawUid);
+  const objectKey = explicitKey ?? (!uid ? normalizeVideoStorageKey(rawUid) : null);
+
+  if (!uid && !objectKey) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "uid (or key) is required",
+    });
+  }
+
+  if (objectKey) {
+    const config = ensureR2Config();
+    if (!config.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 500,
+        message: config.message,
+      });
+    }
+
+    try {
+      const deleteUrl = buildR2PresignedUrl({
+        method: "DELETE",
+        bucket: config.bucket,
+        endpoint: config.endpoint,
+        key: objectKey,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        expiresSeconds: 60,
+      });
+      const deleteResponse = await fetch(deleteUrl, { method: "DELETE" });
+      if (!deleteResponse.ok) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 502,
+          message: `video delete failed (${deleteResponse.status})`,
+        });
+      }
+
+      return formatResponse({
+        res,
+        success: true,
+        body: { deleted: true, uid: objectKey, key: objectKey },
+      });
+    } catch (error: any) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 502,
+        message: error?.message ?? "video delete failed",
+      });
+    }
+  }
+
   const config = ensureCloudflareConfig("media");
   if (!config.ok) {
     return formatResponse({
@@ -1034,16 +1419,6 @@ export const delete_video_asset = async (req: Request, res: Response) => {
       success: false,
       code: 500,
       message: config.message,
-    });
-  }
-
-  const uid = String((req.params as any)?.uid ?? "").trim();
-  if (!uid) {
-    return formatResponse({
-      res,
-      success: false,
-      code: 400,
-      message: "uid is required",
     });
   }
 
@@ -1590,6 +1965,52 @@ export const image_playback = async (req: Request, res: Response) => {
 };
 
 export const video_playback = async (req: Request, res: Response) => {
+  const explicitKey =
+    normalizeVideoStorageKey((req.query as any)?.key) ??
+    normalizeVideoStorageKey((req.params as any)?.key);
+  const rawUid = String((req.query as any)?.uid ?? (req.params as any)?.uid ?? "").trim();
+  const uid = normalizeVideoUid(rawUid);
+  const objectKey = explicitKey ?? (!uid ? normalizeVideoStorageKey(rawUid) : null);
+
+  if (objectKey) {
+    const config = ensureR2Config();
+    if (!config.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 500,
+        message: config.message,
+      });
+    }
+
+    try {
+      const getUrl = buildR2PresignedUrl({
+        method: "GET",
+        bucket: config.bucket,
+        endpoint: config.endpoint,
+        key: objectKey,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        expiresSeconds: VIDEO_PLAY_TTL_SECONDS,
+      });
+
+      return res.redirect(302, getUrl);
+    } catch (error: any) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 502,
+        message: error?.message ?? "video playback redirect failed",
+      });
+    }
+  }
+
+  const cachedRedirectTarget = uid ? getCachedVideoPlaybackRedirect(uid) : null;
+  if (cachedRedirectTarget) {
+    setVideoPlaybackCacheHeaders(res);
+    return res.redirect(302, cachedRedirectTarget);
+  }
+
   const config = ensureCloudflareConfig("media");
   if (!config.ok) {
     return formatResponse({
@@ -1600,9 +2021,6 @@ export const video_playback = async (req: Request, res: Response) => {
     });
   }
 
-  const uid =
-    normalizeVideoUid((req.query as any)?.uid) ??
-    normalizeVideoUid((req.params as any)?.uid);
   if (!uid) {
     return formatResponse({
       res,
@@ -1637,6 +2055,8 @@ export const video_playback = async (req: Request, res: Response) => {
       });
     }
 
+    saveVideoPlaybackRedirect(uid, hls);
+    setVideoPlaybackCacheHeaders(res);
     return res.redirect(302, hls);
   } catch (error: any) {
     return formatResponse({
@@ -1649,6 +2069,46 @@ export const video_playback = async (req: Request, res: Response) => {
 };
 
 export const video_download = async (req: Request, res: Response) => {
+  const explicitKey =
+    normalizeVideoStorageKey((req.query as any)?.key) ??
+    normalizeVideoStorageKey((req.params as any)?.key);
+  const rawUid = String((req.query as any)?.uid ?? (req.params as any)?.uid ?? "").trim();
+  const uid = normalizeVideoUid(rawUid);
+  const objectKey = explicitKey ?? (!uid ? normalizeVideoStorageKey(rawUid) : null);
+
+  if (objectKey) {
+    const config = ensureR2Config();
+    if (!config.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 500,
+        message: config.message,
+      });
+    }
+
+    try {
+      const getUrl = buildR2PresignedUrl({
+        method: "GET",
+        bucket: config.bucket,
+        endpoint: config.endpoint,
+        key: objectKey,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        expiresSeconds: VIDEO_DOWNLOAD_TTL_SECONDS,
+      });
+
+      return res.redirect(302, getUrl);
+    } catch (error: any) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 502,
+        message: error?.message ?? "video download redirect failed",
+      });
+    }
+  }
+
   const config = ensureCloudflareConfig("media");
   if (!config.ok) {
     return formatResponse({
@@ -1659,9 +2119,6 @@ export const video_download = async (req: Request, res: Response) => {
     });
   }
 
-  const uid =
-    normalizeVideoUid((req.query as any)?.uid) ??
-    normalizeVideoUid((req.params as any)?.uid);
   if (!uid) {
     return formatResponse({
       res,

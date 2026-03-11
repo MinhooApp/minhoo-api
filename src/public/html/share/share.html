@@ -3,7 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Minhoo - View Message</title>
+    <title>{{pageTitle}}</title>
+    <meta name="description" content="{{metaDescription}}" />
+    <link rel="canonical" href="{{canonicalUrl}}" />
+    <meta name="robots" content="noindex,nofollow" />
+    <meta property="og:site_name" content="Minhoo" />
+    <meta property="og:type" content="{{ogType}}" />
+    <meta property="og:title" content="{{ogTitle}}" />
+    <meta property="og:description" content="{{ogDescription}}" />
+    <meta property="og:url" content="{{canonicalUrl}}" />
+    <meta property="og:image" content="{{ogImage}}" />
+    <meta property="og:image:alt" content="{{ogImageAlt}}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="{{ogTitle}}" />
+    <meta name="twitter:description" content="{{ogDescription}}" />
+    <meta name="twitter:image" content="{{ogImage}}" />
     <style>
       @import url("https://fonts.googleapis.com/css2?family=Poppins:ital,wght@0,100;0,200;0,300;0,400;0,500;0,600;0,700;0,800;0,900;1,100;1,200;1,300;1,400;1,500;1,600;1,700;1,800;1,900&display=swap");
 
@@ -4828,21 +4842,16 @@
           </clipPath>
         </defs>
       </svg>
-      <p class="title">Check out what was shared with you!</p>
-      <p class="">To view this profile or post, you’ll need the Minhoo app.</p>
-      <span style="display: block; margin-bottom: 40px"
-        >👉 Download the app to get started — or open it if you already have
-        it.</span
-      >
-      <button id="openApp" class="button primary">Open the app</button>
-      <button id="downloadApp" class="button secondary">
-        Download the app
-      </button>
+      <p class="title">{{headline}}</p>
+      <p class="">{{bodyText}}</p>
+      <span style="display: block; margin-bottom: 40px">{{subText}}</span>
+      <button id="openApp" class="button primary">{{openAppLabel}}</button>
+      <button id="downloadApp" class="button secondary">{{downloadAppLabel}}</button>
     </div>
 
     <script>
-      const deepLink = "{{deepLink}}";
-      const fallback = "{{fallback}}";
+      const deepLink = {{deepLinkJson}};
+      const fallback = {{fallbackJson}};
 
       document.getElementById("openApp")?.addEventListener("click", () => {
         window.location.href = deepLink;

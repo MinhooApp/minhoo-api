@@ -42,6 +42,56 @@ function ensureCurrencyOnList(list: any[]) {
   return list.map(ensureCurrencyOnService);
 }
 
+function mirrorUsername(target: any, source: any) {
+  if (!target || !source) return target;
+
+  const username =
+    source.username ??
+    source.user_name ??
+    target.username ??
+    target.user_name ??
+    null;
+
+  if (!username) return target;
+
+  target.username = username;
+  target.user_name = username;
+  return target;
+}
+
+function normalizeApplicantUsernamesOnService(service: any) {
+  if (!service || typeof service !== "object") return service;
+
+  if (service.client) {
+    mirrorUsername(service.client, service.client);
+  }
+
+  if (Array.isArray(service.offers)) {
+    service.offers = service.offers.map((offer: any) => {
+      if (offer?.offerer && offer?.offerer?.personal_data) {
+        mirrorUsername(offer.offerer, offer.offerer.personal_data);
+      }
+      return offer;
+    });
+  }
+
+  if (Array.isArray(service.workers)) {
+    service.workers = service.workers.map((worker: any) => {
+      if (worker?.personal_data) {
+        mirrorUsername(worker, worker.personal_data);
+      }
+      return worker;
+    });
+  }
+
+  return service;
+}
+
+function normalizeApplicantUsernamesOnList(list: any[]) {
+  if (!Array.isArray(list)) return list;
+  return list.map(normalizeApplicantUsernamesOnService);
+}
+
 /**
  * ✅ Orden “más nuevo primero” para cualquier lista de servicios.
  * Intenta con varios campos comunes. Si no existen, cae a id DESC.
@@ -76,6 +126,7 @@ export const gets = async (req: Request, res: Response) => {
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
+    services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -95,6 +146,7 @@ export const myonGoing = async (req: Request, res: Response) => {
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
+    services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -114,6 +166,7 @@ export const onGoing = async (req: Request, res: Response) => {
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
+    services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -138,6 +191,7 @@ export const getsOnGoing = async (req: Request, res: Response) => {
     const safe = toPlain(servicesRaw) as any;
 
     let rows = ensureCurrencyOnList(safe.rows ?? []);
+    rows = normalizeApplicantUsernamesOnList(rows);
     rows = sortNewestFirst(rows);
 
     return formatResponse({
@@ -166,6 +220,7 @@ export const onGoingWorkers = async (req: Request, res: Response) => {
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
+    services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -185,6 +240,7 @@ export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
+    services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -204,6 +260,7 @@ export const historyWorkers = async (req: Request, res: Response) => {
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
+    services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -224,6 +281,7 @@ export const get = async (req: Request, res: Response) => {
     let service = toPlain(serviceRaw);
 
     service = ensureCurrencyOnService(service);
+    service = normalizeApplicantUsernamesOnService(service);
 
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error: any) {
@@ -245,6 +303,7 @@ export const myHistory = async (req: Request, res: Response) => {
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
+    services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res, success: true, body: { services } });
@@ -264,6 +323,7 @@ export const myHistoryCanceled = async (req: Request, res: Response) => {
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
+    services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -283,6 +343,7 @@ export const history = async (req: Request, res: Response) => {
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
+    services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });

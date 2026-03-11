@@ -1,54 +1,100 @@
-import path from "path";
-import fs from "fs/promises";
 import Router from "express";
+import Post from "../../../_models/post/post";
+import MediaPost from "../../../_models/post/media_post";
+import User from "../../../_models/user/user";
+import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
+import TokenOptional from "../../../libs/middlewares/optional_jwt";
 import {
   add,
   get,
   gets,
   getsSuggested,
   like,
+  share,
   deletePost,
   deletePostAdmin,
 } from "../../../useCases/post/_controller/controller";
-import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
-import TokenOptional from "../../../libs/middlewares/optional_jwt";
+import {
+  buildCanonicalShareUrl,
+  buildDisplayName,
+  buildShortText,
+  renderShareLandingPage,
+  resolveShareAssetUrl,
+  resolveStoreFallback,
+} from "../../../libs/share_page";
+
 const router = Router();
+
+const buildPostSharePage = async (req: any) => {
+  const postId = String(req.params.id ?? "").trim();
+  const deepLink = `minhoo://post/${postId}`;
+  const fallbackUrl = resolveStoreFallback(req);
+  const canonicalUrl = buildCanonicalShareUrl(req);
+
+  const basePayload = {
+    pageTitle: "View this post on Minhoo",
+    metaDescription: "Open this post in Minhoo.",
+    metaImageUrl: null,
+    canonicalUrl,
+    deepLink,
+    fallbackUrl,
+    ogType: "article",
+    headline: "A post was shared with you",
+    bodyText: "To view this post, you'll need the Minhoo app.",
+    subText: "Open the app if you already have it, or install it to continue.",
+  };
+
+  const numericPostId = Number(postId);
+  if (!Number.isFinite(numericPostId) || numericPostId <= 0) return basePayload;
+
+  const post = await Post.findOne({
+    where: { id: numericPostId, is_delete: false },
+    attributes: ["id", "post", "userId"],
+    include: [
+      {
+        model: User,
+        as: "user",
+        attributes: ["id", "name", "last_name", "username", "image_profil"],
+        required: false,
+      },
+    ],
+  });
+
+  if (!post) return basePayload;
+
+  const media = await MediaPost.findOne({
+    where: { postId: numericPostId },
+    attributes: ["id", "url", "is_img"],
+    order: [["id", "ASC"]],
+  });
+
+  const authorName = buildDisplayName((post as any).user);
+  return {
+    ...basePayload,
+    pageTitle: `${authorName} shared a post on Minhoo`,
+    metaDescription: buildShortText((post as any).post, "Open this post in Minhoo."),
+    metaImageUrl: resolveShareAssetUrl(
+      req,
+      (media as any)?.url ?? (post as any)?.user?.image_profil ?? null
+    ),
+  };
+};
+
 router.post("/", TokenValidation(), add);
-//router.get("/", gets);
 router.get("/", TokenOptional(), gets);
 router.get("/suggested", TokenOptional(), getsSuggested);
 router.put("/like/:id", TokenValidation(), like);
+router.post("/:id/share", TokenValidation(), share);
 router.get("/:id", TokenOptional(), get);
 router.delete("/admin/:id", TokenValidation([8088]), deletePostAdmin);
 router.delete("/:id", TokenValidation(), deletePost);
 router.get("/share/:id", async (req, res) => {
-  const postId = req.params.id;
-
-  const userAgent = req.headers["user-agent"] || "";
-
-  const isAndroid = /android/i.test(userAgent);
-  const isIOS = /iphone|ipad|ipod/i.test(userAgent);
-
-  const deepLink = `minhoo://post/${postId}`;
-  const fallbackAndroid =
-    "https://play.google.com/store/apps/details?id=aud.minhoo.io";
-  const fallbackIOS = "https://apps.apple.com/app/6748967902";
-  const fallback = isAndroid ? fallbackAndroid : fallbackIOS;
-
-  // Ajusta esta ruta si tu archivo está en otra ubicación
-  const filePath = "./src/public/html/share/share.html";
-
   try {
-    let html = await fs.readFile(filePath, "utf8");
-
-    html = html
-      .replace(/{{deepLink}}/g, deepLink)
-      .replace(/{{fallback}}/g, fallback);
-
-    res.setHeader("Content-Type", "text/html");
+    const html = await renderShareLandingPage(await buildPostSharePage(req));
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(html);
   } catch (error) {
-    console.error("❌ Error al leer el archivo HTML:", error);
+    console.error("❌ Error rendering post share page:", error);
     res.status(500).send("Error interno del servidor");
   }
 });

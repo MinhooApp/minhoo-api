@@ -14,7 +14,8 @@ class Message extends Model {
     | "image"
     | "video"
     | "document"
-    | "contact";
+    | "contact"
+    | "share";
   public mediaUrl!: string | null;
   public mediaMime!: string | null;
   public mediaDurationMs!: number | null;
@@ -57,7 +58,8 @@ Message.init(
         "image",
         "video",
         "document",
-        "contact"
+        "contact",
+        "share"
       ),
       allowNull: false,
       defaultValue: "text",

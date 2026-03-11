@@ -1,4 +1,10 @@
-import { Request, Response, formatResponse, repository } from "../_module/module";
+import {
+  Request,
+  Response,
+  formatResponse,
+  repository,
+  sendNotification,
+} from "../_module/module";
 
 const parsePostId = (raw: any): number | null => {
   const postId = Number(raw);
@@ -29,7 +35,41 @@ export const save_post = async (req: Request, res: Response) => {
     }
 
     const result = await repository.savePost(req.userId, postId);
-    const saveCount = await repository.countByPostId(postId);
+    const saveCount = Number((result as any)?.savesCount ?? 0);
+
+    const shouldNotifyOwner =
+      Boolean(result.created) && Number(post.userId) !== Number(req.userId);
+
+    console.log(
+      `[saved_post] userId=${req.userId} postId=${postId} created=${Boolean(
+        result.created
+      )} ownerId=${Number(post.userId)} notify=${shouldNotifyOwner}`
+    );
+
+    if (shouldNotifyOwner) {
+      try {
+        await sendNotification({
+          postId: Number(post.id),
+          userId: Number(post.userId),
+          interactorId: req.userId,
+          type: "like",
+          message: "Has saved your post.",
+        });
+        console.log(
+          `[saved_post] notification sent ownerId=${Number(
+            post.userId
+          )} interactorId=${req.userId} postId=${postId}`
+        );
+      } catch (notifyError) {
+        console.error(
+          `[saved_post] notification failed ownerId=${Number(
+            post.userId
+          )} interactorId=${req.userId} postId=${postId}`,
+          notifyError
+        );
+      }
+    }
+
     return formatResponse({
       res,
       success: true,

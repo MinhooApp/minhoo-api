@@ -15,7 +15,7 @@ export const offerInclude: Includeable[] = [
       {
         model: User,
         as: "personal_data",
-        attributes: ["id", "email", "name", "last_name", "image_profil"],
+        attributes: ["id", "email", "name", "last_name", "username", "image_profil"],
       },
       {
         model: Category,

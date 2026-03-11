@@ -25,12 +25,25 @@ type ChatMessageType =
   | "image"
   | "video"
   | "document"
-  | "contact";
+  | "contact"
+  | "share";
 
 type ContactMetadata = {
   user_id: number;
   name: string;
   avatar: string | null;
+};
+
+type ShareEntityType = "orbit_post" | "orbit_video" | "orbit_reel";
+
+type ShareMetadata = {
+  entity_type: ShareEntityType;
+  entity_id: number;
+  orbit_id: number | null;
+  title: string | null;
+  subtitle: string | null;
+  thumbnail_url: string | null;
+  preview_media_url: string | null;
 };
 
 export type MessagePayload = {
@@ -79,6 +92,21 @@ const resolveAvatarUrl = (rawValue: string): string | null => {
   const remote = normalizeRemoteHttpUrl(rawValue);
   if (remote) return remote;
   if (rawValue.startsWith("/api/v1/media/image/play")) return rawValue;
+  return null;
+};
+
+const resolveShareThumbnailUrl = (rawValue: string): string | null => {
+  const remote = normalizeRemoteHttpUrl(rawValue);
+  if (remote) return remote;
+  if (rawValue.startsWith("/api/v1/media/image/play")) return rawValue;
+  return null;
+};
+
+const resolveSharePreviewMediaUrl = (rawValue: string): string | null => {
+  const remote = normalizeRemoteHttpUrl(rawValue);
+  if (remote) return remote;
+  if (rawValue.startsWith("/api/v1/media/image/play")) return rawValue;
+  if (rawValue.startsWith("/api/v1/media/video/play")) return rawValue;
   return null;
 };
 
@@ -163,6 +191,119 @@ const parseContactMetadata = (value: any): ContactMetadata | undefined => {
   };
 };
 
+const normalizeShareEntityType = (value: any): ShareEntityType | null => {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (
+    normalized === "orbit_post" ||
+    normalized === "orbit_video" ||
+    normalized === "orbit_reel"
+  ) {
+    return normalized;
+  }
+  return null;
+};
+
+const normalizeShareText = (
+  value: any,
+  maxLength: number
+): string | null | undefined => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim().replace(/\s+/g, " ");
+  if (!normalized) return null;
+  if (normalized.length > maxLength) return undefined;
+  return normalized;
+};
+
+const parseShareMetadata = (value: any): ShareMetadata | undefined => {
+  if (value == null || value === "") return undefined;
+
+  let source = value;
+  if (typeof source === "string") {
+    const trimmed = source.trim();
+    if (!trimmed) return undefined;
+    try {
+      source = JSON.parse(trimmed);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return undefined;
+  }
+
+  const entityType = normalizeShareEntityType(
+    (source as any)?.entity_type ??
+      (source as any)?.entityType ??
+      (source as any)?.content_type ??
+      (source as any)?.contentType ??
+      (source as any)?.type
+  );
+  const entityId =
+    toPositiveInt((source as any)?.entity_id) ??
+    toPositiveInt((source as any)?.entityId) ??
+    toPositiveInt((source as any)?.content_id) ??
+    toPositiveInt((source as any)?.contentId) ??
+    toPositiveInt((source as any)?.id);
+
+  if (!entityType || !entityId) return undefined;
+
+  const orbitId =
+    toPositiveInt((source as any)?.orbit_id) ??
+    toPositiveInt((source as any)?.orbitId) ??
+    null;
+
+  const title = normalizeShareText(
+    (source as any)?.title ?? (source as any)?.name,
+    120
+  );
+  if (title === undefined) return undefined;
+
+  const subtitle = normalizeShareText(
+    (source as any)?.subtitle ??
+      (source as any)?.description ??
+      (source as any)?.caption ??
+      (source as any)?.text,
+    220
+  );
+  if (subtitle === undefined) return undefined;
+
+  const thumbnailRaw = String(
+    (source as any)?.thumbnail_url ??
+      (source as any)?.thumbnailUrl ??
+      (source as any)?.thumbnail ??
+      ""
+  ).trim();
+  const thumbnailUrl = thumbnailRaw
+    ? resolveShareThumbnailUrl(thumbnailRaw)
+    : null;
+  if (thumbnailRaw && !thumbnailUrl) return undefined;
+
+  const previewMediaRaw = String(
+    (source as any)?.preview_media_url ??
+      (source as any)?.previewMediaUrl ??
+      (source as any)?.media_url ??
+      (source as any)?.mediaUrl ??
+      ""
+  ).trim();
+  const previewMediaUrl = previewMediaRaw
+    ? resolveSharePreviewMediaUrl(previewMediaRaw)
+    : null;
+  if (previewMediaRaw && !previewMediaUrl) return undefined;
+
+  return {
+    entity_type: entityType,
+    entity_id: entityId,
+    orbit_id: orbitId,
+    title: title ?? null,
+    subtitle: subtitle ?? null,
+    thumbnail_url: thumbnailUrl ?? null,
+    preview_media_url: previewMediaUrl ?? null,
+  };
+};
+
 const parseMessageType = (value: any): ChatMessageType | null => {
   const normalized = String(value ?? "text").trim().toLowerCase();
   if (!normalized) return "text";
@@ -172,7 +313,8 @@ const parseMessageType = (value: any): ChatMessageType | null => {
     normalized === "image" ||
     normalized === "video" ||
     normalized === "document" ||
-    normalized === "contact"
+    normalized === "contact" ||
+    normalized === "share"
   ) {
     return normalized as ChatMessageType;
   }
@@ -180,7 +322,7 @@ const parseMessageType = (value: any): ChatMessageType | null => {
 };
 
 const resolveChatMediaUrl = async (
-  messageType: Exclude<ChatMessageType, "text">,
+  messageType: Exclude<ChatMessageType, "text" | "contact" | "share">,
   rawValue: string
 ): Promise<string | null> => {
   if (messageType === "image") {
@@ -236,6 +378,24 @@ const parseWaveform = (value: any): number[] | null | undefined => {
   return out.length ? out : null;
 };
 
+const parseMediaMetadata = (value: any): Record<string, any> | null => {
+  if (value === undefined || value === null || value === "") return null;
+
+  let source = value;
+  if (typeof source === "string") {
+    const trimmed = source.trim();
+    if (!trimmed) return null;
+    try {
+      source = JSON.parse(trimmed);
+    } catch {
+      return null;
+    }
+  }
+
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  return source as Record<string, any>;
+};
+
 export const buildMessagePayload = async (
   body: any
 ): Promise<
@@ -247,7 +407,8 @@ export const buildMessagePayload = async (
   if (!messageType) {
     return {
       ok: false,
-      error: "message_type must be text, voice, image, video, document or contact",
+      error:
+        "message_type must be text, voice, image, video, document, contact or share",
     };
   }
 
@@ -300,6 +461,39 @@ export const buildMessagePayload = async (
         metadata: contact,
       },
       notificationPreview: "👤 Profile",
+    };
+  }
+
+  if (messageType === "share") {
+    const share =
+      parseShareMetadata((body as any)?.share) ??
+      parseShareMetadata((body as any)?.share_payload) ??
+      parseShareMetadata((body as any)?.sharePayload) ??
+      parseShareMetadata((body as any)?.metadata);
+
+    if (!share) {
+      return {
+        ok: false,
+        error: "share.entity_type and share.entity_id are required",
+      };
+    }
+
+    const previewTitle = (share.title ?? share.subtitle ?? "").trim();
+    return {
+      ok: true,
+      payload: {
+        messageType: "share",
+        text: text || null,
+        mediaUrl: null,
+        mediaMime: null,
+        mediaDurationMs: null,
+        mediaSizeBytes: null,
+        waveform: null,
+        metadata: share,
+      },
+      notificationPreview: previewTitle
+        ? `🔗 ${previewTitle}`
+        : "🔗 Orbit publication",
     };
   }
 
@@ -417,13 +611,17 @@ export const buildMessagePayload = async (
     return { ok: false, error: "waveform must be an array of numbers" };
   }
 
-  const notificationPreviewByType: Record<Exclude<ChatMessageType, "text">, string> = {
+  const notificationPreviewByType: Record<
+    Exclude<ChatMessageType, "text" | "contact" | "share">,
+    string
+  > = {
     voice: "🎤 Voice message",
     image: "📷 Photo",
     video: "🎬 Video",
     document: "📄 Document",
-    contact: "👤 Contact",
   };
+
+  const mediaMetadata = parseMediaMetadata((body as any)?.metadata);
 
   return {
     ok: true,
@@ -435,7 +633,7 @@ export const buildMessagePayload = async (
       mediaDurationMs,
       mediaSizeBytes,
       waveform,
-      metadata: null,
+      metadata: mediaMetadata,
     },
     notificationPreview: notificationPreviewByType[messageType],
   };

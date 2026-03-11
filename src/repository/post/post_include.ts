@@ -23,6 +23,7 @@ const userInclude: Includeable = {
     "id",
     "name",
     "last_name",
+    "username",
     "email",
     "image_profil",
     "verified",
@@ -56,7 +57,7 @@ export const postInclude: Includeable[] = [
       {
         model: User,
         as: "commentator",
-        attributes: ["id", "name", "last_name", "image_profil"],
+        attributes: ["id", "name", "last_name", "username", "image_profil"],
         required: false,
       },
     ],

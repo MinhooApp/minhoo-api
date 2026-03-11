@@ -31,7 +31,8 @@ export type GroupMessagePayload = {
     | "image"
     | "video"
     | "document"
-    | "contact";
+    | "contact"
+    | "share";
   text: string | null;
   mediaUrl: string | null;
   mediaMime: string | null;

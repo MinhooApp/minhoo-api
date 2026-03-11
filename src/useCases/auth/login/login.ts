@@ -356,4 +356,38 @@ export const logoutDevice = async (req: Request, res: Response) => {
     return formatResponse({ res, success: false, message: error });
   }
 };
+
+export const saveDeviceToken = async (req: Request, res: Response) => {
+  try {
+    const userId = Number((req as any).userId ?? 0);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Invalid session user.",
+      });
+    }
+
+    const token = extractDeviceToken(req);
+    if (!token || token.length < 20) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "Invalid device token.",
+      });
+    }
+
+    await uRepository.assignUuid(userId, token);
+
+    return formatResponse({
+      res,
+      success: true,
+      body: { saved: true },
+    });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res, success: false, message: error });
+  }
+};
 //

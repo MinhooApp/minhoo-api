@@ -9,8 +9,19 @@
     "build": "tsc",
     "start:prod": "node ./dist/app.js",
     "test:chat:realtime": "node ./scripts/test-chat-realtime.js",
-    "create-migration": "sequelize-cli migration:generate --name",
-    "migration": "npx sequelize-cli db:migrate"
+    "test:profile:follow-realtime": "node ./scripts/test-profile-follow-realtime.js",
+    "test:profile:saved-state": "node ./scripts/test-profile-saved-state.js",
+    "test:profile:orbits-route": "node ./scripts/test-profile-orbits-route.js",
+    "test:orbit:flags": "node ./scripts/test-orbit-flags-persistence.js",
+    "test:orbit:comment-notification": "node ./scripts/test-orbit-comment-notification.js",
+    "test:orbit:comment-realtime": "node ./scripts/test-orbit-comment-realtime.js",
+    "test:orbit:ring24h": "node ./scripts/test-orbit-ring-24h.js",
+    "test:orbit:find:no-consecutive-creator": "node ./scripts/test-orbit-find-no-consecutive-creator.js",
+    "test:reel:realtime-delete": "node ./scripts/test-reel-realtime-delete.js",
+    "ops:cloudflare:stream:audit": "node ./scripts/audit-cloudflare-stream.js",
+    "ops:cloudflare:stream:clean": "node ./scripts/audit-cloudflare-stream.js --delete",
+    "create-migration": "node ./node_modules/sequelize-cli/lib/sequelize migration:generate --config config/config.js --name",
+    "migration": "node ./node_modules/sequelize-cli/lib/sequelize db:migrate --config config/config.js"
   },
   "repository": {
     "type": "git",

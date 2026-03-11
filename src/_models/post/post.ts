@@ -45,6 +45,21 @@ Post.init(
                 },
             },
         },
+        likes_count: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            defaultValue: 0,
+        },
+        saves_count: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            defaultValue: 0,
+        },
+        shares_count: {
+            type: DataTypes.INTEGER,
+            allowNull: false,
+            defaultValue: 0,
+        },
 
         is_delete: {
             type: DataTypes.BOOLEAN,

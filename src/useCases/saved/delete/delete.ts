@@ -19,7 +19,7 @@ export const unsave_post = async (req: Request, res: Response) => {
     }
 
     const result = await repository.removeSavedPost(req.userId, postId);
-    const saveCount = await repository.countByPostId(postId);
+    const saveCount = Number((result as any)?.savesCount ?? 0);
     return formatResponse({
       res,
       success: true,

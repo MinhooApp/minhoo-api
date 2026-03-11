@@ -25,7 +25,8 @@ export type ChatMessageType =
   | "image"
   | "video"
   | "document"
-  | "contact";
+  | "contact"
+  | "share";
 
 export type ChatMessagePayload = {
   text?: string | null;
@@ -1285,6 +1286,7 @@ const normalizeAssetId = (value: unknown): string | null => {
 };
 
 const normalizeR2ObjectKey = normalizeAssetId;
+const normalizeVideoStorageKey = normalizeR2ObjectKey;
 const normalizeAudioKey = normalizeR2ObjectKey;
 const normalizeDocumentKey = normalizeR2ObjectKey;
 
@@ -1365,6 +1367,27 @@ const extractVideoUidFromMediaUrl = (mediaUrl: unknown): string | null => {
 
     const match = parts.find((entry) => STREAM_UID_REGEX.test(entry));
     return match ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const extractVideoKeyFromMediaUrl = (mediaUrl: unknown): string | null => {
+  if (typeof mediaUrl !== "string") return null;
+  const raw = mediaUrl.trim();
+  if (!raw) return null;
+
+  try {
+    const url = new URL(raw, "http://local");
+    if (!url.pathname.includes("/api/v1/media/video/play")) return null;
+
+    const keyFromKey = normalizeVideoStorageKey(url.searchParams.get("key"));
+    if (keyFromKey) return keyFromKey;
+
+    const uidValue = String(url.searchParams.get("uid") ?? "").trim();
+    if (!uidValue) return null;
+    if (normalizeVideoUid(uidValue)) return null;
+    return normalizeVideoStorageKey(uidValue);
   } catch {
     return null;
   }
@@ -1567,6 +1590,7 @@ const cleanupPrunedMediaObjects = async (
   const documentKeys = new Set<string>();
   const imageIds = new Set<string>();
   const videoUids = new Set<string>();
+  const videoKeys = new Set<string>();
 
   for (const row of prunedRows) {
     const type = String(row?.messageType ?? "").toLowerCase();
@@ -1586,16 +1610,26 @@ const cleanupPrunedMediaObjects = async (
       continue;
     }
     if (type === "video") {
+      const key = extractVideoKeyFromMediaUrl(row?.mediaUrl);
+      if (key) videoKeys.add(key);
       const uid = extractVideoUidFromMediaUrl(row?.mediaUrl);
       if (uid) videoUids.add(uid);
     }
   }
 
-  if (!voiceKeys.size && !documentKeys.size && !imageIds.size && !videoUids.size) return;
+  if (
+    !voiceKeys.size &&
+    !documentKeys.size &&
+    !imageIds.size &&
+    !videoUids.size &&
+    !videoKeys.size
+  ) {
+    return;
+  }
 
   const r2Cfg = resolveR2DeleteConfig();
-  if ((voiceKeys.size || documentKeys.size) && !r2Cfg) {
-    console.warn("[chat-prune] R2 config missing; skipped audio/document cleanup.");
+  if ((voiceKeys.size || documentKeys.size || videoKeys.size) && !r2Cfg) {
+    console.warn("[chat-prune] R2 config missing; skipped audio/document/video cleanup.");
   }
 
   const imageCfg = resolveCloudflareImagesDeleteConfig();
@@ -1687,6 +1721,29 @@ const cleanupPrunedMediaObjects = async (
     } catch (error: any) {
       console.warn(
         `[chat-prune] failed to remove Cloudflare video uid=${uid}:`,
+        error?.message ?? error
+      );
+    }
+  }
+
+  for (const key of videoKeys) {
+    try {
+      const refs = await Message.count({
+        where: {
+          messageType: "video",
+          [Op.or]: [
+            { mediaUrl: { [Op.like]: `%key=${escapeLikeValue(key)}%` } },
+            { mediaUrl: { [Op.like]: `%uid=${escapeLikeValue(key)}%` } },
+          ],
+        },
+      });
+
+      if (refs > 0) continue;
+      if (!r2Cfg) continue;
+      await deleteObjectFromR2(r2Cfg, key);
+    } catch (error: any) {
+      console.warn(
+        `[chat-prune] failed to remove R2 video object key=${key}:`,
         error?.message ?? error
       );
     }

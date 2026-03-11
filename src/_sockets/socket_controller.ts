@@ -58,6 +58,204 @@ const ALLOW_SOCKET_USERID_FALLBACK =
   String(process.env.ALLOW_SOCKET_USERID_FALLBACK ?? "1").trim() !== "0";
 const SESSION_VALIDATION_TTL_MS = 15 * 1000;
 
+function normalizePositiveInt(value: any): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+function toPlainRecord(value: any): any {
+  if (!value) return value;
+  if (typeof value.toJSON === "function") return value.toJSON();
+  if (value.dataValues && typeof value.dataValues === "object") {
+    return { ...value.dataValues };
+  }
+  return value;
+}
+
+function normalizeDateIso(value: any): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
+function normalizeReelDeletedPayload(payload: any) {
+  const source = payload ?? {};
+  const reelId = normalizePositiveInt(
+    source.reelId ?? source.reel_id ?? source.id ?? source.reel?.id
+  );
+  const ownerId = normalizePositiveInt(
+    source.ownerId ?? source.owner_id ?? source.userId ?? source.user_id ?? source.reel?.userId
+  );
+  const deletedAt = String(
+    source.deletedAt ?? source.deleted_at ?? new Date().toISOString()
+  );
+
+  return {
+    action: "deleted",
+    reelId,
+    reel_id: reelId,
+    ownerId,
+    owner_id: ownerId,
+    deletedAt,
+    deleted_at: deletedAt,
+  };
+}
+
+function normalizeReelCommentedPayload(payload: any) {
+  const source = payload ?? {};
+  const commentSource = toPlainRecord(source.comment ?? null);
+  const reelId = normalizePositiveInt(
+    source.reelId ?? source.reel_id ?? source.id ?? source.reel?.id
+  );
+  const ownerId = normalizePositiveInt(
+    source.ownerId ?? source.owner_id ?? source.userId ?? source.user_id ?? source.reel?.userId
+  );
+  const actorUserId = normalizePositiveInt(
+    source.actorUserId ??
+      source.actor_user_id ??
+      source.interactorId ??
+      source.interactor_id ??
+      source.comment?.userId
+  );
+  const commentsCount = normalizePositiveInt(
+    source.commentsCount ?? source.comments_count ?? source.reel?.comments_count
+  );
+  const commentCreatedAt = normalizeDateIso(
+    source.commentCreatedAt ?? source.comment_created_at ?? commentSource?.createdAt ?? commentSource?.created_at
+  );
+  const commentUpdatedAt = normalizeDateIso(commentSource?.updatedAt ?? commentSource?.updated_at);
+
+  const normalizedComment = commentSource
+    ? {
+        ...commentSource,
+        createdAt: commentCreatedAt,
+        created_at: commentCreatedAt,
+        updatedAt: commentUpdatedAt,
+        updated_at: commentUpdatedAt,
+      }
+    : null;
+
+  return {
+    action: "commented",
+    reelId,
+    reel_id: reelId,
+    ownerId,
+    owner_id: ownerId,
+    actorUserId,
+    actor_user_id: actorUserId,
+    commentsCount,
+    comments_count: commentsCount,
+    comment: normalizedComment,
+    commentCreatedAt: commentCreatedAt,
+    comment_created_at: commentCreatedAt,
+  };
+}
+
+function normalizePostCommentedPayload(payload: any) {
+  const source = payload ?? {};
+  const commentSource = toPlainRecord(source.comment ?? null);
+  const postId = normalizePositiveInt(
+    source.postId ?? source.post_id ?? source.id ?? source.post?.id
+  );
+  const ownerId = normalizePositiveInt(
+    source.ownerId ?? source.owner_id ?? source.userId ?? source.user_id ?? source.post?.userId
+  );
+  const actorUserId = normalizePositiveInt(
+    source.actorUserId ??
+      source.actor_user_id ??
+      source.interactorId ??
+      source.interactor_id ??
+      source.comment?.userId
+  );
+  const commentsCount = normalizePositiveInt(
+    source.commentsCount ?? source.comments_count ?? source.post?.comments_count
+  );
+  const commentCreatedAt = normalizeDateIso(
+    source.commentCreatedAt ?? source.comment_created_at ?? commentSource?.createdAt ?? commentSource?.created_at ?? commentSource?.created_date
+  );
+  const commentUpdatedAt = normalizeDateIso(commentSource?.updatedAt ?? commentSource?.updated_at);
+
+  const normalizedComment = commentSource
+    ? {
+        ...commentSource,
+        createdAt: commentCreatedAt,
+        created_at: commentCreatedAt,
+        created_date: commentCreatedAt,
+        updatedAt: commentUpdatedAt,
+        updated_at: commentUpdatedAt,
+      }
+    : null;
+
+  return {
+    action: "commented",
+    postId,
+    post_id: postId,
+    ownerId,
+    owner_id: ownerId,
+    actorUserId,
+    actor_user_id: actorUserId,
+    commentsCount,
+    comments_count: commentsCount,
+    comment: normalizedComment,
+    commentCreatedAt,
+    comment_created_at: commentCreatedAt,
+  };
+}
+
+function normalizePostCommentDeletedPayload(payload: any) {
+  const source = payload ?? {};
+  const postId = normalizePositiveInt(
+    source.postId ?? source.post_id ?? source.id ?? source.post?.id
+  );
+  const commentId = normalizePositiveInt(
+    source.commentId ?? source.comment_id ?? source.comment?.id
+  );
+  const commentsCount = normalizePositiveInt(
+    source.commentsCount ?? source.comments_count ?? source.post?.comments_count
+  );
+  const deletedAt = normalizeDateIso(source.deletedAt ?? source.deleted_at ?? new Date().toISOString());
+
+  return {
+    action: "comment_deleted",
+    removed: source.removed !== false,
+    postId,
+    post_id: postId,
+    commentId,
+    comment_id: commentId,
+    commentsCount,
+    comments_count: commentsCount,
+    deletedAt,
+    deleted_at: deletedAt,
+  };
+}
+
+function normalizeReelCommentDeletedPayload(payload: any) {
+  const source = payload ?? {};
+  const reelId = normalizePositiveInt(
+    source.reelId ?? source.reel_id ?? source.id ?? source.reel?.id
+  );
+  const commentId = normalizePositiveInt(
+    source.commentId ?? source.comment_id ?? source.comment?.id
+  );
+  const commentsCount = normalizePositiveInt(
+    source.commentsCount ?? source.comments_count ?? source.reel?.comments_count
+  );
+  const deletedAt = normalizeDateIso(source.deletedAt ?? source.deleted_at ?? new Date().toISOString());
+
+  return {
+    action: "comment_deleted",
+    removed: source.removed !== false,
+    reelId,
+    reel_id: reelId,
+    commentId,
+    comment_id: commentId,
+    commentsCount,
+    comments_count: commentsCount,
+    deletedAt,
+    deleted_at: deletedAt,
+  };
+}
+
 function leaveOtherChatRooms(socket: Socket, keepChatId: number) {
   const keepRoom = chatRoom(keepChatId);
   for (const room of socket.rooms) {
@@ -650,6 +848,52 @@ export const socketController = (socket: Socket) => {
   ////////////////////// Offer ///////////////////////////
   socket.on("offers", (offer: Offer) => {
     socket.broadcast.emit(`offers/${offer.serviceId}`, offer);
+  });
+
+  ////////////////////// Post comments ///////////////////////////
+  socket.on("post/commented", (payload: any) => {
+    const normalized = normalizePostCommentedPayload(payload);
+    if (!normalized.postId) return;
+
+    socket.broadcast.emit("post/commented", normalized);
+  });
+
+  socket.on("post/comment-deleted", (payload: any) => {
+    const normalized = normalizePostCommentDeletedPayload(payload);
+    if (!normalized.postId) return;
+
+    socket.broadcast.emit("post/comment-deleted", normalized);
+  });
+
+  ////////////////////// Reel / Orbit ///////////////////////////
+  socket.on("reel/deleted", (payload: any) => {
+    const normalized = normalizeReelDeletedPayload(payload);
+    if (!normalized.reelId) return;
+
+    socket.broadcast.emit("reel/deleted", normalized);
+    socket.broadcast.emit("orbit/deleted", normalized);
+    socket.broadcast.emit("find/reel/deleted", normalized);
+    socket.broadcast.emit("reels", normalized);
+  });
+
+  socket.on("reel/commented", (payload: any) => {
+    const normalized = normalizeReelCommentedPayload(payload);
+    if (!normalized.reelId) return;
+
+    socket.broadcast.emit("reel/commented", normalized);
+    socket.broadcast.emit("orbit/commented", normalized);
+    socket.broadcast.emit("find/reel/commented", normalized);
+    socket.broadcast.emit("reels", normalized);
+  });
+
+  socket.on("reel/comment-deleted", (payload: any) => {
+    const normalized = normalizeReelCommentDeletedPayload(payload);
+    if (!normalized.reelId) return;
+
+    socket.broadcast.emit("reel/comment-deleted", normalized);
+    socket.broadcast.emit("orbit/comment-deleted", normalized);
+    socket.broadcast.emit("find/reel/comment-deleted", normalized);
+    socket.broadcast.emit("reels", normalized);
   });
 
   //////////////////////////// Chat //////////////////////

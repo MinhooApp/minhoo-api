@@ -1,6 +1,7 @@
 import User from "../../_models/user/user";
 import Like from "../../_models/like/like";
 import Post from "../../_models/post/post";
+import Reel from "../../_models/reel/reel";
 import Offer from "../../_models/offer/offer";
 import Worker from "../../_models/worker/worker";
 import Message from "../../_models/chat/message";
@@ -43,7 +44,7 @@ export const myNotifications = async (id: number) => {
       {
         model: User,
         as: "interactor",
-        attributes: ["id", "name", "last_name", "image_profil"],
+        attributes: ["id", "name", "last_name", "username", "image_profil"],
       },
       {
         model: Service,
@@ -79,6 +80,11 @@ export const myNotifications = async (id: number) => {
             separate: true,
           },
         ],
+      },
+      {
+        model: Reel,
+        as: "reel",
+        attributes: ["id", "userId", "thumbnail_url", "description", "video_uid", "stream_url"],
       },
       {
         model: Like,
@@ -126,4 +132,69 @@ export const readAllByUser = async (userId: number) => {
     { where: { userId: userId } }
   );
   return notification;
+};
+
+
+type CommentNotificationLookupParams = {
+  commentId: number;
+  postId?: number;
+  reelId?: number;
+};
+
+export const findActiveCommentNotifications = async (
+  params: CommentNotificationLookupParams
+) => {
+  const commentId = Number(params.commentId ?? 0);
+  if (!Number.isFinite(commentId) || commentId <= 0) return [];
+
+  const where: any = {
+    type: "comment",
+    deleted: false,
+    commentId,
+  };
+
+  const postId = Number(params.postId ?? 0);
+  if (Number.isFinite(postId) && postId > 0) {
+    where.postId = postId;
+  }
+
+  const reelId = Number(params.reelId ?? 0);
+  if (Number.isFinite(reelId) && reelId > 0) {
+    where.reelId = reelId;
+  }
+
+  return Notification.findAll({
+    where,
+    attributes: [
+      "id",
+      "userId",
+      "interactorId",
+      "postId",
+      "reelId",
+      "commentId",
+      "type",
+      "message",
+      "read",
+      "deleted",
+      "notification_date",
+    ],
+  });
+};
+
+export const softDeleteByIds = async (idsRaw: Array<number | string | null | undefined>) => {
+  const ids = Array.from(
+    new Set(
+      (idsRaw || [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .map((value) => Math.trunc(value))
+    )
+  );
+
+  if (!ids.length) return [0];
+
+  return Notification.update(
+    { deleted: true, read: true },
+    { where: { id: { [Op.in]: ids } } }
+  );
 };
