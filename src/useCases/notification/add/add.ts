@@ -15,6 +15,7 @@ interface SendNotificationParams {
   interactorId?: number;
   serviceId?: number;
   postId?: number;
+  reelId?: number;
   offerId?: number;
   followerId?: number;
   notification_date?: Date;
@@ -36,12 +37,29 @@ interface SendNotificationParams {
   deeplink?: string;
 }
 
+const PUSH_EMPTY_TOKEN_LOG_WINDOW_MS = Math.max(
+  10_000,
+  Number(process.env.PUSH_EMPTY_TOKEN_LOG_WINDOW_MS ?? 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const pushEmptyTokenLogMemory = new Map<string, number>();
+
 const toPositiveInt = (value: any): number | undefined => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return undefined;
   const safe = Math.trunc(parsed);
   if (safe <= 0) return undefined;
   return safe;
+};
+
+const shouldLogMissingToken = (userId: number, type: TypeNotification) => {
+  const key = `${Number(userId)}:${String(type)}`;
+  const now = Date.now();
+  const last = Number(pushEmptyTokenLogMemory.get(key) ?? 0);
+  if (now - last < PUSH_EMPTY_TOKEN_LOG_WINDOW_MS) {
+    return false;
+  }
+  pushEmptyTokenLogMemory.set(key, now);
+  return true;
 };
 
 const buildChatDeeplink = (params: {
@@ -172,6 +190,7 @@ export const sendNotification = async (
       interactorId: params.interactorId,
       serviceId: params.serviceId,
       postId: params.postId,
+      reelId: params.reelId,
       offerId: params.offerId,
       type: params.type,
       message: params.message,
@@ -193,6 +212,29 @@ export const sendNotification = async (
       senderName: params.senderName ?? "",
       senderId: params.interactorId ?? "",
     };
+
+    const notificationPostId = toPositiveInt(params.postId);
+    if (notificationPostId) {
+      extraData.postId = notificationPostId;
+      extraData.post_id = notificationPostId;
+    }
+
+    const notificationReelId = toPositiveInt(params.reelId);
+    if (notificationReelId) {
+      extraData.reelId = notificationReelId;
+      extraData.reel_id = notificationReelId;
+      extraData.route = "orbit";
+      extraData.entityType = "reel";
+      extraData.entity_type = "reel";
+      const reelDeeplink = String(params.deeplink ?? "").trim();
+      extraData.deeplink = reelDeeplink || `orbit/${notificationReelId}`;
+    }
+
+    const notificationCommentId = toPositiveInt(params.commentId);
+    if (notificationCommentId) {
+      extraData.commentId = notificationCommentId;
+      extraData.comment_id = notificationCommentId;
+    }
 
     const notificationMessageId = toPositiveInt(params.messageId);
     if (notificationMessageId) {
@@ -259,6 +301,15 @@ export const sendNotification = async (
           : params.senderName?.trim() || "Nuevo mensaje"
         : "Minhoo news";
 
+    if (!uuid) {
+      if (shouldLogMissingToken(params.userId, params.type)) {
+        console.log(
+          `[push] skipped missing token userId=${params.userId} type=${params.type} interactorId=${params.interactorId ?? 0}`
+        );
+      }
+      return;
+    }
+
     const pushResult = await sendPushToSingleUser(
       pushTitle,
       pushBody,
@@ -269,16 +320,26 @@ export const sendNotification = async (
     );
 
     if (pushResult?.reason === "EMPTY_TOKEN") {
-      console.warn(
-        `[push] empty token userId=${params.userId} type=${params.type} interactorId=${params.interactorId ?? 0}`
-      );
+      if (shouldLogMissingToken(params.userId, params.type)) {
+        console.log(
+          `[push] empty token userId=${params.userId} type=${params.type} interactorId=${params.interactorId ?? 0}`
+        );
+      }
     }
 
-    if (pushResult?.reason === "TOKEN_NOT_REGISTERED" && uuid) {
+    if (
+      (pushResult?.reason === "TOKEN_NOT_REGISTERED" ||
+        pushResult?.reason === "TOKEN_INVALID") &&
+      uuid
+    ) {
       const cleared = await userRepository.clearUuidIfMatch(params.userId, uuid);
       if (cleared > 0) {
-        console.warn(
-          `🧹 UUID inválido limpiado userId=${params.userId} reason=TOKEN_NOT_REGISTERED`
+        console.log(
+          `🧹 UUID inválido limpiado userId=${params.userId} reason=${pushResult?.reason}`
+        );
+      } else {
+        console.log(
+          `🧹 UUID inválido detectado sin limpieza userId=${params.userId} reason=${pushResult?.reason}`
         );
       }
     }
@@ -299,7 +360,13 @@ function getFirstAvailableId(data: SendNotificationParams): number {
 
     case "like":
     case "comment":
-      return data.postId!;
+      return (
+        data.postId ||
+        data.reelId ||
+        data.commentId ||
+        data.likerId ||
+        data.interactorId!
+      )!;
 
     case "follow":
     case "message":

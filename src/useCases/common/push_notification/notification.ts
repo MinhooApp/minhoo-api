@@ -55,7 +55,6 @@ export async function sendPushToSingleUser(
   extraData?: Record<string, any> // ✅ NUEVO
 ) {
   if (!token?.trim()) {
-    console.warn("⚠️ Token vacío: no se envía push.");
     return { ok: false, reason: "EMPTY_TOKEN" as const };
   }
 
@@ -95,10 +94,19 @@ export async function sendPushToSingleUser(
     return { ok: true, messageId };
   } catch (err: any) {
     const code = err?.errorInfo?.code ?? err?.code;
+    const details = String(err?.errorInfo?.message ?? err?.message ?? "").toLowerCase();
 
     if (code === "messaging/registration-token-not-registered") {
-      console.error("🚫 Token no registrado. Debes eliminarlo/actualizarlo en BD.");
+      console.log("🚫 Token no registrado. Debes eliminarlo/actualizarlo en BD.");
       return { ok: false, reason: "TOKEN_NOT_REGISTERED" as const, code };
+    }
+
+    if (
+      code === "messaging/invalid-registration-token" ||
+      (code === "messaging/invalid-argument" && details.includes("registration token"))
+    ) {
+      console.log("🚫 Token inválido. Debes eliminarlo/actualizarlo en BD.");
+      return { ok: false, reason: "TOKEN_INVALID" as const, code };
     }
 
     console.error("🔥 Error enviando push (single):", err);
