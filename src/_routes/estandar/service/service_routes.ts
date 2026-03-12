@@ -13,6 +13,7 @@ import {
   historyWorkers,
   update,
   finalized,
+  report,
   deleteService,
   sendTestNotification,
   myHistoryCanceled,
@@ -29,6 +30,7 @@ router.get("/onGoing", TokenOptional(), getsOnGoing);
 router.get("/onGoing/worker", TokenValidation(), onGoingWorkers);
 router.get("/worker/canceled", TokenValidation(), onGoingCanceledWorkers);
 router.get("/history/worker", TokenValidation(), historyWorkers);
+router.post("/:id/report", TokenValidation(), report);
 router.delete("/:id", TokenValidation(), deleteService);
 router.get("/", TokenValidation(), gets);
 router.get("/myHistory", TokenValidation(), myHistory);

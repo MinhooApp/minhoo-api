@@ -211,6 +211,11 @@ User.init(
       allowNull: false,
       defaultValue: true,
     },
+    disabled: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
     alert: {
       type: DataTypes.BOOLEAN,
       allowNull: false,

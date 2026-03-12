@@ -10,6 +10,7 @@ import {
   gets,
   getsSuggested,
   like,
+  report,
   share,
   deletePost,
   deletePostAdmin,
@@ -84,6 +85,7 @@ router.post("/", TokenValidation(), add);
 router.get("/", TokenOptional(), gets);
 router.get("/suggested", TokenOptional(), getsSuggested);
 router.put("/like/:id", TokenValidation(), like);
+router.post("/:id/report", TokenValidation(), report);
 router.post("/:id/share", TokenValidation(), share);
 router.get("/:id", TokenOptional(), get);
 router.delete("/admin/:id", TokenValidation([8088]), deletePostAdmin);

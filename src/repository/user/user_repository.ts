@@ -6,10 +6,32 @@ import MediaPost from "../../_models/post/media_post";
 import Worker from "../../_models/worker/worker";
 import Follower from "../../_models/follower/follower";
 import Category from "../../_models/category/category";
-import { Op, Sequelize } from "sequelize";
+import { Op, QueryTypes, Sequelize } from "sequelize";
 import sequelize from "../../_db/connection";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
+const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
+const IMPERSONATION_REPORT_DISABLE_THRESHOLD = Math.max(
+  1,
+  Number(process.env.IMPERSONATION_REPORT_DISABLE_THRESHOLD ?? 20) || 20
+);
+
+const isTrueLike = (value: any) => value === true || value === 1 || value === "1";
+
+const isMissingTableError = (error: any) => {
+  const code = String(error?.original?.code ?? error?.code ?? "").toUpperCase();
+  const message = String(error?.original?.sqlMessage ?? error?.message ?? "").toLowerCase();
+  return code === "ER_NO_SUCH_TABLE" || message.includes("doesn't exist");
+};
+
+const toDistinctReporterIds = (rows: any[]) => {
+  const ids = new Set<number>();
+  (rows || []).forEach((row: any) => {
+    const reporterId = Number(row?.reporterId);
+    if (Number.isFinite(reporterId) && reporterId > 0) ids.add(reporterId);
+  });
+  return ids;
+};
 
 /**
  * ✅ Helper seguro: bloqueo bidireccional A<->B
@@ -627,6 +649,114 @@ export const updateUsername = async (id: number, username: string) => {
 export const admin_set_disabled = async (id: number, disabled: boolean) => {
   const [affected] = await User.update({ disabled }, { where: { id } });
   return affected ? { id, disabled } : { id, disabled, notFound: true };
+};
+
+export const autoDisableUserByImpersonationReports = async ({
+  userIdRaw,
+  transaction,
+}: {
+  userIdRaw: any;
+  transaction?: any;
+}) => {
+  const userId = Number(userIdRaw);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return {
+      invalidUser: true,
+      disabledNow: false,
+      alreadyDisabled: false,
+      reportersCount: 0,
+      threshold: IMPERSONATION_REPORT_DISABLE_THRESHOLD,
+    };
+  }
+
+  const user = await User.findByPk(userId, {
+    attributes: ["id", "disabled"],
+    transaction,
+    lock: transaction?.LOCK?.UPDATE,
+  });
+
+  if (!user) {
+    return {
+      invalidUser: false,
+      notFound: true,
+      disabledNow: false,
+      alreadyDisabled: false,
+      reportersCount: 0,
+      threshold: IMPERSONATION_REPORT_DISABLE_THRESHOLD,
+    };
+  }
+
+  const postRows = await sequelize
+    .query(
+      `
+        SELECT DISTINCT pr.reporterId AS reporterId
+        FROM post_reports pr
+        INNER JOIN posts p ON p.id = pr.postId
+        WHERE p.userId = :userId
+          AND pr.reason = :reason
+      `,
+      {
+        replacements: { userId, reason: IMPERSONATION_REPORT_REASON },
+        type: QueryTypes.SELECT,
+        transaction,
+      }
+    )
+    .catch((error) => {
+      if (isMissingTableError(error)) return [];
+      throw error;
+    });
+
+  const serviceRows = await sequelize
+    .query(
+      `
+        SELECT DISTINCT sr.reporterId AS reporterId
+        FROM service_reports sr
+        INNER JOIN services s ON s.id = sr.serviceId
+        WHERE s.userId = :userId
+          AND sr.reason = :reason
+      `,
+      {
+        replacements: { userId, reason: IMPERSONATION_REPORT_REASON },
+        type: QueryTypes.SELECT,
+        transaction,
+      }
+    )
+    .catch((error) => {
+      if (isMissingTableError(error)) return [];
+      throw error;
+    });
+
+  const reporters = toDistinctReporterIds(postRows as any[]);
+  const serviceReporterIds = toDistinctReporterIds(serviceRows as any[]);
+  serviceReporterIds.forEach((id) => reporters.add(id));
+
+  const reportersCount = reporters.size;
+  const alreadyDisabled = isTrueLike((user as any)?.disabled);
+  const mustDisable = reportersCount > IMPERSONATION_REPORT_DISABLE_THRESHOLD;
+
+  let disabledNow = false;
+  if (!alreadyDisabled && mustDisable) {
+    const [affected] = await User.update(
+      { disabled: true },
+      { where: { id: userId }, transaction }
+    );
+    disabledNow = Number(affected) > 0;
+    if (disabledNow) {
+      console.warn(
+        `[moderation][auto-disable] userId=${userId} reason=${IMPERSONATION_REPORT_REASON} uniqueReporters=${reportersCount} threshold=${IMPERSONATION_REPORT_DISABLE_THRESHOLD}`
+      );
+    }
+  }
+
+  return {
+    invalidUser: false,
+    notFound: false,
+    disabledNow,
+    alreadyDisabled,
+    reportersCount,
+    threshold: IMPERSONATION_REPORT_DISABLE_THRESHOLD,
+    reason: IMPERSONATION_REPORT_REASON,
+  };
 };
 
 export const admin_restore_deleted = async (id: number) => {

@@ -2,7 +2,8 @@ import Post from "../../_models/post/post";
 import Like from "../../_models/like/like";
 import { postInclude } from "./post_include";
 import MediaPost from "../../_models/post/media_post";
-import { Op, Sequelize } from "sequelize";
+import PostReport from "../../_models/post/post_report";
+import { Op, Sequelize, UniqueConstraintError } from "sequelize";
 import Follower from "../../_models/follower/follower";
 import User from "../../_models/user/user";
 import Comment from "../../_models/comment/comment";
@@ -10,6 +11,7 @@ import {
   loadFindSessionState,
   saveFindSessionState,
 } from "../../libs/cache/find_session_store";
+import { autoDisableUserByImpersonationReports } from "../user/user_repository";
 
 import { whereNotBlockedExists } from "../user/block_where";
 
@@ -35,6 +37,11 @@ const POST_CREATOR_COOLDOWN = 8;
 const POST_MAX_TOPIC_STREAK = 2;
 const POST_MAX_FORMAT_STREAK = 2;
 const POST_TOPK_SHUFFLE_WINDOW = 50;
+const POST_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
+  1,
+  Number(process.env.POST_REPORT_AUTO_DELETE_THRESHOLD ?? 10) || 10
+);
+const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
 
 type PostFeedOptions = {
   sessionKey?: any;
@@ -1622,6 +1629,126 @@ export const update = async (id: any, body: any) => {
 export const deletePost = async (id: any) => {
   const post = await Post.update({ is_delete: true }, { where: { id } });
   return post;
+};
+
+export const reportPost = async ({
+  postIdRaw,
+  reporterIdRaw,
+  reason,
+  details,
+}: {
+  postIdRaw: any;
+  reporterIdRaw: any;
+  reason: string;
+  details?: string | null;
+}) => {
+  const postId = Number(postIdRaw);
+  const reporterId = Number(reporterIdRaw);
+  if (!Number.isFinite(postId) || postId <= 0) {
+    return { notFound: true };
+  }
+  if (!Number.isFinite(reporterId) || reporterId <= 0) {
+    return { invalidReporter: true };
+  }
+
+  const sequelize = (Post as any).sequelize;
+  const normalizedDetails = String(details ?? "").trim().slice(0, 4000) || null;
+
+  return sequelize.transaction(async (transaction: any) => {
+    const post = await Post.findOne({
+      where: { id: postId, is_delete: false },
+      attributes: ["id", "userId", "is_delete"],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!post) {
+      return { notFound: true };
+    }
+
+    const ownerId = Number((post as any)?.userId ?? 0);
+    if (ownerId > 0 && ownerId === reporterId) {
+      return { selfReport: true };
+    }
+
+    const existing = await PostReport.findOne({
+      where: { postId, reporterId },
+      attributes: ["id"],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    let alreadyReported = false;
+    if (!existing) {
+      try {
+        await PostReport.create(
+          {
+            postId,
+            reporterId,
+            reason,
+            details: normalizedDetails,
+          },
+          { transaction }
+        );
+      } catch (error: any) {
+        if (error instanceof UniqueConstraintError) {
+          alreadyReported = true;
+        } else {
+          throw error;
+        }
+      }
+    } else {
+      alreadyReported = true;
+    }
+
+    const reportsCount = await PostReport.count({
+      where: { postId },
+      distinct: true,
+      col: "reporterId",
+      transaction,
+    });
+
+    const shouldAutoDelete =
+      Number(reportsCount) >= POST_REPORT_AUTO_DELETE_THRESHOLD &&
+      !Boolean((post as any)?.is_delete);
+
+    let autoDeleted = false;
+    if (shouldAutoDelete) {
+      await Post.update(
+        {
+          is_delete: true,
+          deleted_date: new Date(new Date().toUTCString()),
+        },
+        {
+          where: { id: postId },
+          transaction,
+        }
+      );
+      autoDeleted = true;
+    }
+
+    let ownerAutoDisabled = false;
+    if (ownerId > 0 && reason === IMPERSONATION_REPORT_REASON) {
+      const autoDisable = await autoDisableUserByImpersonationReports({
+        userIdRaw: ownerId,
+        transaction,
+      });
+      ownerAutoDisabled = Boolean(autoDisable?.disabledNow);
+    }
+
+    return {
+      notFound: false,
+      invalidReporter: false,
+      selfReport: false,
+      alreadyReported,
+      reportsCount: Number(reportsCount) || 0,
+      threshold: POST_REPORT_AUTO_DELETE_THRESHOLD,
+      autoDeleted,
+      ownerAutoDisabled,
+      postId,
+      ownerId,
+    };
+  });
 };
 
 export const toggleLike = async (userId: any, postId: any) => {

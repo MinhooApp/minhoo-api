@@ -1,12 +1,19 @@
-import { Op, Sequelize } from "sequelize";
+import { Op, Sequelize, UniqueConstraintError } from "sequelize";
 import Offer from "../../_models/offer/offer";
 import Service from "../../_models/service/service";
 import { serviceInclude } from "./service_includes";
 import Service_Worker from "../../_models/service/service_worker";
 import Worker from "../../_models/worker/worker";
 import User from "../../_models/user/user";
+import ServiceReport from "../../_models/service/service_report";
+import { autoDisableUserByImpersonationReports } from "../user/user_repository";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
+const SERVICE_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
+  1,
+  Number(process.env.SERVICE_REPORT_AUTO_DELETE_THRESHOLD ?? 10) || 10
+);
+const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
 
 const notBlockedLiteral = () =>
   Sequelize.literal(`
@@ -345,4 +352,124 @@ export const reApplyWorker = async (
 
 export const deleteservice = async (id: any) => {
   await Service.update({ is_available: false, statusId: 5 }, { where: { id } });
+};
+
+export const reportService = async ({
+  serviceIdRaw,
+  reporterIdRaw,
+  reason,
+  details,
+}: {
+  serviceIdRaw: any;
+  reporterIdRaw: any;
+  reason: string;
+  details?: string | null;
+}) => {
+  const serviceId = Number(serviceIdRaw);
+  const reporterId = Number(reporterIdRaw);
+  if (!Number.isFinite(serviceId) || serviceId <= 0) {
+    return { notFound: true };
+  }
+  if (!Number.isFinite(reporterId) || reporterId <= 0) {
+    return { invalidReporter: true };
+  }
+
+  const sequelize = (Service as any).sequelize;
+  const normalizedDetails = String(details ?? "").trim().slice(0, 4000) || null;
+
+  return sequelize.transaction(async (transaction: any) => {
+    const service = await Service.findOne({
+      where: { id: serviceId, is_available: true },
+      attributes: ["id", "userId", "is_available", "statusId"],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!service) {
+      return { notFound: true };
+    }
+
+    const ownerId = Number((service as any)?.userId ?? 0);
+    if (ownerId > 0 && ownerId === reporterId) {
+      return { selfReport: true };
+    }
+
+    const existing = await ServiceReport.findOne({
+      where: { serviceId, reporterId },
+      attributes: ["id"],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    let alreadyReported = false;
+    if (!existing) {
+      try {
+        await ServiceReport.create(
+          {
+            serviceId,
+            reporterId,
+            reason,
+            details: normalizedDetails,
+          },
+          { transaction }
+        );
+      } catch (error: any) {
+        if (error instanceof UniqueConstraintError) {
+          alreadyReported = true;
+        } else {
+          throw error;
+        }
+      }
+    } else {
+      alreadyReported = true;
+    }
+
+    const reportsCount = await ServiceReport.count({
+      where: { serviceId },
+      distinct: true,
+      col: "reporterId",
+      transaction,
+    });
+
+    const shouldAutoDelete =
+      Number(reportsCount) >= SERVICE_REPORT_AUTO_DELETE_THRESHOLD &&
+      Boolean((service as any)?.is_available);
+
+    let autoDeleted = false;
+    if (shouldAutoDelete) {
+      await Service.update(
+        {
+          is_available: false,
+          statusId: 5,
+        },
+        {
+          where: { id: serviceId },
+          transaction,
+        }
+      );
+      autoDeleted = true;
+    }
+
+    let ownerAutoDisabled = false;
+    if (ownerId > 0 && reason === IMPERSONATION_REPORT_REASON) {
+      const autoDisable = await autoDisableUserByImpersonationReports({
+        userIdRaw: ownerId,
+        transaction,
+      });
+      ownerAutoDisabled = Boolean(autoDisable?.disabledNow);
+    }
+
+    return {
+      notFound: false,
+      invalidReporter: false,
+      selfReport: false,
+      alreadyReported,
+      reportsCount: Number(reportsCount) || 0,
+      threshold: SERVICE_REPORT_AUTO_DELETE_THRESHOLD,
+      autoDeleted,
+      ownerAutoDisabled,
+      serviceId,
+      ownerId,
+    };
+  });
 };
