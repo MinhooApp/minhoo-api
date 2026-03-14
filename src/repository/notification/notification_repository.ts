@@ -10,6 +10,14 @@ import MediaPost from "../../_models/post/media_post";
 import Notification from "../../_models/notification/notification";
 import { Op, Sequelize } from "sequelize";
 const excludeKeys = ["createdAt ", "updatedAt ", "password "];
+export const PROFILE_RECOMMENDATION_MESSAGE_PREFIX = "Suggested profile:";
+export const PROFILE_RECOMMENDATION_NOTIFICATION_TYPE = "profile_recommendation";
+const normalizeLimit = (value: any, fallback = 20, max = 20) => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.min(Math.max(1, Math.floor(n)), max);
+};
+
 export const add = async (body: any) => {
   const notification = await Notification.create(body);
   return notification;
@@ -22,11 +30,17 @@ export const gets = async () => {
   return notification;
 };
 
-export const myNotifications = async (id: number) => {
+export const myNotifications = async (
+  id: number,
+  opts?: { cursor?: number | null; limit?: number }
+) => {
+  const cursor = Number(opts?.cursor);
+  const limit = normalizeLimit(opts?.limit, 20, 20);
   const notification = await Notification.findAll({
     where: {
       userId: id,
       deleted: false,
+      ...(Number.isFinite(cursor) && cursor > 0 ? { id: { [Op.lt]: Math.floor(cursor) } } : {}),
       [Op.and]: [
         Sequelize.literal(`
           NOT EXISTS (
@@ -40,6 +54,23 @@ export const myNotifications = async (id: number) => {
         `),
       ],
     },
+    attributes: [
+      "id",
+      "userId",
+      "interactorId",
+      "serviceId",
+      "offerId",
+      "postId",
+      "reelId",
+      "likerId",
+      [Sequelize.col("notification.likerId"), "likeId"],
+      "messageId",
+      "type",
+      "message",
+      "read",
+      "deleted",
+      "notification_date",
+    ],
     include: [
       {
         model: User,
@@ -49,6 +80,16 @@ export const myNotifications = async (id: number) => {
       {
         model: Service,
         as: "service",
+        attributes: [
+          "id",
+          "userId",
+          "description",
+          "rate",
+          "currencyCode",
+          "currencyPrefix",
+          "service_date",
+          "statusId",
+        ],
       },
       {
         model: Offer,
@@ -58,11 +99,19 @@ export const myNotifications = async (id: number) => {
           {
             model: Service,
             as: "service",
+            attributes: [
+              "id",
+              "description",
+              "rate",
+              "currencyCode",
+              "currencyPrefix",
+              "statusId",
+            ],
           },
           {
             model: Worker,
             as: "offerer",
-            attributes: ["id", "userId"],
+            attributes: ["id", "userId", "rate", "available", "visible"],
           },
         ],
       },
@@ -99,8 +148,84 @@ export const myNotifications = async (id: number) => {
     ],
     replacements: { id },
     order: [["notification_date", "DESC"]],
+    limit,
   });
   return notification;
+};
+
+export const myNotificationsSummary = async (
+  id: number,
+  opts?: { cursor?: number | null; limit?: number }
+) => {
+  const cursor = Number(opts?.cursor);
+  const limit = normalizeLimit(opts?.limit, 20, 20);
+
+  return Notification.findAll({
+    where: {
+      userId: id,
+      deleted: false,
+      ...(Number.isFinite(cursor) && cursor > 0 ? { id: { [Op.lt]: Math.floor(cursor) } } : {}),
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = :id AND ub.blocked_id = \`notification\`.\`interactorId\`)
+              OR
+              (ub.blocker_id = \`notification\`.\`interactorId\` AND ub.blocked_id = :id)
+          )
+        `),
+      ],
+    },
+    attributes: [
+      "id",
+      "interactorId",
+      "serviceId",
+      "offerId",
+      "postId",
+      "reelId",
+      "messageId",
+      "type",
+      "read",
+      "notification_date",
+    ],
+    include: [
+      {
+        model: User,
+        as: "interactor",
+        attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
+      },
+      {
+        model: Service,
+        as: "service",
+        attributes: ["id", "description", "rate"],
+      },
+      {
+        model: Offer,
+        as: "offer",
+        attributes: ["id", "serviceId"],
+      },
+      {
+        model: Post,
+        as: "post",
+        attributes: ["id", "post"],
+      },
+      {
+        model: Reel,
+        as: "reel",
+        attributes: ["id", "description", "thumbnail_url"],
+      },
+      {
+        model: Message,
+        as: "message_received",
+        attributes: ["id", "text"],
+      },
+    ],
+    replacements: { id },
+    order: [["notification_date", "DESC"]],
+    limit,
+  });
 };
 export const get = async (id: any) => {
   const notification = await Notification.findOne({ where: { id: id } });
@@ -132,6 +257,31 @@ export const readAllByUser = async (userId: number) => {
     { where: { userId: userId } }
   );
   return notification;
+};
+
+export const countUnreadByUser = async (userId: number) => {
+  const safeUserId = Number(userId);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) return 0;
+
+  return Notification.count({
+    where: {
+      userId: safeUserId,
+      deleted: false,
+      read: false,
+      [Op.and]: [
+        Sequelize.literal(`
+          NOT EXISTS (
+            SELECT 1
+            FROM user_blocks ub
+            WHERE
+              (ub.blocker_id = ${safeUserId} AND ub.blocked_id = \`notification\`.\`interactorId\`)
+              OR
+              (ub.blocker_id = \`notification\`.\`interactorId\` AND ub.blocked_id = ${safeUserId})
+          )
+        `),
+      ],
+    },
+  });
 };
 
 
@@ -197,4 +347,33 @@ export const softDeleteByIds = async (idsRaw: Array<number | string | null | und
     { deleted: true, read: true },
     { where: { id: { [Op.in]: ids } } }
   );
+};
+
+export const hasRecentProfileRecommendationNotification = async ({
+  userId,
+  sinceDate,
+}: {
+  userId: number;
+  sinceDate: Date;
+}) => {
+  const safeUserId = Number(userId);
+  if (!Number.isFinite(safeUserId) || safeUserId <= 0) return false;
+  if (!(sinceDate instanceof Date) || Number.isNaN(sinceDate.getTime())) return false;
+
+  const count = await Notification.count({
+    where: {
+      userId: safeUserId,
+      deleted: false,
+      notification_date: { [Op.gte]: sinceDate },
+      [Op.or]: [
+        { type: PROFILE_RECOMMENDATION_NOTIFICATION_TYPE },
+        {
+          type: "admin",
+          message: { [Op.like]: `${PROFILE_RECOMMENDATION_MESSAGE_PREFIX}%` },
+        },
+      ],
+    },
+  });
+
+  return Number(count) > 0;
 };
