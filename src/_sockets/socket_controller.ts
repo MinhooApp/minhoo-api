@@ -57,6 +57,8 @@ const CHAT_ROOM_REGEX = /^chat_\d+$/;
 const ALLOW_SOCKET_USERID_FALLBACK =
   String(process.env.ALLOW_SOCKET_USERID_FALLBACK ?? "1").trim() !== "0";
 const SESSION_VALIDATION_TTL_MS = 15 * 1000;
+const EMIT_REELS_EVENT_ON_REEL_DELETE =
+  String(process.env.EMIT_REELS_EVENT_ON_REEL_DELETE ?? "1").trim() === "1";
 
 function normalizePositiveInt(value: any): number {
   const n = Number(value);
@@ -78,26 +80,235 @@ function normalizeDateIso(value: any): string | null {
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
-function normalizeReelDeletedPayload(payload: any) {
-  const source = payload ?? {};
-  const reelId = normalizePositiveInt(
-    source.reelId ?? source.reel_id ?? source.id ?? source.reel?.id
-  );
-  const ownerId = normalizePositiveInt(
-    source.ownerId ?? source.owner_id ?? source.userId ?? source.user_id ?? source.reel?.userId
-  );
-  const deletedAt = String(
-    source.deletedAt ?? source.deleted_at ?? new Date().toISOString()
-  );
+function normalizeBoolOrNull(value: any): boolean | null {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const raw = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(raw)) return true;
+    if (["0", "false", "no", "off"].includes(raw)) return false;
+  }
+  return null;
+}
+
+function normalizeReelFreshnessState(source: any) {
+  const ringUntilRaw =
+    source?.ring_until ??
+    source?.ringUntil ??
+    source?.new_until ??
+    source?.newUntil ??
+    null;
+
+  const ringUntil = normalizeDateIso(ringUntilRaw);
+  const explicitRingActive = normalizeBoolOrNull(source?.ring_active ?? source?.ringActive);
+  const explicitIsNew = normalizeBoolOrNull(source?.is_new ?? source?.isNew);
+  const fallbackRingActive =
+    ringUntil !== null ? new Date(ringUntil).getTime() > Date.now() : false;
+
+  const ringActive = explicitRingActive ?? explicitIsNew ?? fallbackRingActive;
+  const isNew = explicitIsNew ?? ringActive;
+  const newUntil =
+    normalizeDateIso(source?.new_until ?? source?.newUntil ?? ringUntil) ?? ringUntil;
 
   return {
-    action: "deleted",
+    ringActive,
+    ringUntil: ringUntil ?? newUntil,
+    isNew,
+    newUntil: newUntil ?? ringUntil,
+  };
+}
+
+function normalizeReelRealtimePayload(payload: any, fallbackAction: "created" | "updated") {
+  const source = payload ?? {};
+  const reelSource = toPlainRecord(source.reel ?? source.orbit ?? source);
+  const reelId = normalizePositiveInt(
+    source.reelId ?? source.reel_id ?? source.id ?? reelSource?.id
+  );
+  const ownerId = normalizePositiveInt(
+    source.ownerId ??
+      source.owner_id ??
+      source.userId ??
+      source.user_id ??
+      reelSource?.user?.id ??
+      reelSource?.userId ??
+      reelSource?.user_id
+  );
+  const actionRaw = String(source.action ?? fallbackAction).trim().toLowerCase();
+  const action = actionRaw === "updated" ? "updated" : "created";
+  const freshness = normalizeReelFreshnessState(reelSource ?? source);
+
+  const normalizedReel = reelSource
+    ? {
+        ...reelSource,
+        ring_active: freshness.ringActive,
+        ringActive: freshness.ringActive,
+        ring_until: freshness.ringUntil,
+        ringUntil: freshness.ringUntil,
+        is_new: freshness.isNew,
+        isNew: freshness.isNew,
+        new_until: freshness.newUntil,
+        newUntil: freshness.newUntil,
+      }
+    : null;
+
+  return {
+    action,
     reelId,
     reel_id: reelId,
     ownerId,
     owner_id: ownerId,
+    ring_active: freshness.ringActive,
+    ringActive: freshness.ringActive,
+    ring_until: freshness.ringUntil,
+    ringUntil: freshness.ringUntil,
+    is_new: freshness.isNew,
+    isNew: freshness.isNew,
+    new_until: freshness.newUntil,
+    newUntil: freshness.newUntil,
+    reel: normalizedReel,
+  };
+}
+
+function normalizeOrbitRingUpdatedPayload(payload: any) {
+  const source = payload ?? {};
+  const userId = normalizePositiveInt(
+    source.userId ?? source.user_id ?? source.id ?? source.user?.id
+  );
+  if (!userId) return null;
+
+  const explicitHasActiveOrbit = normalizeBoolOrNull(
+    source.has_active_orbit ?? source.hasActiveOrbit
+  );
+  const activeOrbitReelIdRaw = normalizePositiveInt(
+    source.active_orbit_reel_id ?? source.activeOrbitReelId ?? source.reelId ?? source.reel_id
+  );
+  const orbitRingUntilRaw = normalizeDateIso(
+    source.orbit_ring_until ?? source.orbitRingUntil ?? source.ring_until ?? source.ringUntil
+  );
+  const fallbackHasActiveOrbit = Boolean(activeOrbitReelIdRaw && orbitRingUntilRaw);
+  const hasActiveOrbit = explicitHasActiveOrbit ?? fallbackHasActiveOrbit;
+  const activeOrbitReelId = hasActiveOrbit ? activeOrbitReelIdRaw ?? null : null;
+  const orbitRingUntil = hasActiveOrbit ? orbitRingUntilRaw ?? null : null;
+
+  return {
+    action: "updated",
+    user_id: userId,
+    userId,
+    has_active_orbit: hasActiveOrbit,
+    hasActiveOrbit: hasActiveOrbit,
+    has_orbit_ring: hasActiveOrbit,
+    hasOrbitRing: hasActiveOrbit,
+    active_orbit_reel_id: activeOrbitReelId,
+    activeOrbitReelId: activeOrbitReelId,
+    orbit_ring_until: orbitRingUntil,
+    orbitRingUntil: orbitRingUntil,
+    user: {
+      id: userId,
+      userId,
+      user_id: userId,
+      has_active_orbit: hasActiveOrbit,
+      hasActiveOrbit: hasActiveOrbit,
+      has_orbit_ring: hasActiveOrbit,
+      hasOrbitRing: hasActiveOrbit,
+      active_orbit_reel_id: activeOrbitReelId,
+      activeOrbitReelId: activeOrbitReelId,
+      orbit_ring_until: orbitRingUntil,
+      orbitRingUntil: orbitRingUntil,
+    },
+  };
+}
+
+function normalizeReelDeletedPayload(payload: any) {
+  const source = payload ?? {};
+  const reelSource = toPlainRecord(source.reel ?? source.orbit ?? null);
+  const reelId = normalizePositiveInt(
+    source.reelId ?? source.reel_id ?? source.id ?? source.reel?.id ?? reelSource?.id
+  );
+  const ownerId = normalizePositiveInt(
+    source.ownerId ??
+      source.owner_id ??
+      source.userId ??
+      source.user_id ??
+      source.reel?.userId ??
+      source.reel?.user_id ??
+      reelSource?.userId ??
+      reelSource?.user_id
+  );
+  const deletedAt = normalizeDateIso(
+    source.deletedAt ?? source.deleted_at ?? reelSource?.deletedAt ?? reelSource?.deleted_at
+  ) ?? new Date().toISOString();
+  const actorUserId = normalizePositiveInt(
+    source.actorUserId ??
+      source.actor_user_id ??
+      source.requestUserId ??
+      source.request_user_id ??
+      ownerId
+  );
+  const deleteReasonRaw = String(
+    source.deleteReason ?? source.delete_reason ?? "owner_delete"
+  )
+    .trim()
+    .toLowerCase();
+  const deleteReason = deleteReasonRaw || "owner_delete";
+
+  const normalizedReel = reelSource
+    ? {
+        ...reelSource,
+        id: reelId || normalizePositiveInt(reelSource?.id) || null,
+        userId:
+          ownerId ||
+          normalizePositiveInt(reelSource?.userId ?? reelSource?.user_id) ||
+          null,
+        user_id:
+          ownerId ||
+          normalizePositiveInt(reelSource?.user_id ?? reelSource?.userId) ||
+          null,
+        is_delete: true,
+        isDeleted: true,
+        deletedAt,
+        deleted_at: deletedAt,
+      }
+    : {
+        id: reelId || null,
+        userId: ownerId || null,
+        user_id: ownerId || null,
+        is_delete: true,
+        isDeleted: true,
+        deletedAt,
+        deleted_at: deletedAt,
+      };
+
+  return {
+    action: "deleted",
+    status: "deleted",
+    event: "reel_deleted",
+    entity: "reel",
+    deleteReason,
+    delete_reason: deleteReason,
+    deleted: true,
+    removed: true,
+    id: reelId,
+    reelId,
+    reel_id: reelId,
+    ownerId,
+    owner_id: ownerId,
+    actorUserId: actorUserId ?? ownerId,
+    actor_user_id: actorUserId ?? ownerId,
+    userId: ownerId,
+    user_id: ownerId,
     deletedAt,
     deleted_at: deletedAt,
+    ui_hint: {
+      remove_only: true,
+      auto_open: false,
+      auto_advance: false,
+    },
+    uiHint: {
+      removeOnly: true,
+      autoOpen: false,
+      autoAdvance: false,
+    },
+    reel: normalizedReel,
   };
 }
 
@@ -866,6 +1077,33 @@ export const socketController = (socket: Socket) => {
   });
 
   ////////////////////// Reel / Orbit ///////////////////////////
+  socket.on("reel/created", (payload: any) => {
+    const normalized = normalizeReelRealtimePayload(payload, "created");
+    if (!normalized.reelId) return;
+
+    socket.broadcast.emit("reel/created", normalized);
+    socket.broadcast.emit("orbit/created", normalized);
+    socket.broadcast.emit("find/reel/created", normalized);
+    socket.broadcast.emit("reels", normalized);
+  });
+
+  socket.on("reel/updated", (payload: any) => {
+    const normalized = normalizeReelRealtimePayload(payload, "updated");
+    if (!normalized.reelId) return;
+
+    socket.broadcast.emit("reel/updated", normalized);
+    socket.broadcast.emit("orbit/updated", normalized);
+    socket.broadcast.emit("find/reel/updated", normalized);
+    socket.broadcast.emit("reels", normalized);
+  });
+
+  socket.on("orbit/ring-updated", (payload: any) => {
+    const normalized = normalizeOrbitRingUpdatedPayload(payload);
+    if (!normalized) return;
+
+    socket.broadcast.emit("orbit/ring-updated", normalized);
+  });
+
   socket.on("reel/deleted", (payload: any) => {
     const normalized = normalizeReelDeletedPayload(payload);
     if (!normalized.reelId) return;
@@ -873,7 +1111,9 @@ export const socketController = (socket: Socket) => {
     socket.broadcast.emit("reel/deleted", normalized);
     socket.broadcast.emit("orbit/deleted", normalized);
     socket.broadcast.emit("find/reel/deleted", normalized);
-    socket.broadcast.emit("reels", normalized);
+    if (EMIT_REELS_EVENT_ON_REEL_DELETE) {
+      socket.broadcast.emit("reels", normalized);
+    }
   });
 
   socket.on("reel/commented", (payload: any) => {

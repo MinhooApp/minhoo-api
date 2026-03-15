@@ -9,6 +9,9 @@ const API_BASE_URL = String(
 ).trim();
 const SOCKET_URL = String(process.env.SOCKET_URL || "http://127.0.0.1:3000").trim();
 const TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MS || 15000);
+const EXPECT_REELS_DELETE_CHANNEL =
+  String(process.env.EXPECT_REELS_DELETE_CHANNEL || "").trim().toLowerCase() ===
+  "1";
 
 const TOKEN = String(process.env.TOKEN || "").trim();
 const EMAIL = String(process.env.EMAIL || "info@minhoo.app").trim();
@@ -99,6 +102,26 @@ function toReelId(payload) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
+function isDeletePayload(payload) {
+  const action = String(payload?.action ?? "").trim().toLowerCase();
+  if (action === "deleted") return true;
+  if (payload?.deleted === true || payload?.removed === true) return true;
+  if (payload?.deletedAt || payload?.deleted_at) return true;
+  return false;
+}
+
+function toUserId(payload) {
+  const n = Number(
+    payload?.userId ??
+      payload?.user_id ??
+      payload?.ownerId ??
+      payload?.owner_id ??
+      payload?.user?.id ??
+      payload?.user?.userId
+  );
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
 async function main() {
   const token = await loginIfNeeded();
   const api = buildApi(token);
@@ -108,6 +131,7 @@ async function main() {
 
   const receivedChannels = new Set();
   const receivedPayloads = [];
+  const ringEvents = [];
 
   const socket = io(SOCKET_URL, {
     transports: ["websocket", "polling"],
@@ -124,11 +148,15 @@ async function main() {
       receivedChannels.add(channel);
       receivedPayloads.push({ channel, payload });
     };
+    const onRingUpdated = (payload) => {
+      ringEvents.push({ ts: Date.now(), payload });
+    };
 
     socket.on("reel/deleted", onEvent("reel/deleted"));
     socket.on("orbit/deleted", onEvent("orbit/deleted"));
     socket.on("find/reel/deleted", onEvent("find/reel/deleted"));
     socket.on("reels", onEvent("reels"));
+    socket.on("orbit/ring-updated", onRingUpdated);
 
     const createResponse = await api.post("/reel", {
       description: "tmp reel realtime delete test",
@@ -146,9 +174,11 @@ async function main() {
     );
 
     const reelId = Number(createResponse?.data?.body?.reel?.id || 0);
+    const ownerId = toUserId(createResponse?.data?.body?.reel ?? {});
     assert(reelId > 0, "create reel did not return valid id");
     console.log(`[test] created reelId=${reelId}`);
 
+    const deleteStartedAt = Date.now();
     const deleteResponse = await api.delete(`/reel/${reelId}`);
     assert(
       deleteResponse.status >= 200 && deleteResponse.status < 300,
@@ -161,7 +191,10 @@ async function main() {
 
     const started = Date.now();
     while (Date.now() - started < TIMEOUT_MS) {
-      const matched = receivedPayloads.find((entry) => toReelId(entry.payload) === reelId);
+      const matched = receivedPayloads.find(
+        (entry) =>
+          toReelId(entry.payload) === reelId && isDeletePayload(entry.payload)
+      );
       if (matched) {
         break;
       }
@@ -169,13 +202,44 @@ async function main() {
     }
 
     const matchedEvents = receivedPayloads.filter(
-      (entry) => toReelId(entry.payload) === reelId
+      (entry) => toReelId(entry.payload) === reelId && isDeletePayload(entry.payload)
     );
     assert(matchedEvents.length > 0, "No realtime delete event received for reelId");
 
     const channels = [...new Set(matchedEvents.map((e) => e.channel))];
     assert(channels.includes("reel/deleted"), "Missing channel reel/deleted");
-    assert(channels.includes("reels"), "Missing channel reels");
+    if (EXPECT_REELS_DELETE_CHANNEL) {
+      assert(channels.includes("reels"), "Missing channel reels");
+    }
+    assert(
+      matchedEvents.some((entry) => Number(entry?.payload?.reel?.id ?? 0) === reelId),
+      "Delete payload missing reel.id compatibility field"
+    );
+    assert(
+      matchedEvents.some((entry) => entry?.payload?.ui_hint?.auto_open === false),
+      "Delete payload missing ui_hint.auto_open=false"
+    );
+    if (ownerId > 0) {
+      let ringEvent = null;
+      const ringStartedAt = Date.now();
+      while (Date.now() - ringStartedAt < TIMEOUT_MS) {
+        ringEvent =
+          ringEvents.find(
+            (entry) => entry.ts >= deleteStartedAt && toUserId(entry.payload) === ownerId
+          ) ?? null;
+        if (ringEvent) break;
+        await new Promise((r) => setTimeout(r, 80));
+      }
+      assert(
+        ringEvent,
+        `No orbit/ring-updated event after delete for ownerId=${ownerId}`
+      );
+      assert(
+        typeof ringEvent.payload?.has_orbit_ring === "boolean" ||
+          typeof ringEvent.payload?.hasOrbitRing === "boolean",
+        "orbit/ring-updated missing has_orbit_ring compatibility field"
+      );
+    }
 
     console.log(`[pass] realtime delete events received channels=${channels.join(",")}`);
     console.log("[pass] reel realtime delete is working");

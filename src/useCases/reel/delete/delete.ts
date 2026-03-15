@@ -1,6 +1,11 @@
 import { Request, Response, formatResponse, repository, socket } from "../_module/module";
 import * as notificationRepository from "../../../repository/notification/notification_repository";
-import { emitNotificationDeletedRealtime } from "../../../libs/helper/realtime_dispatch";
+import {
+  emitOrbitDeletedRealtime,
+  emitNotificationDeletedRealtime,
+  emitOrbitRingUpdatedRealtime,
+} from "../../../libs/helper/realtime_dispatch";
+import { getActiveOrbitStateByUser } from "../../../repository/reel/orbit_ring_projection";
 
 const toPlainObject = (value: any): any => {
   if (!value) return value;
@@ -53,27 +58,100 @@ export const delete_reel = async (req: Request, res: Response) => {
     const reelId = Number(id);
     const ownerId = Number((result as any)?.reel?.userId ?? req.userId ?? 0);
     const deletedAt = new Date().toISOString();
+    const ownerRingState = await getActiveOrbitStateByUser({
+      userIdRaw: ownerId,
+      viewerIdRaw: ownerId,
+    });
+    const ringSnapshot = {
+      has_active_orbit: ownerRingState.hasActiveOrbit,
+      hasActiveOrbit: ownerRingState.hasActiveOrbit,
+      has_orbit_ring: ownerRingState.hasActiveOrbit,
+      hasOrbitRing: ownerRingState.hasActiveOrbit,
+      active_orbit_reel_id: ownerRingState.activeOrbitReelId,
+      activeOrbitReelId: ownerRingState.activeOrbitReelId,
+      orbit_ring_until: ownerRingState.orbitRingUntil,
+      orbitRingUntil: ownerRingState.orbitRingUntil,
+    };
     const payload = {
       action: "deleted",
+      event: "reel_deleted",
+      entity: "reel",
+      deleteReason: "owner_delete",
+      delete_reason: "owner_delete",
       reelId,
       reel_id: reelId,
       ownerId,
       owner_id: ownerId,
+      actorUserId: Number(req.userId ?? 0) || ownerId,
+      actor_user_id: Number(req.userId ?? 0) || ownerId,
       deletedAt,
       deleted_at: deletedAt,
-      reel: (result as any)?.reel ?? null,
+      ui_hint: {
+        remove_only: true,
+        auto_open: false,
+        auto_advance: false,
+      },
+      uiHint: {
+        removeOnly: true,
+        autoOpen: false,
+        autoAdvance: false,
+      },
+      owner_has_active_orbit: ownerRingState.hasActiveOrbit,
+      ownerHasActiveOrbit: ownerRingState.hasActiveOrbit,
+      owner_has_orbit_ring: ownerRingState.hasActiveOrbit,
+      ownerHasOrbitRing: ownerRingState.hasActiveOrbit,
+      owner_active_orbit_reel_id: ownerRingState.activeOrbitReelId,
+      ownerActiveOrbitReelId: ownerRingState.activeOrbitReelId,
+      owner_orbit_ring_until: ownerRingState.orbitRingUntil,
+      ownerOrbitRingUntil: ownerRingState.orbitRingUntil,
+      ...ringSnapshot,
+      user: {
+        id: ownerId,
+        userId: ownerId,
+        user_id: ownerId,
+        ...ringSnapshot,
+      },
+      reel: {
+        ...(toPlainObject((result as any)?.reel) ?? {}),
+        id: reelId,
+        userId: ownerId,
+        user_id: ownerId,
+        is_delete: true,
+        isDeleted: true,
+        deleted: true,
+        removed: true,
+        ring_active: false,
+        ringActive: false,
+        ring_until: null,
+        ringUntil: null,
+        is_new: false,
+        isNew: false,
+        new_until: null,
+        newUntil: null,
+      },
     };
 
-    socket.emit("reel/deleted", payload);
+    emitOrbitDeletedRealtime(payload);
+
+    emitOrbitRingUpdatedRealtime({
+      action: "updated",
+      user_id: ownerId,
+      userId: ownerId,
+      ...ringSnapshot,
+      user: payload.user,
+    });
 
     return formatResponse({
       res,
       success: true,
       body: {
+        id: reelId,
+        action: "deleted",
         deleted: true,
         reelId,
         reel_id: reelId,
-        reel: result.reel,
+        orbit_ring: ringSnapshot,
+        reel: payload.reel,
       },
     });
   } catch (error) {

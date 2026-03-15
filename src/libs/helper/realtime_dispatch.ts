@@ -16,6 +16,99 @@ const ENABLE_GENERIC_CHAT_EVENTS_OUTSIDE_ACTIVE_CHAT =
   String(process.env.ENABLE_GENERIC_CHAT_EVENTS_OUTSIDE_ACTIVE_CHAT ?? "0").trim() ===
   "1";
 
+const toPositiveInt = (value: any): number | null => {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.trunc(n);
+};
+
+const toBoolOrNull = (value: any): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (["1", "true", "yes"].includes(v)) return true;
+    if (["0", "false", "no"].includes(v)) return false;
+  }
+  return null;
+};
+
+const toIsoOrNull = (value: any): string | null => {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+};
+
+const normalizeOrbitRingRealtimePayload = (payload: unknown): Record<string, unknown> => {
+  const source =
+    payload && typeof payload === "object"
+      ? ({ ...(payload as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+
+  const sourceUser =
+    source.user && typeof source.user === "object"
+      ? ({ ...(source.user as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+
+  const userId = toPositiveInt(
+    source.userId ?? source.user_id ?? source.id ?? sourceUser.id ?? sourceUser.userId
+  );
+
+  const explicitHasActiveOrbit = toBoolOrNull(
+    source.has_active_orbit ??
+      source.hasActiveOrbit ??
+      source.has_orbit_ring ??
+      source.hasOrbitRing
+  );
+  const activeOrbitReelIdRaw = toPositiveInt(
+    source.active_orbit_reel_id ?? source.activeOrbitReelId ?? source.reelId ?? source.reel_id
+  );
+  const orbitRingUntilRaw = toIsoOrNull(
+    source.orbit_ring_until ?? source.orbitRingUntil ?? source.ring_until ?? source.ringUntil
+  );
+
+  const fallbackHasActiveOrbit = Boolean(activeOrbitReelIdRaw && orbitRingUntilRaw);
+  const hasActiveOrbit = explicitHasActiveOrbit ?? fallbackHasActiveOrbit;
+  const activeOrbitReelId = hasActiveOrbit ? activeOrbitReelIdRaw : null;
+  const orbitRingUntil = hasActiveOrbit ? orbitRingUntilRaw : null;
+
+  const normalizedUserId = userId ?? toPositiveInt(sourceUser.id ?? sourceUser.userId);
+  const normalizedUser =
+    normalizedUserId && normalizedUserId > 0
+      ? {
+          ...sourceUser,
+          id: normalizedUserId,
+          userId: normalizedUserId,
+          user_id: normalizedUserId,
+          has_active_orbit: hasActiveOrbit,
+          hasActiveOrbit: hasActiveOrbit,
+          has_orbit_ring: hasActiveOrbit,
+          hasOrbitRing: hasActiveOrbit,
+          active_orbit_reel_id: activeOrbitReelId,
+          activeOrbitReelId: activeOrbitReelId,
+          orbit_ring_until: orbitRingUntil,
+          orbitRingUntil: orbitRingUntil,
+        }
+      : sourceUser;
+
+  return {
+    ...source,
+    action: source.action ?? "updated",
+    user_id: normalizedUserId ?? source.user_id ?? null,
+    userId: normalizedUserId ?? source.userId ?? null,
+    has_active_orbit: hasActiveOrbit,
+    hasActiveOrbit: hasActiveOrbit,
+    has_orbit_ring: hasActiveOrbit,
+    hasOrbitRing: hasActiveOrbit,
+    active_orbit_reel_id: activeOrbitReelId,
+    activeOrbitReelId: activeOrbitReelId,
+    orbit_ring_until: orbitRingUntil,
+    orbitRingUntil: orbitRingUntil,
+    user: normalizedUser,
+  };
+};
+
 const toUserIds = (userIds?: Array<number | string | null | undefined>): number[] => {
   if (!userIds || userIds.length === 0) return [];
   const unique = new Set<number>();
@@ -221,6 +314,66 @@ export const emitNotificationDeletedRealtime = (userId: number, payload: unknown
   emitToUsers("notification", payload, [userId]);
   emitToUsers(`notification/deleted/${userId}`, payload, [userId]);
   emitToUsers("notification/deleted", payload, [userId]);
+};
+
+export const emitOrbitRingUpdatedRealtime = (payload: unknown) => {
+  const normalized = normalizeOrbitRingRealtimePayload(payload);
+  emitGlobal("orbit/ring-updated", normalized);
+};
+
+export const emitOrbitDeletedRealtime = (payload: unknown) => {
+  emitGlobal("reel/deleted", payload);
+  emitGlobal("orbit/deleted", payload);
+  emitGlobal("find/reel/deleted", payload);
+
+  const emitLegacyReels =
+    String(process.env.EMIT_REELS_EVENT_ON_REEL_DELETE ?? "1").trim() === "1";
+  if (emitLegacyReels) {
+    emitGlobal("reels", payload);
+  }
+
+  const emitUpdatedAlias =
+    String(process.env.EMIT_REEL_UPDATED_ALIAS_ON_DELETE ?? "1").trim() === "1";
+  if (emitUpdatedAlias) {
+    const source =
+      payload && typeof payload === "object"
+        ? ({ ...(payload as Record<string, unknown>) } as Record<string, unknown>)
+        : {};
+    const reelRaw = source.reel;
+    const reelObj =
+      reelRaw && typeof reelRaw === "object"
+        ? ({ ...(reelRaw as Record<string, unknown>) } as Record<string, unknown>)
+        : {};
+
+    reelObj.is_delete = true;
+    reelObj.isDeleted = true;
+    reelObj.deleted = true;
+    reelObj.removed = true;
+    reelObj.ring_active = false;
+    reelObj.ringActive = false;
+    reelObj.ring_until = null;
+    reelObj.ringUntil = null;
+    reelObj.is_new = false;
+    reelObj.isNew = false;
+    reelObj.new_until = null;
+    reelObj.newUntil = null;
+
+    const updatedPayload: Record<string, unknown> = {
+      ...source,
+      action: "updated",
+      status: "updated",
+      deleted: true,
+      removed: true,
+      reel: reelObj,
+    };
+
+    emitGlobal("reel/updated", updatedPayload);
+    emitGlobal("orbit/updated", updatedPayload);
+    emitGlobal("find/reel/updated", updatedPayload);
+    if (emitLegacyReels) {
+      emitGlobal("reels", updatedPayload);
+    }
+  }
 };
 
 export const emitUserUpdatedRealtime = (

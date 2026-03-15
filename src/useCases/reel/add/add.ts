@@ -6,6 +6,8 @@ import {
   socket,
   sendNotification,
 } from "../_module/module";
+import { emitOrbitRingUpdatedRealtime } from "../../../libs/helper/realtime_dispatch";
+import { getActiveOrbitStateByUser } from "../../../repository/reel/orbit_ring_projection";
 
 const parseBool = (value: any, fallback = true) => {
   if (typeof value === "boolean") return value;
@@ -104,6 +106,84 @@ const normalizeReelCommentPayload = (raw: any) => {
     created_at: createdAt,
     updatedAt,
     updated_at: updatedAt,
+  };
+};
+
+const parseBoolOrNull = (value: any): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (["1", "true", "yes"].includes(v)) return true;
+    if (["0", "false", "no"].includes(v)) return false;
+  }
+  return null;
+};
+
+const normalizeReelFreshnessState = (rawReel: any) => {
+  const reel = toPlainObject(rawReel) ?? {};
+  const ringUntilIso =
+    toIsoOrNull(reel?.ring_until ?? reel?.ringUntil ?? reel?.new_until ?? reel?.newUntil) ??
+    null;
+  const explicitRingActive = parseBoolOrNull(reel?.ring_active ?? reel?.ringActive);
+  const explicitIsNew = parseBoolOrNull(reel?.is_new ?? reel?.isNew);
+  const fallbackRingActive =
+    ringUntilIso !== null ? new Date(ringUntilIso).getTime() > Date.now() : false;
+
+  const ringActive = explicitRingActive ?? explicitIsNew ?? fallbackRingActive;
+  const ringUntil =
+    ringUntilIso ??
+    toIsoOrNull(reel?.new_until ?? reel?.newUntil) ??
+    null;
+  const isNew = explicitIsNew ?? ringActive;
+  const newUntil =
+    toIsoOrNull(reel?.new_until ?? reel?.newUntil ?? ringUntil) ??
+    ringUntil;
+
+  return {
+    ringActive,
+    ringUntil,
+    isNew,
+    newUntil,
+  };
+};
+
+const buildReelRealtimePayload = (action: "created" | "updated", rawReel: any, fallbackOwnerIdRaw: any) => {
+  const reel = toPlainObject(rawReel) ?? {};
+  const reelId = Number(reel?.id ?? reel?.reelId ?? reel?.reel_id ?? 0);
+  if (!Number.isFinite(reelId) || reelId <= 0) return null;
+
+  const ownerId = Number(
+    reel?.user?.id ?? reel?.userId ?? reel?.user_id ?? fallbackOwnerIdRaw ?? 0
+  );
+  const freshness = normalizeReelFreshnessState(reel);
+  const normalizedReel = {
+    ...reel,
+    ring_active: freshness.ringActive,
+    ringActive: freshness.ringActive,
+    ring_until: freshness.ringUntil,
+    ringUntil: freshness.ringUntil,
+    is_new: freshness.isNew,
+    isNew: freshness.isNew,
+    new_until: freshness.newUntil,
+    newUntil: freshness.newUntil,
+  };
+
+  return {
+    action,
+    reelId,
+    reel_id: reelId,
+    ownerId: Number.isFinite(ownerId) && ownerId > 0 ? ownerId : 0,
+    owner_id: Number.isFinite(ownerId) && ownerId > 0 ? ownerId : 0,
+    ring_active: freshness.ringActive,
+    ringActive: freshness.ringActive,
+    ring_until: freshness.ringUntil,
+    ringUntil: freshness.ringUntil,
+    is_new: freshness.isNew,
+    isNew: freshness.isNew,
+    new_until: freshness.newUntil,
+    newUntil: freshness.newUntil,
+    reel: normalizedReel,
   };
 };
 
@@ -224,12 +304,51 @@ export const create_reel = async (req: Request, res: Response) => {
       is_delete: false,
     };
 
-    const reel = await repository.createReel(payload);
+    const createdReel = await repository.createReel(payload);
+    const hydratedReel =
+      (await repository.getById((createdReel as any)?.id, req.userId)) ??
+      toPlainObject(createdReel);
+
+    const realtimePayload = buildReelRealtimePayload(
+      "created",
+      hydratedReel,
+      req.userId
+    );
+    if (realtimePayload) {
+      socket.emit("reel/created", realtimePayload);
+    }
+
+    const ownerRingState = await getActiveOrbitStateByUser({
+      userIdRaw: req.userId,
+      viewerIdRaw: req.userId,
+    });
+    const ringSnapshot = {
+      has_active_orbit: ownerRingState.hasActiveOrbit,
+      hasActiveOrbit: ownerRingState.hasActiveOrbit,
+      has_orbit_ring: ownerRingState.hasActiveOrbit,
+      hasOrbitRing: ownerRingState.hasActiveOrbit,
+      active_orbit_reel_id: ownerRingState.activeOrbitReelId,
+      activeOrbitReelId: ownerRingState.activeOrbitReelId,
+      orbit_ring_until: ownerRingState.orbitRingUntil,
+      orbitRingUntil: ownerRingState.orbitRingUntil,
+    };
+    emitOrbitRingUpdatedRealtime({
+      action: "updated",
+      user_id: Number(req.userId ?? 0) || 0,
+      userId: Number(req.userId ?? 0) || 0,
+      ...ringSnapshot,
+      user: {
+        id: Number(req.userId ?? 0) || 0,
+        userId: Number(req.userId ?? 0) || 0,
+        user_id: Number(req.userId ?? 0) || 0,
+        ...ringSnapshot,
+      },
+    });
 
     return formatResponse({
       res,
       success: true,
-      body: { reel },
+      body: { reel: realtimePayload?.reel ?? hydratedReel },
     });
   } catch (error) {
     return formatResponse({ res, success: false, message: error });
