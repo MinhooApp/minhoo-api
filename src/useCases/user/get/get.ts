@@ -6,6 +6,61 @@ import {
   followerRepo,
 } from "../_module/module";
 import * as savedRepository from "../../../repository/saved/saved_repository";
+import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
+import { isSummaryMode, toFollowSummary } from "../../../libs/summary_response";
+import { attachActiveOrbitStateToUsers } from "../../../repository/reel/orbit_ring_projection";
+
+const collectFollowUsers = (entries: any[]) =>
+  (Array.isArray(entries) ? entries : [])
+    .map((entry: any) =>
+      entry?.user ??
+      entry?.following_data ??
+      entry?.follower_data ??
+      null
+    )
+    .filter((user: any) => !!user && typeof user === "object");
+
+const enrichFollowUsersWithOrbitState = async (
+  entries: any[],
+  viewerIdRaw: any
+) => {
+  const users = collectFollowUsers(entries);
+  if (!users.length) return;
+  await attachActiveOrbitStateToUsers({
+    usersRaw: users,
+    viewerIdRaw,
+  });
+};
+
+const resolveTargetUserId = (idRaw: any, requesterIdRaw: any) => {
+  const hasExplicitId =
+    idRaw !== undefined &&
+    idRaw !== null &&
+    String(idRaw).trim().length > 0;
+
+  if (hasExplicitId) {
+    const parsed = Number(idRaw);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return {
+        ok: false as const,
+        code: 400,
+        message: "id must be a valid number",
+      };
+    }
+    return { ok: true as const, id: Math.trunc(parsed) };
+  }
+
+  const requesterId = Number(requesterIdRaw);
+  if (!Number.isFinite(requesterId) || requesterId <= 0) {
+    return {
+      ok: false as const,
+      code: 401,
+      message: "authentication required when id is omitted",
+    };
+  }
+
+  return { ok: true as const, id: Math.trunc(requesterId) };
+};
 
 const normalizeSavedCounter = (value: any) => {
   const n = Number(value);
@@ -106,14 +161,15 @@ const enrichUserFollowCounts = async (user: any) => {
 
 export const gets = async (req: Request, res: Response) => {
   try {
-    const { page = 0, size = 5 } = req.query;
+    const page = Math.max(0, Number(req.query.page ?? 0) || 0);
+    const size = Math.min(Math.max(Number(req.query.size ?? 5) || 5, 1), 20);
     const users: any = await repository.users(page, size);
     return formatResponse({
       res: res,
       success: true,
       body: {
         page: +page,
-        size: +size,
+        size,
         count: users.count,
         users: users.rows,
       },
@@ -138,7 +194,7 @@ export const search_profiles = async (req: Request, res: Response) => {
     const sizeRaw = (req.query as any)?.size ?? 20;
     const page = Number.isFinite(Number(pageRaw)) && Number(pageRaw) >= 0 ? Math.floor(Number(pageRaw)) : 0;
     const sizeNumber = Number.isFinite(Number(sizeRaw)) ? Math.floor(Number(sizeRaw)) : 20;
-    const size = Math.min(Math.max(sizeNumber, 1), 100);
+    const size = Math.min(Math.max(sizeNumber, 1), 20);
     const query = String(qRaw ?? "").trim();
     const users: any = await repository.search_profiles(query, req.userId ?? -1, page, size);
 
@@ -163,6 +219,10 @@ export const get = async (req: Request, res: Response) => {
 
   try {
     const user = await repository.get(id, req.userId);
+    await attachActiveOrbitStateToUsers({
+      usersRaw: [user].filter(Boolean),
+      viewerIdRaw: req.userId,
+    });
     await attachSavedStateToUserPosts(req.userId, user);
     const counts = await enrichUserFollowCounts(user);
     const breakdown = {
@@ -331,23 +391,109 @@ export const profile_completion = async (req: Request, res: Response) => {
 export const follows = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const follows = await repository.follows(id ?? req.userId, req.userId);
+    const targetResolution = resolveTargetUserId(id, req.userId);
+    if (!targetResolution.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: targetResolution.code,
+        message: targetResolution.message,
+      });
+    }
+    const targetId = targetResolution.id;
+    const summary = isSummaryMode((req.query as any)?.summary);
+    if (summary) {
+      const cursorRaw = (req.query as any)?.cursor;
+      const limitRaw = (req.query as any)?.limit;
+      const limit = limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : 20;
+      const cursor = cursorRaw ? Number(cursorRaw) : null;
+      const items = await followerRepo.listFollowingSummary(targetId, req.userId ?? null, {
+        cursor,
+        limit,
+      });
+      await enrichFollowUsersWithOrbitState(items, req.userId);
+      const nextCursor =
+        items.length >= limit
+          ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
+          : null;
+      res.set("X-Paging-Limit", String(limit));
+      res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
+      res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
+      return formatResponse({
+        res,
+        success: true,
+        body: {
+          following: items.map((entry: any) => toFollowSummary(entry)),
+          paging: { next_cursor: nextCursor, limit },
+        },
+      });
+    }
+    const follows = await repository.follows(targetId, req.userId);
+    await enrichFollowUsersWithOrbitState(follows, req.userId);
 
     return formatResponse({ res: res, success: true, body: { follows } });
   } catch (error) {
-    console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
+    console.error("[user/follows] failed", error);
+    return formatResponse({
+      res: res,
+      success: false,
+      code: 500,
+      message: "Internal error, please consult the administrator",
+    });
   }
 };
 
 export const followers = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const followers = await repository.followers(id ?? req.userId, req.userId);
+    const targetResolution = resolveTargetUserId(id, req.userId);
+    if (!targetResolution.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: targetResolution.code,
+        message: targetResolution.message,
+      });
+    }
+    const targetId = targetResolution.id;
+    const summary = isSummaryMode((req.query as any)?.summary);
+    if (summary) {
+      const cursorRaw = (req.query as any)?.cursor;
+      const limitRaw = (req.query as any)?.limit;
+      const limit = limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : 20;
+      const cursor = cursorRaw ? Number(cursorRaw) : null;
+      const items = await followerRepo.listFollowersSummary(targetId, req.userId ?? null, {
+        cursor,
+        limit,
+      });
+      await enrichFollowUsersWithOrbitState(items, req.userId);
+      const nextCursor =
+        items.length >= limit
+          ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
+          : null;
+      res.set("X-Paging-Limit", String(limit));
+      res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
+      res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
+      return formatResponse({
+        res,
+        success: true,
+        body: {
+          followers: items.map((entry: any) => toFollowSummary(entry)),
+          paging: { next_cursor: nextCursor, limit },
+        },
+      });
+    }
+    const followers = await repository.followers(targetId, req.userId);
+    await enrichFollowUsersWithOrbitState(followers, req.userId);
     return formatResponse({ res: res, success: true, body: { followers } });
   } catch (error) {
-    console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
+    console.error("[user/followers] failed", error);
+    return formatResponse({
+      res: res,
+      success: false,
+      code: 500,
+      message: "Internal error, please consult the administrator",
+    });
   }
 };
 
@@ -462,10 +608,18 @@ export const get_username = async (req: Request, res: Response) => {
       });
     }
 
+    const payload = { id: existing.id, username: existing.username };
+    setCacheControl(res, {
+      visibility: "public",
+      maxAgeSeconds: 300,
+      staleWhileRevalidateSeconds: 1800,
+      staleIfErrorSeconds: 3600,
+    });
+    if (respondNotModifiedIfFresh(req, res, payload)) return;
     return formatResponse({
       res,
       success: true,
-      body: { id: existing.id, username: existing.username },
+      body: payload,
     });
   } catch (error) {
     console.log(error);
@@ -491,13 +645,19 @@ export const followers_v2 = async (req: Request, res: Response) => {
 
     const items = await followerRepo.listFollowersWithFlags(targetId, req.userId ?? null, {
       cursor: cursorRaw ? Number(cursorRaw) : null,
-      limit: limitRaw ? Number(limitRaw) : undefined,
+      limit: limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : undefined,
     });
+    await enrichFollowUsersWithOrbitState(items, req.userId);
 
     return formatResponse({ res, success: true, body: { followers: items } });
   } catch (error) {
-    console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
+    console.error("[user/followers_v2] failed", error);
+    return formatResponse({
+      res: res,
+      success: false,
+      code: 500,
+      message: "Internal error, please consult the administrator",
+    });
   }
 };
 
@@ -519,13 +679,19 @@ export const following_v2 = async (req: Request, res: Response) => {
 
     const items = await followerRepo.listFollowingWithFlags(targetId, req.userId ?? null, {
       cursor: cursorRaw ? Number(cursorRaw) : null,
-      limit: limitRaw ? Number(limitRaw) : undefined,
+      limit: limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : undefined,
     });
+    await enrichFollowUsersWithOrbitState(items, req.userId);
 
     return formatResponse({ res: res, success: true, body: { following: items } });
   } catch (error) {
-    console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
+    console.error("[user/following_v2] failed", error);
+    return formatResponse({
+      res: res,
+      success: false,
+      code: 500,
+      message: "Internal error, please consult the administrator",
+    });
   }
 };
 

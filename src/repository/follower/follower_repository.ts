@@ -204,7 +204,7 @@ export const listFollowersWithFlags = async (
   opts?: { cursor?: number | null; limit?: number }
 ) => {
   const hasViewer = Number.isFinite(viewerId as any) && (viewerId as number) > 0;
-  const baseViewerId = hasViewer ? Number(viewerId) : Number(userId);
+  const baseViewerId = hasViewer ? Number(viewerId) : null;
   const limit = normalizeLimit(opts?.limit, 20, 50);
   const cursor = opts?.cursor ? Number(opts?.cursor) : null;
 
@@ -249,7 +249,7 @@ export const listFollowersWithFlags = async (
   const viewerFollowsAt = new Map<number, Date>();
   const userFollowsViewerAt = new Map<number, Date>();
 
-  if (Number.isFinite(baseViewerId) && baseViewerId > 0 && followerIds.length) {
+  if (baseViewerId && followerIds.length) {
     const viewerFollows = await Follower.findAll({
       where: { followerId: baseViewerId, userId: followerIds },
       attributes: ["userId", "createdAt"],
@@ -276,6 +276,7 @@ export const listFollowersWithFlags = async (
     const viewerFollowsUser = viewerFollowsSet.has(targetId);
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
     return {
+      cursor_id: Number(row.id ?? 0) || null,
       user: row.follower_data,
       viewerFollowsUser,
       userFollowsViewer,
@@ -289,13 +290,97 @@ export const listFollowersWithFlags = async (
   });
 };
 
+export const listFollowersSummary = async (
+  userId: number,
+  viewerId: number | null,
+  opts?: { cursor?: number | null; limit?: number }
+) => {
+  const hasViewer = Number.isFinite(viewerId as any) && (viewerId as number) > 0;
+  const baseViewerId = hasViewer ? Number(viewerId) : null;
+  const limit = normalizeLimit(opts?.limit, 20, 20);
+  const cursor = opts?.cursor ? Number(opts?.cursor) : null;
+
+  const where: any = { userId };
+  const and: any[] = [];
+
+  if (cursor && Number.isFinite(cursor)) {
+    where.id = { [Op.lt]: cursor };
+  }
+
+  if (hasViewer) {
+    and.push(buildBlockLiteral(viewerId as number, "`follower`.`followerId`"));
+  }
+
+  if (and.length) {
+    where[Op.and] = and;
+  }
+
+  const rows = await Follower.findAll({
+    where,
+    attributes: ["id", "followerId"],
+    include: [
+      {
+        model: User,
+        as: "follower_data",
+        attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
+        where: { disabled: false, is_deleted: false },
+        required: true,
+      },
+    ],
+    order: [["id", "DESC"]],
+    limit,
+    ...(hasViewer ? { replacements: { viewerId } } : {}),
+  });
+
+  const followerIds = rows
+    .map((r: any) => Number(r.followerId))
+    .filter((id: number) => Number.isFinite(id));
+
+  let viewerFollowsSet = new Set<number>();
+  let userFollowsViewerSet = new Set<number>();
+
+  if (baseViewerId && followerIds.length) {
+    const [viewerFollows, userFollowsViewer] = await Promise.all([
+      Follower.findAll({
+        where: { followerId: baseViewerId, userId: followerIds },
+        attributes: ["userId"],
+        raw: true,
+      }),
+      Follower.findAll({
+        where: { userId: baseViewerId, followerId: followerIds },
+        attributes: ["followerId"],
+        raw: true,
+      }),
+    ]);
+
+    viewerFollowsSet = new Set(viewerFollows.map((r: any) => Number(r.userId)));
+    userFollowsViewerSet = new Set(
+      userFollowsViewer.map((r: any) => Number(r.followerId))
+    );
+  }
+
+  return rows.map((row: any) => {
+    const targetId = Number(row.followerId);
+    const viewerFollowsUser = viewerFollowsSet.has(targetId);
+    const userFollowsViewer = userFollowsViewerSet.has(targetId);
+    return {
+      cursor_id: Number(row.id ?? 0) || null,
+      user: row.follower_data,
+      viewerFollowsUser,
+      userFollowsViewer,
+      isMutual: viewerFollowsUser && userFollowsViewer,
+      canRemove: hasViewer && Number(viewerId) === Number(userId),
+    };
+  });
+};
+
 export const listFollowingWithFlags = async (
   userId: number,
   viewerId: number | null,
   opts?: { cursor?: number | null; limit?: number }
 ) => {
   const hasViewer = Number.isFinite(viewerId as any) && (viewerId as number) > 0;
-  const baseViewerId = hasViewer ? Number(viewerId) : Number(userId);
+  const baseViewerId = hasViewer ? Number(viewerId) : null;
   const limit = normalizeLimit(opts?.limit, 20, 50);
   const cursor = opts?.cursor ? Number(opts?.cursor) : null;
 
@@ -340,7 +425,7 @@ export const listFollowingWithFlags = async (
   const viewerFollowsAt = new Map<number, Date>();
   const userFollowsViewerAt = new Map<number, Date>();
 
-  if (Number.isFinite(baseViewerId) && baseViewerId > 0 && followingIds.length) {
+  if (baseViewerId && followingIds.length) {
     const viewerFollows = await Follower.findAll({
       where: { followerId: baseViewerId, userId: followingIds },
       attributes: ["userId", "createdAt"],
@@ -367,6 +452,7 @@ export const listFollowingWithFlags = async (
     const viewerFollowsUser = viewerFollowsSet.has(targetId);
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
     return {
+      cursor_id: Number(row.id ?? 0) || null,
       user: row.following_data,
       viewerFollowsUser,
       userFollowsViewer,
@@ -375,6 +461,89 @@ export const listFollowingWithFlags = async (
         ? viewerFollowsAt.get(targetId) ?? null
         : row.createdAt ?? null,
       followed_me_at: userFollowsViewerAt.get(targetId) ?? null,
+    };
+  });
+};
+
+export const listFollowingSummary = async (
+  userId: number,
+  viewerId: number | null,
+  opts?: { cursor?: number | null; limit?: number }
+) => {
+  const hasViewer = Number.isFinite(viewerId as any) && (viewerId as number) > 0;
+  const baseViewerId = hasViewer ? Number(viewerId) : null;
+  const limit = normalizeLimit(opts?.limit, 20, 20);
+  const cursor = opts?.cursor ? Number(opts?.cursor) : null;
+
+  const where: any = { followerId: userId };
+  const and: any[] = [];
+
+  if (cursor && Number.isFinite(cursor)) {
+    where.id = { [Op.lt]: cursor };
+  }
+
+  if (hasViewer) {
+    and.push(buildBlockLiteral(viewerId as number, "`follower`.`userId`"));
+  }
+
+  if (and.length) {
+    where[Op.and] = and;
+  }
+
+  const rows = await Follower.findAll({
+    where,
+    attributes: ["id", "userId"],
+    include: [
+      {
+        model: User,
+        as: "following_data",
+        attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
+        where: { disabled: false, is_deleted: false },
+        required: true,
+      },
+    ],
+    order: [["id", "DESC"]],
+    limit,
+    ...(hasViewer ? { replacements: { viewerId } } : {}),
+  });
+
+  const followingIds = rows
+    .map((r: any) => Number(r.userId))
+    .filter((id: number) => Number.isFinite(id));
+
+  let viewerFollowsSet = new Set<number>();
+  let userFollowsViewerSet = new Set<number>();
+
+  if (baseViewerId && followingIds.length) {
+    const [viewerFollows, userFollowsViewer] = await Promise.all([
+      Follower.findAll({
+        where: { followerId: baseViewerId, userId: followingIds },
+        attributes: ["userId"],
+        raw: true,
+      }),
+      Follower.findAll({
+        where: { userId: baseViewerId, followerId: followingIds },
+        attributes: ["followerId"],
+        raw: true,
+      }),
+    ]);
+
+    viewerFollowsSet = new Set(viewerFollows.map((r: any) => Number(r.userId)));
+    userFollowsViewerSet = new Set(
+      userFollowsViewer.map((r: any) => Number(r.followerId))
+    );
+  }
+
+  return rows.map((row: any) => {
+    const targetId = Number(row.userId);
+    const viewerFollowsUser = viewerFollowsSet.has(targetId);
+    const userFollowsViewer = userFollowsViewerSet.has(targetId);
+    return {
+      cursor_id: Number(row.id ?? 0) || null,
+      user: row.following_data,
+      viewerFollowsUser,
+      userFollowsViewer,
+      isMutual: viewerFollowsUser && userFollowsViewer,
     };
   });
 };
