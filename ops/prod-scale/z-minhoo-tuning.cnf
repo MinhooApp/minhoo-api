@@ -1,0 +1,5 @@
+[mysqld]
+# Capacity tuning for current app profile (2-node API + summary endpoints).
+max_connections = 300
+thread_cache_size = 50
+innodb_buffer_pool_size = 1G

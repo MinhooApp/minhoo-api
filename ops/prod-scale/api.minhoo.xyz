@@ -1,0 +1,163 @@
+upstream minhoo_api_http {
+    least_conn;
+    server 127.0.0.1:3000 max_fails=3 fail_timeout=10s;
+    server 127.0.0.1:3001 max_fails=3 fail_timeout=10s;
+    keepalive 64;
+}
+
+upstream minhoo_api_socket {
+    ip_hash;
+    server 127.0.0.1:3000 max_fails=3 fail_timeout=10s;
+    server 127.0.0.1:3001 max_fails=3 fail_timeout=10s;
+}
+
+map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+
+    server_name api.minhoo.xyz _;
+
+    client_max_body_size 50M;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()" always;
+    add_header X-XSS-Protection "1; mode=block" always;
+
+    # Block common scan targets
+    location ~ /\. { deny all; access_log off; log_not_found off; }
+    location ~* "(wp-login\.php|xmlrpc\.php|admin/config\.php|boaform/admin|\.env|vendor/phpunit)" {
+        return 444;
+    }
+
+    # Local Nginx status for Netdata
+    location = /stub_status {
+        stub_status;
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+        access_log off;
+    }
+
+    # Socket.IO compatibility paths (clients using custom /api or /api/v1 prefixes)
+    location /api/v1/socket.io/ {
+        proxy_pass http://minhoo_api_socket/socket.io/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    location /api/socket.io/ {
+        proxy_pass http://minhoo_api_socket/socket.io/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    location /socket.io/ {
+        proxy_pass http://minhoo_api_socket/socket.io/;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 120s;
+        proxy_send_timeout 120s;
+    }
+
+    # API-specific rate limiting and connection limiting
+    location ^~ /api/v1/ {
+        limit_req zone=api_req_per_ip burst=80 nodelay;
+        limit_conn api_conn_per_ip 40;
+
+        proxy_pass http://minhoo_api_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    location / {
+        proxy_pass http://minhoo_api_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+
+    listen [::]:443 ssl ipv6only=on; # managed by Certbot
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/ssl/cloudflare/minhoo-origin.crt;
+    ssl_certificate_key /etc/ssl/cloudflare/minhoo-origin.key;
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+}
+
+server {
+    if ($host = api.minhoo.xyz) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name api.minhoo.xyz _;
+    location = /stub_status {
+        stub_status;
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+        access_log off;
+    }
+
+    location / { return 404; } # managed by Certbot
+
+
+}

@@ -8,6 +8,7 @@ import Message from "../../_models/chat/message";
 import Chat_User from "../../_models/chat/chat_user";
 import Group from "../../_models/chat/group";
 import UserBlock from "../../_models/block/block";
+import { attachActiveOrbitStateToUsers } from "../reel/orbit_ring_projection";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 const MAX_MESSAGES_PER_CHAT = Math.max(
@@ -284,7 +285,10 @@ export const getChatMessages = async (chatId: any, currentUserId: any) => {
   return messages;
 };
 
-export const getSenderByMessageId = async (messageId: any) => {
+export const getSenderByMessageId = async (
+  messageId: any,
+  viewerIdRaw: any = null
+) => {
   const messages = await Message.findOne({
     where: { id: messageId },
     include: [
@@ -295,6 +299,11 @@ export const getSenderByMessageId = async (messageId: any) => {
       },
     ],
     attributes: { exclude: excludeKeys },
+  });
+
+  await attachActiveOrbitStateToUsers({
+    usersRaw: [(messages as any)?.sender].filter(Boolean),
+    viewerIdRaw,
   });
 
   return messages;
@@ -464,6 +473,87 @@ export const getChatByUser = async (
     ],
   });
 
+  await attachActiveOrbitStateToUsers({
+    usersRaw: (messages as any[])
+      .map((message: any) => (message as any)?.sender)
+      .filter(Boolean),
+    viewerIdRaw: me,
+  });
+
+  if (sort === "desc") {
+    return messages;
+  }
+  return messages.reverse();
+};
+
+export const getChatByUserSummary = async (
+  currentUserId: any,
+  otherUserId: any,
+  opts?: { limit?: number; beforeMessageId?: number | null; sort?: "asc" | "desc" | null }
+) => {
+  const me = Number(currentUserId);
+  const other = Number(otherUserId);
+
+  const otherUser = await User.findByPk(other, { attributes: ["id", "is_deleted"] });
+  if ((otherUser as any)?.is_deleted) return [];
+
+  if (await isBlockedEitherWay(me, other)) return [];
+
+  const existingChat = await chatExist(me, other);
+  if (!existingChat?.length) return [];
+
+  const chatId = existingChat[0].chatId;
+  const chat = await Chat.findOne({
+    where: {
+      id: chatId,
+      deletedBy: { [Op.in]: [0, me] },
+    },
+    attributes: ["id"],
+  });
+  if (!chat) return [];
+
+  const limit = Math.max(1, Math.min(Number(opts?.limit ?? 50) || 50, 50));
+  const beforeMessageId =
+    opts?.beforeMessageId == null ? null : Number(opts?.beforeMessageId);
+  const sort = String(opts?.sort ?? "asc").toLowerCase() === "desc" ? "desc" : "asc";
+
+  const where: any = {
+    chatId,
+    deletedBy: { [Op.in]: [0, me] },
+  };
+
+  if (Number.isFinite(beforeMessageId as any) && (beforeMessageId as number) > 0) {
+    where.id = { [Op.lt]: beforeMessageId };
+  }
+
+  const messages = await Message.findAll({
+    where,
+    order: [
+      ["date", "DESC"],
+      ["id", "DESC"],
+    ],
+    limit,
+    attributes: [
+      "id",
+      "chatId",
+      "senderId",
+      "text",
+      "messageType",
+      "mediaUrl",
+      "date",
+      "status",
+      "replyToMessageId",
+    ],
+    include: [
+      {
+        model: User,
+        as: "sender",
+        required: false,
+        attributes: chatSummaryUserAttributes,
+      },
+    ],
+  });
+
   if (sort === "desc") {
     return messages;
   }
@@ -600,6 +690,26 @@ const getBlockedUserIdsForUser = async (userId: number): Promise<number[]> => {
   return [...blocked];
 };
 
+const chatSummaryUserAttributes = [
+  "id",
+  "name",
+  "last_name",
+  "username",
+  "image_profil",
+  "verified",
+];
+
+const chatSummaryMessageAttributes = [
+  "id",
+  "chatId",
+  "senderId",
+  "text",
+  "messageType",
+  "mediaUrl",
+  "date",
+  "status",
+];
+
 /**
  * âœ… GET USER CHATS (LISTA)
  * Objetivo:
@@ -686,6 +796,7 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
     .filter((id: number) => Number.isFinite(id) && id > 0);
 
   const latestMessageByChatId = new Map<number, any>();
+  const unreadCountByChatId = new Map<number, number>();
   if (chatIds.length > 0) {
     const latestCandidates = await Message.findAll({
       where: {
@@ -727,6 +838,27 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
         latestMessageByChatId.set(cid, row);
       }
     }
+
+    const unreadRows = await Message.findAll({
+      where: {
+        chatId: { [Op.in]: chatIds },
+        senderId: { [Op.ne]: uid },
+        deletedBy: { [Op.in]: [0, uid] },
+        status: { [Op.in]: ["sent", "delivered"] },
+      },
+      attributes: [
+        "chatId",
+        [sequelize.fn("COUNT", sequelize.col("id")), "unreadCount"],
+      ],
+      group: ["chatId"],
+      raw: true,
+    });
+
+    for (const row of unreadRows as any[]) {
+      const cid = Number(row.chatId);
+      if (!Number.isFinite(cid) || cid <= 0) continue;
+      unreadCountByChatId.set(cid, Number(row.unreadCount ?? 0) || 0);
+    }
   }
 
   const pinnedRows = await Chat_User.findAll({
@@ -753,8 +885,10 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
     if (chat.Chat) {
       if (typeof chat.Chat.setDataValue === "function") {
         chat.Chat.setDataValue("messages", lastMessage ? [lastMessage] : []);
+        chat.Chat.setDataValue("unreadCount", unreadCountByChatId.get(chatId) ?? 0);
       }
       chat.Chat.messages = lastMessage ? [lastMessage] : [];
+      chat.Chat.unreadCount = unreadCountByChatId.get(chatId) ?? 0;
     }
     const pinned = pinnedByChatId.get(chatId);
     if (!pinned) continue;
@@ -767,6 +901,183 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
   }
 
   // ordenar por pin + fecha del último mensaje
+  chats.sort((a: any, b: any) => {
+    const pinA = a.pinnedAt ? new Date(a.pinnedAt).getTime() : 0;
+    const pinB = b.pinnedAt ? new Date(b.pinnedAt).getTime() : 0;
+
+    if (pinA && !pinB) return -1;
+    if (!pinA && pinB) return 1;
+    if (pinA && pinB && pinA !== pinB) return pinB - pinA;
+
+    const dateA = new Date(a.Chat?.messages?.[0]?.date ?? 0).getTime() || 0;
+    const dateB = new Date(b.Chat?.messages?.[0]?.date ?? 0).getTime() || 0;
+    return dateB - dateA;
+  });
+
+  const chatUsers = (chats as any[]).flatMap((chat: any) => {
+    const users = Array.isArray((chat as any)?.Chat?.users)
+      ? (chat as any).Chat.users
+      : [];
+    return users.filter(Boolean);
+  });
+  await attachActiveOrbitStateToUsers({
+    usersRaw: chatUsers,
+    viewerIdRaw: uid,
+  });
+
+  return chats;
+};
+
+export const getUserChatsSummary = async (currentUserId: number, meId: any = -1) => {
+  const me = Number(meId);
+  const uid = Number(currentUserId);
+  const groupChatIds = await getActiveGroupChatIds();
+  const useBlockFilter = Number.isFinite(me) && me > 0;
+
+  const userWhere: any = {
+    id: { [Op.ne]: uid },
+    is_deleted: false,
+  };
+
+  if (useBlockFilter) {
+    userWhere[Op.and] = [
+      Sequelize.literal(`
+        NOT EXISTS (
+          SELECT 1
+          FROM user_blocks ub
+          WHERE
+            (ub.blocker_id = :me AND ub.blocked_id = \`Chat->users\`.\`id\`)
+            OR
+            (ub.blocker_id = \`Chat->users\`.\`id\` AND ub.blocked_id = :me)
+        )
+      `),
+    ];
+  }
+
+  const chats = await Chat_User.findAll({
+    attributes: ["userId", "chatId", "pinnedAt", "pinnedOrder", "updatedAt"],
+    where: { userId: uid },
+    include: [
+      {
+        model: Chat,
+        attributes: ["id"],
+        where: {
+          ...(groupChatIds.length
+            ? {
+                id: {
+                  [Op.notIn]: groupChatIds,
+                },
+              }
+            : {}),
+          deletedBy: { [Op.in]: [0, uid] },
+        },
+        include: [
+          {
+            model: User,
+            as: "users",
+            where: userWhere,
+            attributes: chatSummaryUserAttributes,
+            through: { attributes: [] },
+            required: true,
+          },
+        ],
+      },
+    ],
+    ...(useBlockFilter ? { replacements: { me } } : {}),
+  });
+
+  const chatIds = (chats as any[])
+    .map((row: any) => Number(row.chatId ?? row.get?.("chatId")))
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
+  const latestMessageByChatId = new Map<number, any>();
+  const unreadCountByChatId = new Map<number, number>();
+
+  if (chatIds.length > 0) {
+    const latestCandidates = await Message.findAll({
+      where: {
+        chatId: { [Op.in]: chatIds },
+        deletedBy: { [Op.in]: [0, uid] },
+      },
+      attributes: chatSummaryMessageAttributes,
+      order: [
+        ["chatId", "ASC"],
+        ["date", "DESC"],
+        ["id", "DESC"],
+      ],
+      raw: true,
+    });
+
+    for (const row of latestCandidates as any[]) {
+      const cid = Number(row.chatId);
+      if (!Number.isFinite(cid) || cid <= 0) continue;
+      if (!latestMessageByChatId.has(cid)) {
+        latestMessageByChatId.set(cid, row);
+      }
+    }
+
+    const unreadRows = await Message.findAll({
+      where: {
+        chatId: { [Op.in]: chatIds },
+        senderId: { [Op.ne]: uid },
+        deletedBy: { [Op.in]: [0, uid] },
+        status: { [Op.in]: ["sent", "delivered"] },
+      },
+      attributes: [
+        "chatId",
+        [sequelize.fn("COUNT", sequelize.col("id")), "unreadCount"],
+      ],
+      group: ["chatId"],
+      raw: true,
+    });
+
+    for (const row of unreadRows as any[]) {
+      const cid = Number(row.chatId);
+      if (!Number.isFinite(cid) || cid <= 0) continue;
+      unreadCountByChatId.set(cid, Number(row.unreadCount ?? 0) || 0);
+    }
+  }
+
+  const pinnedRows = await Chat_User.findAll({
+    attributes: ["chatId", "pinnedAt", "pinnedOrder"],
+    where: { userId: uid },
+    raw: true,
+  });
+  const pinnedByChatId = new Map<
+    number,
+    { pinnedAt: Date | null; pinnedOrder: number | null }
+  >();
+  for (const row of pinnedRows as any[]) {
+    const chatId = Number(row.chatId);
+    if (!Number.isFinite(chatId)) continue;
+    pinnedByChatId.set(chatId, {
+      pinnedAt: row.pinnedAt ?? null,
+      pinnedOrder: row.pinnedOrder ?? null,
+    });
+  }
+
+  for (const chat of chats as any[]) {
+    const chatId = Number(chat.chatId ?? chat.get?.("chatId"));
+    if (!Number.isFinite(chatId)) continue;
+    const lastMessage = latestMessageByChatId.get(chatId) ?? null;
+    if (chat.Chat) {
+      if (typeof chat.Chat.setDataValue === "function") {
+        chat.Chat.setDataValue("messages", lastMessage ? [lastMessage] : []);
+        chat.Chat.setDataValue("unreadCount", unreadCountByChatId.get(chatId) ?? 0);
+      }
+      chat.Chat.messages = lastMessage ? [lastMessage] : [];
+      chat.Chat.unreadCount = unreadCountByChatId.get(chatId) ?? 0;
+    }
+    const pinned = pinnedByChatId.get(chatId);
+    if (!pinned) continue;
+    if (typeof chat.setDataValue === "function") {
+      chat.setDataValue("pinnedAt", pinned.pinnedAt);
+      chat.setDataValue("pinnedOrder", pinned.pinnedOrder);
+    }
+    chat.pinnedAt = pinned.pinnedAt;
+    chat.pinnedOrder = pinned.pinnedOrder;
+  }
+
   chats.sort((a: any, b: any) => {
     const pinA = a.pinnedAt ? new Date(a.pinnedAt).getTime() : 0;
     const pinB = b.pinnedAt ? new Date(b.pinnedAt).getTime() : 0;
@@ -971,6 +1282,17 @@ export const getUserStarredChats = async ({
       };
     }
   }
+
+  const chatUsers = (chats as any[]).flatMap((chat: any) => {
+    const users = Array.isArray((chat as any)?.Chat?.users)
+      ? (chat as any).Chat.users
+      : [];
+    return users.filter(Boolean);
+  });
+  await attachActiveOrbitStateToUsers({
+    usersRaw: chatUsers,
+    viewerIdRaw: uid,
+  });
 
   return {
     chats,

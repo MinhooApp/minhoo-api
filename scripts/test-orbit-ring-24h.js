@@ -133,17 +133,31 @@ async function main() {
     const reel = reels.find((item) => Number(item?.id) === reelId);
     assert(reel, "created reel was not found in /reel/my");
 
+    const ringActive = readBool(reel, "ringActive", "ring_active", false);
+    const ringUntil = readString(reel, "ringUntil", "ring_until");
     const isNew = readBool(reel, "isNew", "is_new", false);
     const newUntil = readString(reel, "newUntil", "new_until");
+    assert(ringActive === true, "expected ring_active/ringActive=true on fresh reel");
+    assert(!!ringUntil, "expected ring_until/ringUntil on fresh reel");
     assert(isNew === true, "expected is_new/isNew=true on fresh reel");
     assert(!!newUntil, "expected new_until/newUntil on fresh reel");
 
     const now = Date.now();
+    const ringUntilTs = toTs(ringUntil);
     const newUntilTs = toTs(newUntil);
+    assert(ringUntilTs > now, "ring_until/ringUntil should be in the future");
+    assert(
+      ringUntilTs <= now + 25 * 60 * 60 * 1000,
+      "ring_until/ringUntil should be around 24h window"
+    );
     assert(newUntilTs > now, "new_until/newUntil should be in the future");
     assert(
       newUntilTs <= now + 25 * 60 * 60 * 1000,
       "new_until/newUntil should be around 24h window"
+    );
+    assert(
+      Math.abs(ringUntilTs - newUntilTs) <= 2000,
+      "ring_until/ringUntil and new_until/newUntil should match"
     );
 
     const user = reel?.user || {};
@@ -160,7 +174,7 @@ async function main() {
       "orbit ring until should be around 24h window"
     );
 
-    console.log("[pass] reel is_new/new_until is correct");
+    console.log("[pass] reel ring_active/ring_until + is_new/new_until is correct");
     console.log("[pass] user has_orbit_ring/orbit_ring_until is correct");
     console.log("[pass] orbit avatar ring 24h test completed");
   } finally {

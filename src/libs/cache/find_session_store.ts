@@ -1,4 +1,4 @@
-type FindScope = "orbit" | "post";
+type FindScope = "orbit" | "post" | "worker";
 type FindStoreBackend = "redis" | "memory";
 
 type LoadFindSessionStateParams<T> = {

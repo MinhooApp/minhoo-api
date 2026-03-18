@@ -10,6 +10,14 @@ import {
   emitChatsRefreshRealtime,
 } from "../../../libs/helper/realtime_dispatch";
 import { serializeMessagesToCanonical } from "../_shared/message_contract";
+import {
+  isSummaryMode,
+  toChatMessageSummary,
+  toChatSummary,
+} from "../../../libs/summary_response";
+import * as userRepository from "../../../repository/user/user_repository";
+import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
+import { formatRelativeTime } from "../../../libs/localization/relative_time";
 
 const setNoCacheHeaders = (res: Response) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
@@ -34,17 +42,101 @@ const isEtagFresh = (req: Request, etag: string): boolean => {
   return tags.includes(etag);
 };
 
+const setValue = (target: any, key: string, value: any) => {
+  if (!target) return;
+  if (typeof target.setDataValue === "function") {
+    target.setDataValue(key, value);
+    return;
+  }
+  target[key] = value;
+};
+
+const applyRelativeToLegacyChats = (rows: any[], locale: AppLocale) => {
+  if (!Array.isArray(rows)) return rows;
+
+  rows.forEach((row: any) => {
+    const chat = (row as any)?.Chat;
+    const messages = Array.isArray(chat?.messages) ? chat.messages : [];
+    const lastMessage = messages[0] ?? null;
+    const referenceDate =
+      (lastMessage as any)?.date ??
+      (lastMessage as any)?.createdAt ??
+      (lastMessage as any)?.updatedAt ??
+      (row as any)?.updatedAt ??
+      (chat as any)?.updatedAt ??
+      (row as any)?.createdAt ??
+      null;
+
+    const relativeTime = formatRelativeTime(referenceDate, locale);
+    if (!relativeTime) return;
+
+    if (lastMessage) {
+      setValue(lastMessage, "relativeTime", relativeTime);
+      setValue(lastMessage, "relative_time", relativeTime);
+    }
+
+    setValue(row, "relativeTime", relativeTime);
+    setValue(row, "relative_time", relativeTime);
+    setValue(chat, "relativeTime", relativeTime);
+    setValue(chat, "relative_time", relativeTime);
+  });
+
+  return rows;
+};
+
+const resolveRequestLocale = async (req: Request): Promise<AppLocale> => {
+  const preferredLanguage =
+    (req.query as any)?.language ??
+    (req.query as any)?.lang ??
+    req.header("x-app-language") ??
+    req.header("x-language") ??
+    req.header("x-lang");
+  const acceptLanguage = req.header("accept-language");
+  const userId = Number((req as any)?.userId ?? 0);
+
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return resolveLocale({
+      preferredLanguage,
+      acceptLanguage,
+    });
+  }
+
+  try {
+    const pushSettings = await userRepository.getPushSettings(userId);
+    return resolveLocale({
+      preferredLanguage,
+      acceptLanguage,
+      storedLanguage: pushSettings?.language,
+      storedLanguageCodes: pushSettings?.language_codes,
+      storedLanguageNames: pushSettings?.language_names,
+    });
+  } catch {
+    return resolveLocale({
+      preferredLanguage,
+      acceptLanguage,
+    });
+  }
+};
+
 export const myChats = async (req: Request, res: Response) => {
   const startedAt = Date.now();
   try {
     setNoCacheHeaders(res);
+    const summary = isSummaryMode((req.query as any)?.summary);
+    const locale = await resolveRequestLocale(req);
 
-    const chats = await repository.getUserChats(req.userId, req.userId);
+    const chats = summary
+      ? await repository.getUserChatsSummary(req.userId, req.userId)
+      : await repository.getUserChats(req.userId, req.userId);
     console.log(
       `[perf][myChats] userId=${req.userId} chats=${Array.isArray(chats) ? chats.length : 0} totalMs=${Date.now() - startedAt}`
     );
 
-    const body = { chatsByUser: chats };
+    const body = {
+      chatsByUser: summary
+        ? (chats ?? []).map((chat: any) => toChatSummary(chat, locale))
+        : applyRelativeToLegacyChats(chats ?? [], locale),
+    };
     const etag = buildWeakEtag(body);
     res.set("ETag", etag);
     if (isEtagFresh(req, etag)) {
@@ -124,15 +216,23 @@ export const messages = async (req: Request, res: Response) => {
     : null;
   const sortRaw = String((req.query as any)?.sort ?? "").toLowerCase();
   const sort: "asc" | "desc" = sortRaw === "desc" ? "desc" : "asc";
+  const summary = isSummaryMode((req.query as any)?.summary);
 
   try {
     setNoCacheHeaders(res);
+    const locale = await resolveRequestLocale(req);
 
-    const messageRows = await repository.getChatByUser(req.userId, id, {
-      limit,
-      beforeMessageId,
-      sort,
-    });
+    const messageRows = summary
+      ? await repository.getChatByUserSummary(req.userId, id, {
+          limit,
+          beforeMessageId,
+          sort,
+        })
+      : await repository.getChatByUser(req.userId, id, {
+          limit,
+          beforeMessageId,
+          sort,
+        });
 
     let chatId =
       messageRows.length > 0
@@ -196,7 +296,9 @@ export const messages = async (req: Request, res: Response) => {
 
     const payload = {
       chatId,
-      messages: serializeMessagesToCanonical(messageRows, { includeLegacy: true }),
+      messages: summary
+        ? messageRows.map((message: any) => toChatMessageSummary(message, locale))
+        : serializeMessagesToCanonical(messageRows, { includeLegacy: true, locale }),
       paging: {
         limit,
         beforeMessageId,

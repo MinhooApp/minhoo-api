@@ -37,6 +37,7 @@ import {
   resolveShareAssetUrl,
   resolveStoreFallback,
 } from "../../../libs/share_page";
+import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
 
 const router = Router();
 
@@ -111,6 +112,13 @@ router.get("/blocked", TokenValidation(), get_blocked_users);
 router.get("/share/:id", async (req, res) => {
   try {
     const html = await renderShareLandingPage(await buildUserSharePage(req));
+    setCacheControl(res, {
+      visibility: "public",
+      maxAgeSeconds: 600,
+      staleWhileRevalidateSeconds: 3600,
+      staleIfErrorSeconds: 86400,
+    });
+    if (respondNotModifiedIfFresh(req, res, html)) return;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(html);
   } catch (error) {

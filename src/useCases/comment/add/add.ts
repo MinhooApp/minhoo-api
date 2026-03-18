@@ -12,6 +12,7 @@ import {
   normalizeRemoteHttpUrl,
   uploadImageBufferToCloudflare,
 } from "../../_utils/cloudflare_images";
+import { formatRelativeTime } from "../../../libs/localization/relative_time";
 
 const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const uploadCommentMedia = multer({
@@ -39,6 +40,8 @@ const normalizePostCommentPayload = (raw: any) => {
   const commentator = toPlainObject(source.commentator ?? null);
   const createdAt = toIsoOrNull(source.createdAt ?? source.created_at ?? source.created_date);
   const updatedAt = toIsoOrNull(source.updatedAt ?? source.updated_at);
+  const relativeTimeEn = formatRelativeTime(createdAt, "en");
+  const relativeTimeEs = formatRelativeTime(createdAt, "es");
 
   return {
     ...source,
@@ -52,6 +55,12 @@ const normalizePostCommentPayload = (raw: any) => {
     created_date: createdAt,
     updatedAt,
     updated_at: updatedAt,
+    relativeTime: relativeTimeEn,
+    relative_time: relativeTimeEn,
+    relativeTimeEn: relativeTimeEn,
+    relative_time_en: relativeTimeEn,
+    relativeTimeEs: relativeTimeEs,
+    relative_time_es: relativeTimeEs,
   };
 };
 

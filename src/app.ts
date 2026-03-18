@@ -6,11 +6,8 @@
 // ===============================
 
 import dotenv from "dotenv";
-import { createServer } from "http";
 import Server from "./_server/server";
 import { AppRoutes } from "./_routes/routes";
-import { monitorNetwork } from "./libs/networkMonitor";
-import express from "express";
 
 // ⚙️ Cargar variables de entorno
 dotenv.config();
@@ -40,11 +37,6 @@ server.app.use("/api/v1/admin", adminUserRoutes);
 // ===============================
 
 server.listen();
-
-// ===============================
-// 🧠 Monitor de red
-// ===============================
-monitorNetwork();
 
 console.log(`🚀 Servidor iniciado correctamente en el puerto ${port}`);
 console.log(`🔒 Módulo admin habilitado en /api/v1/admin/users/{id}/disable|enable`);

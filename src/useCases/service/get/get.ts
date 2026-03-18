@@ -1,4 +1,6 @@
 import { Request, Response, formatResponse, repository } from "../_module/module";
+import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
+import { isSummaryMode, toServiceSummary } from "../../../libs/summary_response";
 
 function toPlain<T>(data: T): T {
   return JSON.parse(JSON.stringify(data));
@@ -122,12 +124,18 @@ function sortNewestFirst(list: any[]) {
 
 export const gets = async (req: Request, res: Response) => {
   try {
-    const servicesRaw = await repository.gets();
+    const summary = isSummaryMode((req.query as any)?.summary);
+    const size = Math.min(Math.max(Number((req.query as any)?.size) || 20, 1), 20);
+    const servicesRaw = summary ? await repository.getsSummary(size) : await repository.gets();
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
     services = sortNewestFirst(services);
+
+    if (summary) {
+      services = services.map((service: any) => toServiceSummary(service));
+    }
 
     return formatResponse({ res: res, success: true, body: { services } });
   } catch (error: any) {
@@ -182,10 +190,12 @@ export const onGoing = async (req: Request, res: Response) => {
 
 export const getsOnGoing = async (req: Request, res: Response) => {
   try {
-    const pageNum = Number(req.query.page ?? 0);
-    const sizeNum = Number(req.query.size ?? 10);
-
-    const servicesRaw = await repository.getsOnGoing(pageNum, sizeNum, req.userId);
+    const pageNum = Math.max(0, Number(req.query.page ?? 0) || 0);
+    const sizeNum = Math.min(Math.max(Number(req.query.size ?? 10) || 10, 1), 20);
+    const summary = isSummaryMode((req.query as any)?.summary);
+    const servicesRaw = await (summary
+      ? repository.getsOnGoingSummary
+      : repository.getsOnGoing)(pageNum, sizeNum, req.userId);
 
     // ✅ findAndCountAll -> {count, rows}
     const safe = toPlain(servicesRaw) as any;
@@ -193,16 +203,29 @@ export const getsOnGoing = async (req: Request, res: Response) => {
     let rows = ensureCurrencyOnList(safe.rows ?? []);
     rows = normalizeApplicantUsernamesOnList(rows);
     rows = sortNewestFirst(rows);
+    const responseRows = summary
+      ? rows.map((service: any) => toServiceSummary(service))
+      : rows;
+
+    const payload = {
+      page: pageNum,
+      size: sizeNum,
+      count: safe.count ?? 0,
+      services: responseRows,
+    };
+
+    setCacheControl(res, {
+      visibility: req.userId ? "private" : "public",
+      maxAgeSeconds: 30,
+      staleWhileRevalidateSeconds: 60,
+      staleIfErrorSeconds: 120,
+    });
+    if (respondNotModifiedIfFresh(req, res, payload)) return;
 
     return formatResponse({
       res: res,
       success: true,
-      body: {
-        page: pageNum,
-        size: sizeNum,
-        count: safe.count ?? 0,
-        services: rows,
-      },
+      body: payload,
     });
   } catch (error: any) {
     console.log(error);
@@ -356,4 +379,3 @@ export const history = async (req: Request, res: Response) => {
     });
   }
 };
-

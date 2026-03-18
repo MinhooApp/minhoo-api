@@ -12,6 +12,7 @@ import {
   saveFindSessionState,
 } from "../../libs/cache/find_session_store";
 import { autoDisableUserByImpersonationReports } from "../user/user_repository";
+import { attachActiveOrbitStateToUsers } from "../reel/orbit_ring_projection";
 
 import { whereNotBlockedExists } from "../user/block_where";
 
@@ -1282,6 +1283,11 @@ const fetchPostsByIdsOrdered = async (
     }
   });
 
+  await attachActiveOrbitStateToUsers({
+    usersRaw: Array.from(userById.values()),
+    viewerIdRaw: meId,
+  });
+
   const mediaByPostId = new Map<number, any[]>();
   mediaRows.forEach((media: any) => {
     const postId = Number(media?.postId);
@@ -1355,18 +1361,127 @@ const fetchPostsByIdsOrdered = async (
   return postIds.map((id) => byId.get(Number(id))).filter(Boolean);
 };
 
+const fetchPostsByIdsOrderedSummary = async (
+  postIds: number[],
+  meId: any,
+  profiler?: PostFindProfiler
+) => {
+  const ids = toUniqueNumbers(postIds);
+  if (!ids.length) return [];
+
+  const posts = await withPostDbProfile(profiler, "posts.findAll(hydrate_selected_summary)", () =>
+    Post.findAll({
+      where: {
+        id: { [Op.in]: ids },
+        is_delete: false,
+        ...whereNotBlockedExists(meId, "`post`.`userId`"),
+      },
+      replacements: { meId },
+      attributes: [
+        "id",
+        "userId",
+        "post",
+        "created_date",
+        "likes_count",
+        "saves_count",
+        "shares_count",
+        [candidateCommentCountAttribute, "comments_count"],
+      ],
+    })
+  );
+
+  if (!posts.length) return [];
+
+  const userIds = toUniqueNumbers(posts.map((post: any) => Number(post?.userId)));
+  const viewerId = Number(meId);
+  const validViewerId = Number.isFinite(viewerId) && viewerId > 0 ? viewerId : null;
+
+  const [users, mediaRows, viewerLikes] = await Promise.all([
+    userIds.length
+      ? withPostDbProfile(profiler, "users.findAll(hydrate_users_summary)", () =>
+          User.findAll({
+            where: { id: { [Op.in]: userIds } },
+            attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
+          })
+        )
+      : Promise.resolve([] as any[]),
+    withPostDbProfile(profiler, "mediapost.findAll(hydrate_media_summary)", () =>
+      MediaPost.findAll({
+        where: { postId: { [Op.in]: ids } },
+        attributes: ["postId", "url", "is_img"],
+        order: [
+          ["postId", "ASC"],
+          ["createdAt", "ASC"],
+        ],
+      })
+    ),
+    validViewerId
+      ? withPostDbProfile(profiler, "likes.findAll(hydrate_viewer_likes_summary)", () =>
+          Like.findAll({
+            where: { postId: { [Op.in]: ids }, userId: validViewerId },
+            attributes: ["postId", "userId"],
+          })
+        )
+      : Promise.resolve([] as any[]),
+  ]);
+
+  const userById = new Map<number, any>();
+  users.forEach((user: any) => {
+    const id = Number(user?.id);
+    if (Number.isFinite(id) && id > 0) userById.set(id, toPlain(user));
+  });
+
+  const mediaByPostId = new Map<number, any>();
+  mediaRows.forEach((media: any) => {
+    const postId = Number(media?.postId);
+    if (!Number.isFinite(postId) || postId <= 0) return;
+    if (mediaByPostId.has(postId)) return;
+    mediaByPostId.set(postId, {
+      url: String(media?.url ?? ""),
+      is_img: Boolean(media?.is_img),
+    });
+  });
+
+  const likedPostIds = new Set<number>();
+  viewerLikes.forEach((like: any) => {
+    const postId = Number(like?.postId);
+    if (Number.isFinite(postId) && postId > 0) likedPostIds.add(postId);
+  });
+
+  await attachActiveOrbitStateToUsers({
+    usersRaw: Array.from(userById.values()),
+    viewerIdRaw: meId,
+  });
+
+  const byId = new Map<number, any>();
+  posts.forEach((post: any) => {
+    const postId = Number(post?.id);
+    const userId = Number(post?.userId);
+    post.setDataValue("user", userById.get(userId) ?? null);
+    post.setDataValue("post_media", mediaByPostId.has(postId) ? [mediaByPostId.get(postId)] : []);
+    post.setDataValue("likes", []);
+    post.setDataValue("comments", []);
+    post.setDataValue("is_liked", likedPostIds.has(postId));
+    byId.set(postId, post);
+  });
+
+  return ids.map((id) => byId.get(Number(id))).filter(Boolean);
+};
+
 const runPostFindRanking = async ({
   pageRaw,
   sizeRaw,
   meId,
   suggested,
   options,
+  summary = false,
 }: {
   pageRaw: any;
   sizeRaw: any;
   meId: any;
   suggested: boolean;
   options?: PostFeedOptions;
+  summary?: boolean;
 }) => {
   const profiler = createPostFindProfiler();
   const page = normalizePage(pageRaw, 0);
@@ -1470,7 +1585,9 @@ const runPostFindRanking = async ({
   profiler.rerankMs = nowMs() - rerankStartedAtMs;
   const pageIds = pageCandidates.map((candidate) => candidate.id);
 
-  const orderedPosts = await fetchPostsByIdsOrdered(pageIds, meId, suggested, profiler);
+  const orderedPosts = summary
+    ? await fetchPostsByIdsOrderedSummary(pageIds, meId, profiler)
+    : await fetchPostsByIdsOrdered(pageIds, meId, suggested, profiler);
   const sessionSaveStartedAtMs = nowMs();
   const sessionSaveBackend = await updatePostSessionState(
     sessionMemoryKey,
@@ -1547,6 +1664,22 @@ export const gets = async (
   });
 };
 
+export const getsSummary = async (
+  page: any = 0,
+  size: any = 10,
+  meId: any = -1,
+  options: PostFeedOptions = {}
+) => {
+  return runPostFindRanking({
+    pageRaw: page,
+    sizeRaw: size,
+    meId,
+    suggested: false,
+    options,
+    summary: true,
+  });
+};
+
 export const getsSuggested = async (
   page: any = 0,
   size: any = 10,
@@ -1562,6 +1695,22 @@ export const getsSuggested = async (
   });
 };
 
+export const getsSuggestedSummary = async (
+  page: any = 0,
+  size: any = 10,
+  meId: any = -1,
+  options: PostFeedOptions = {}
+) => {
+  return runPostFindRanking({
+    pageRaw: page,
+    sizeRaw: size,
+    meId,
+    suggested: true,
+    options,
+    summary: true,
+  });
+};
+
 export const getOne = async (id: any, meId: any) => {
   const post = await Post.findOne({
     where: {
@@ -1574,6 +1723,11 @@ export const getOne = async (id: any, meId: any) => {
       exclude: excludeKeys,
       include: [commentCountAttribute],
     },
+  });
+
+  await attachActiveOrbitStateToUsers({
+    usersRaw: [(post as any)?.user].filter(Boolean),
+    viewerIdRaw: meId,
   });
 
   return post;
@@ -1594,6 +1748,11 @@ export const get = async (id: any, meId: any = -1) => {
     },
   });
 
+  await attachActiveOrbitStateToUsers({
+    usersRaw: [(post as any)?.user].filter(Boolean),
+    viewerIdRaw: meId,
+  });
+
   return post;
 };
 
@@ -1611,6 +1770,11 @@ export const getOneByUser = async (id: any, userId: any, meId: any = -1) => {
       exclude: excludeKeys,
       include: [commentCountAttribute],
     },
+  });
+
+  await attachActiveOrbitStateToUsers({
+    usersRaw: [(post as any)?.user].filter(Boolean),
+    viewerIdRaw: meId,
   });
 
   return post;

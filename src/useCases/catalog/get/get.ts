@@ -1,4 +1,5 @@
 import { Request, Response, formatResponse, readJsonFile } from "../_module/module";
+import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
 
 const languagesPath = "_data/catalog/languages.json";
 const countriesPath = "_data/catalog/countries.json";
@@ -8,11 +9,19 @@ const citiesPath = "_data/catalog/cities.json";
 export const languages = async (_req: Request, res: Response) => {
   try {
     const languages = readJsonFile(languagesPath);
+    const payload = { languages };
+    setCacheControl(res, {
+      visibility: "public",
+      maxAgeSeconds: 3600,
+      staleWhileRevalidateSeconds: 86400,
+      staleIfErrorSeconds: 86400,
+    });
+    if (respondNotModifiedIfFresh(_req, res, payload)) return;
     return formatResponse({
       res,
       success: true,
       message: "ok",
-      body: { languages },
+      body: payload,
     });
   } catch (error) {
     console.error(error);
@@ -23,11 +32,19 @@ export const languages = async (_req: Request, res: Response) => {
 export const countries = async (_req: Request, res: Response) => {
   try {
     const countries = readJsonFile(countriesPath);
+    const payload = { countries };
+    setCacheControl(res, {
+      visibility: "public",
+      maxAgeSeconds: 3600,
+      staleWhileRevalidateSeconds: 86400,
+      staleIfErrorSeconds: 86400,
+    });
+    if (respondNotModifiedIfFresh(_req, res, payload)) return;
     return formatResponse({
       res,
       success: true,
       message: "ok",
-      body: { countries },
+      body: payload,
     });
   } catch (error) {
     console.error(error);
@@ -45,11 +62,19 @@ export const states = async (req: Request, res: Response) => {
         ? states.filter((s: any) => Number(s.country_id) === countryId)
         : states;
 
+    const payload = { states: filtered };
+    setCacheControl(res, {
+      visibility: "public",
+      maxAgeSeconds: 3600,
+      staleWhileRevalidateSeconds: 86400,
+      staleIfErrorSeconds: 86400,
+    });
+    if (respondNotModifiedIfFresh(req, res, payload)) return;
     return formatResponse({
       res,
       success: true,
       message: "ok",
-      body: { states: filtered },
+      body: payload,
     });
   } catch (error) {
     console.error(error);
@@ -71,11 +96,19 @@ export const cities = async (req: Request, res: Response) => {
         ? cities.filter((c: any) => Number(c.country_id) === countryId)
         : cities;
 
+    const payload = { cities: filtered };
+    setCacheControl(res, {
+      visibility: "public",
+      maxAgeSeconds: 3600,
+      staleWhileRevalidateSeconds: 86400,
+      staleIfErrorSeconds: 86400,
+    });
+    if (respondNotModifiedIfFresh(req, res, payload)) return;
     return formatResponse({
       res,
       success: true,
       message: "ok",
-      body: { cities: filtered },
+      body: payload,
     });
   } catch (error) {
     console.error(error);

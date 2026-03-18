@@ -796,7 +796,10 @@ export const sendMessage = async (req: Request, res: Response) => {
     const chatId = Number((created as any).chatId);
     const createdMessageId = Number((created as any).messageId);
     const wasDeduplicated = Boolean((created as any).deduplicated);
-    const fullMessage = await repository.getSenderByMessageId(createdMessageId);
+    const fullMessage = await repository.getSenderByMessageId(
+      createdMessageId,
+      req.userId
+    );
     if (!fullMessage) {
       return formatResponse({
         res,

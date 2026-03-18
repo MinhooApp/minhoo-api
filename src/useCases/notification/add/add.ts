@@ -35,12 +35,14 @@ interface SendNotificationParams {
   groupName?: string;
   groupAvatarUrl?: string;
   deeplink?: string;
+  preferredLanguage?: string;
 }
 
 const PUSH_EMPTY_TOKEN_LOG_WINDOW_MS = Math.max(
   10_000,
   Number(process.env.PUSH_EMPTY_TOKEN_LOG_WINDOW_MS ?? 10 * 60 * 1000) || 10 * 60 * 1000
 );
+const PUSH_LOCALE_DEBUG = String(process.env.PUSH_LOCALE_DEBUG ?? "0").trim() === "1";
 const pushEmptyTokenLogMemory = new Map<string, number>();
 
 const toPositiveInt = (value: any): number | undefined => {
@@ -175,6 +177,142 @@ const hasChatRoutingData = (params: SendNotificationParams) => {
   return false;
 };
 
+type PushLocale = "en" | "es";
+
+const normalizePushLocale = (raw: any): PushLocale | null => {
+  const normalized = String(raw ?? "").trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (
+    normalized.startsWith("es") ||
+    normalized.includes("spanish") ||
+    normalized.includes("espanol") ||
+    normalized.includes("español")
+  ) {
+    return "es";
+  }
+
+  if (
+    normalized.startsWith("en") ||
+    normalized.includes("english") ||
+    normalized.includes("ingles") ||
+    normalized.includes("inglés")
+  ) {
+    return "en";
+  }
+
+  return null;
+};
+
+const firstDetectedLocale = (values: any[]): PushLocale | null => {
+  for (const value of values) {
+    const detected = normalizePushLocale(value);
+    if (detected) return detected;
+  }
+  return null;
+};
+
+const resolvePushLocale = (params: {
+  preferredLanguage?: string;
+  language?: string | null;
+  languageCodes?: any;
+  languageNames?: any;
+}): PushLocale => {
+  const fromPreferred = normalizePushLocale(params.preferredLanguage);
+  if (fromPreferred) return fromPreferred;
+
+  const fromLanguage = normalizePushLocale(params.language);
+  if (fromLanguage) return fromLanguage;
+
+  const languageCodes = Array.isArray(params.languageCodes) ? params.languageCodes : [];
+  const fromCodes = firstDetectedLocale(languageCodes);
+  if (fromCodes) return fromCodes;
+
+  const languageNames = Array.isArray(params.languageNames) ? params.languageNames : [];
+  const fromNames = firstDetectedLocale(languageNames);
+  if (fromNames) return fromNames;
+
+  return "en";
+};
+
+const toSpanishPushTitle = (title: string) => {
+  if (title === "Minhoo news") return "Novedades de Minhoo";
+  if (title === "New message") return "Nuevo mensaje";
+  if (title === "New Service Posted") return "Nuevo servicio publicado";
+
+  const groupMatch = title.match(/^Group\s+(\d+)$/i);
+  if (groupMatch) return `Grupo ${groupMatch[1]}`;
+
+  return title;
+};
+
+const toSpanishPushBody = (body: string) => {
+  const directMap: Record<string, string> = {
+    "Has saved your post.": "Ha guardado tu publicacion.",
+    "Sent you a new offer!": "Te envio una nueva oferta.",
+    "has accepted your job offer!": "ha aceptado tu oferta de trabajo.",
+    "Application canceled": "Solicitud cancelada",
+    "has withdrawn your candidacy": "ha retirado tu candidatura.",
+    "The offer has closed.": "La oferta se cerro.",
+    "Has starred your Orbit.": "Ha destacado tu Orbit.",
+    "Has saved your Orbit.": "Ha guardado tu Orbit.",
+    "Has commented on your Orbit.": "Ha comentado en tu Orbit.",
+    "You have a new comment": "Tienes un comentario nuevo.",
+    "Has given your post a star!": "Le ha dado una estrella a tu publicacion.",
+    "You have a new message": "Tienes un mensaje nuevo.",
+    "You were removed from a group": "Te removieron de un grupo.",
+    "New group join request pending approval":
+      "Nueva solicitud para unirse al grupo pendiente de aprobacion.",
+    "Your group join request was approved":
+      "Tu solicitud para unirte al grupo fue aprobada.",
+    "Your group join request was rejected":
+      "Tu solicitud para unirte al grupo fue rechazada.",
+  };
+
+  if (Object.prototype.hasOwnProperty.call(directMap, body)) {
+    return directMap[body];
+  }
+
+  const followMatch = body.match(/^(.+?)\s+started following you$/i);
+  if (followMatch) {
+    return `${followMatch[1]} comenzo a seguirte`;
+  }
+
+  const recommendationPrefix = "Suggested profile:";
+  if (body.startsWith(recommendationPrefix)) {
+    return `Perfil sugerido:${body.slice(recommendationPrefix.length)}`;
+  }
+
+  const reactedPreviewMatch = body.match(/^Reacted\s+(.+?)\s+to:\s+(.+)$/i);
+  if (reactedPreviewMatch) {
+    return `Reacciono ${reactedPreviewMatch[1]} a: ${reactedPreviewMatch[2]}`;
+  }
+
+  const reactedMessageMatch = body.match(/^Reacted\s+(.+?)\s+to your message$/i);
+  if (reactedMessageMatch) {
+    return `Reacciono ${reactedMessageMatch[1]} a tu mensaje`;
+  }
+
+  const groupMessageMatch = body.match(/^(.+?):\s+New message$/i);
+  if (groupMessageMatch) {
+    return `${groupMessageMatch[1]}: Nuevo mensaje`;
+  }
+
+  if (body === "New message") return "Nuevo mensaje";
+
+  return body;
+};
+
+const localizePushTitle = (title: string, locale: PushLocale) => {
+  if (locale !== "es") return title;
+  return toSpanishPushTitle(title);
+};
+
+const localizePushBody = (body: string, locale: PushLocale) => {
+  if (locale !== "es") return body;
+  return toSpanishPushBody(body);
+};
+
 export const sendNotification = async (
   params: SendNotificationParams
 ): Promise<void> => {
@@ -184,6 +322,15 @@ export const sendNotification = async (
     }
 
     const now = new Date(new Date().toUTCString());
+    const pushSettings = await userRepository.getPushSettings(params.userId);
+    const uuid = String(pushSettings?.uuid ?? "").trim();
+    const pushLocale = resolvePushLocale({
+      preferredLanguage: params.preferredLanguage,
+      language: pushSettings?.language,
+      languageCodes: pushSettings?.language_codes,
+      languageNames: pushSettings?.language_names,
+    });
+    const localizedMessage = localizePushBody(String(params.message ?? ""), pushLocale);
 
     const notificationData = {
       userId: params.userId,
@@ -193,7 +340,7 @@ export const sendNotification = async (
       reelId: params.reelId,
       offerId: params.offerId,
       type: params.type,
-      message: params.message,
+      message: localizedMessage,
       likerId: params.likerId,
       commentId: params.commentId,
       messageId: params.messageId,
@@ -202,16 +349,19 @@ export const sendNotification = async (
     };
 
     const notification = await repository.add(notificationData);
-    const uuid = await userRepository.getUuid(params.userId);
 
     emitNotificationRealtime(params.userId, notification);
 
-    const pushBody = params.message;
+    const pushBody = localizedMessage;
 
     const extraData: Record<string, string | number> = {
       senderName: params.senderName ?? "",
       senderId: params.interactorId ?? "",
     };
+    const normalizedDeeplink = String(params.deeplink ?? "").trim();
+    if (normalizedDeeplink) {
+      extraData.deeplink = normalizedDeeplink;
+    }
 
     const notificationPostId = toPositiveInt(params.postId);
     if (notificationPostId) {
@@ -226,8 +376,7 @@ export const sendNotification = async (
       extraData.route = "orbit";
       extraData.entityType = "reel";
       extraData.entity_type = "reel";
-      const reelDeeplink = String(params.deeplink ?? "").trim();
-      extraData.deeplink = reelDeeplink || `orbit/${notificationReelId}`;
+      extraData.deeplink = normalizedDeeplink || `orbit/${notificationReelId}`;
     }
 
     const notificationCommentId = toPositiveInt(params.commentId);
@@ -292,7 +441,7 @@ export const sendNotification = async (
       Object.assign(extraData, buildChatPushData(pushParams));
     }
 
-    const pushTitle =
+    const pushTitleRaw =
       params.type === "message"
         ? pushParams.notificationScope === "group"
           ? String(pushParams.groupName ?? "").trim() ||
@@ -300,6 +449,17 @@ export const sendNotification = async (
             "Nuevo mensaje"
           : params.senderName?.trim() || "Nuevo mensaje"
         : "Minhoo news";
+    const pushTitle = localizePushTitle(pushTitleRaw, pushLocale);
+
+    if (PUSH_LOCALE_DEBUG) {
+      console.log(
+        `[push][locale] userId=${params.userId} type=${params.type} locale=${pushLocale} rawTitle=${JSON.stringify(
+          pushTitleRaw
+        )} localizedTitle=${JSON.stringify(pushTitle)} rawBody=${JSON.stringify(
+          String(params.message ?? "")
+        )} localizedBody=${JSON.stringify(pushBody)}`
+      );
+    }
 
     if (!uuid) {
       if (shouldLogMissingToken(params.userId, params.type)) {
@@ -371,6 +531,8 @@ function getFirstAvailableId(data: SendNotificationParams): number {
     case "follow":
     case "message":
       return data.interactorId!;
+    case "profile_recommendation":
+      return data.followerId || data.interactorId!;
 
     case "admin":
     default:

@@ -1,3 +1,6 @@
+import { AppLocale } from "../../../libs/localization/locale";
+import { formatRelativeTime } from "../../../libs/localization/relative_time";
+
 const toPlain = (value: any) =>
   value && typeof value.toJSON === "function" ? value.toJSON() : value ?? {};
 
@@ -328,11 +331,17 @@ export type CanonicalChatMessage = {
   senderName: string | null;
   senderUsername: string | null;
   senderAvatarUrl: string | null;
+  relativeTime: string | null;
+  relative_time: string | null;
+  relativeTimeEn: string | null;
+  relative_time_en: string | null;
+  relativeTimeEs: string | null;
+  relative_time_es: string | null;
 };
 
 export const serializeMessageToCanonical = (
   value: any,
-  opts?: { includeLegacy?: boolean }
+  opts?: { includeLegacy?: boolean; locale?: AppLocale }
 ) => {
   const message = toPlain(value);
   const senderFields = resolveSenderFields(message);
@@ -352,6 +361,16 @@ export const serializeMessageToCanonical = (
       };
 
   const clientMessageId = resolveClientMessageId(message);
+  const relativeTimeEn = formatRelativeTime(
+    (message as any)?.date ?? (message as any)?.createdAt ?? (message as any)?.updatedAt,
+    "en"
+  );
+  const relativeTimeEs = formatRelativeTime(
+    (message as any)?.date ?? (message as any)?.createdAt ?? (message as any)?.updatedAt,
+    "es"
+  );
+  const preferredLocale = opts?.locale ?? "en";
+  const relativeTime = preferredLocale === "es" ? relativeTimeEs : relativeTimeEn;
 
   const canonical: CanonicalChatMessage = {
     id: toPositiveInt((message as any)?.id) ?? 0,
@@ -381,6 +400,12 @@ export const serializeMessageToCanonical = (
     senderName: senderFields.senderName,
     senderUsername: senderFields.senderUsername,
     senderAvatarUrl: senderFields.senderAvatarUrl,
+    relativeTime,
+    relative_time: relativeTime,
+    relativeTimeEn,
+    relative_time_en: relativeTimeEn,
+    relativeTimeEs,
+    relative_time_es: relativeTimeEs,
   };
 
   const isVideoMessage = canonical.messageType.toLowerCase() === "video";
@@ -457,6 +482,8 @@ export const serializeMessageToCanonical = (
     sender_name: canonical.senderName,
     sender_username: canonical.senderUsername,
     sender_avatar_url: canonical.senderAvatarUrl,
+    relativeTime: canonical.relativeTime,
+    relative_time: canonical.relative_time,
     sender: senderFields.sender,
     metadata:
       metadataWithThumbnail ??
@@ -469,7 +496,7 @@ export const serializeMessageToCanonical = (
 
 export const serializeMessagesToCanonical = (
   values: any[],
-  opts?: { includeLegacy?: boolean }
+  opts?: { includeLegacy?: boolean; locale?: AppLocale }
 ) =>
   Array.isArray(values)
     ? values.map((item) => serializeMessageToCanonical(item, opts))
