@@ -1,4 +1,4 @@
-﻿import { Op, Sequelize } from "sequelize";
+﻿import { Op, QueryTypes, Sequelize } from "sequelize";
 import { createHash, createHmac } from "crypto";
 import Chat from "../../_models/chat/chat";
 import User from "../../_models/user/user";
@@ -19,6 +19,21 @@ const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const R2_REGION = "auto";
 const R2_SERVICE = "s3";
 const R2_DELETE_TTL_SECONDS = 60;
+const CLIENT_MESSAGE_ID_COLUMN = "clientMessageId";
+const CLIENT_MESSAGE_ID_UNIQUE_INDEX = "uq_messages_chat_sender_client_message_id";
+const CLIENT_MESSAGE_ID_COLUMN_CACHE_TTL_MS = Math.max(
+  10_000,
+  Number(process.env.CLIENT_MESSAGE_ID_COLUMN_CACHE_TTL_MS ?? 60_000) || 60_000
+);
+const GROUP_CHAT_IDS_CACHE_TTL_MS = Math.max(
+  1_000,
+  Number(process.env.GROUP_CHAT_IDS_CACHE_TTL_MS ?? 30_000) || 30_000
+);
+const CHAT_USER_UNREAD_COUNT_COLUMN = "unreadCount";
+const CHAT_USER_UNREAD_COUNT_COLUMN_CACHE_TTL_MS = Math.max(
+  10_000,
+  Number(process.env.CHAT_USER_UNREAD_COUNT_COLUMN_CACHE_TTL_MS ?? 60_000) || 60_000
+);
 
 export type ChatMessageType =
   | "text"
@@ -42,6 +57,160 @@ export type ChatMessagePayload = {
 };
 
 const CLIENT_MESSAGE_ID_METADATA_KEY = "_clientMessageId";
+let hasClientMessageIdColumnCache: boolean | null = null;
+let hasClientMessageIdColumnCheckedAtMs = 0;
+let groupChatIdsCache: number[] | null = null;
+let groupChatIdsCacheExpiresAtMs = 0;
+let groupChatIdsInFlight: Promise<number[]> | null = null;
+let hasChatUserUnreadCountColumnCache: boolean | null = null;
+let hasChatUserUnreadCountColumnCheckedAtMs = 0;
+
+const isMissingClientMessageIdColumnError = (error: any): boolean => {
+  const dbCode = String(error?.original?.code ?? error?.parent?.code ?? "").trim();
+  if (dbCode === "ER_BAD_FIELD_ERROR" || dbCode === "42703") return true;
+  const message = String(error?.message ?? "").toLowerCase();
+  return (
+    message.includes("unknown column") && message.includes(CLIENT_MESSAGE_ID_COLUMN.toLowerCase())
+  );
+};
+
+const isClientMessageIdUniqueConstraintError = (error: any): boolean => {
+  const dbCode = String(error?.original?.code ?? error?.parent?.code ?? "").trim();
+  if (dbCode === "ER_DUP_ENTRY" || dbCode === "23505" || dbCode === "SQLITE_CONSTRAINT") {
+    return true;
+  }
+
+  const message = String(error?.message ?? "").toLowerCase();
+  return (
+    message.includes(CLIENT_MESSAGE_ID_UNIQUE_INDEX.toLowerCase()) ||
+    message.includes(CLIENT_MESSAGE_ID_COLUMN.toLowerCase())
+  );
+};
+
+const hasClientMessageIdColumn = async (forceRefresh = false): Promise<boolean> => {
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    hasClientMessageIdColumnCache !== null &&
+    now - hasClientMessageIdColumnCheckedAtMs < CLIENT_MESSAGE_ID_COLUMN_CACHE_TTL_MS
+  ) {
+    return hasClientMessageIdColumnCache;
+  }
+
+  try {
+    const rows = (await sequelize.query(
+      `SHOW COLUMNS FROM \`messages\` LIKE '${CLIENT_MESSAGE_ID_COLUMN}'`,
+      { type: QueryTypes.SELECT }
+    )) as Array<Record<string, any>>;
+    hasClientMessageIdColumnCache = Array.isArray(rows) && rows.length > 0;
+  } catch (_) {
+    hasClientMessageIdColumnCache = false;
+  }
+
+  hasClientMessageIdColumnCheckedAtMs = now;
+  return hasClientMessageIdColumnCache;
+};
+
+const hasChatUserUnreadCountColumn = async (
+  forceRefresh = false
+): Promise<boolean> => {
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    hasChatUserUnreadCountColumnCache !== null &&
+    now - hasChatUserUnreadCountColumnCheckedAtMs <
+      CHAT_USER_UNREAD_COUNT_COLUMN_CACHE_TTL_MS
+  ) {
+    return hasChatUserUnreadCountColumnCache;
+  }
+
+  try {
+    const rows = (await sequelize.query(
+      `SHOW COLUMNS FROM \`chat_user\` LIKE '${CHAT_USER_UNREAD_COUNT_COLUMN}'`,
+      { type: QueryTypes.SELECT }
+    )) as Array<Record<string, any>>;
+    hasChatUserUnreadCountColumnCache = Array.isArray(rows) && rows.length > 0;
+  } catch (_error) {
+    hasChatUserUnreadCountColumnCache = false;
+  }
+
+  hasChatUserUnreadCountColumnCheckedAtMs = now;
+  return hasChatUserUnreadCountColumnCache;
+};
+
+const getUnreadCountByChatIds = async ({
+  userId,
+  chatIds,
+}: {
+  userId: number;
+  chatIds: number[];
+}): Promise<Map<number, number>> => {
+  const uid = Number(userId);
+  const uniqueChatIds = Array.from(
+    new Set((chatIds ?? []).filter((chatId) => Number.isFinite(chatId) && chatId > 0))
+  );
+  const unreadCountByChatId = new Map<number, number>();
+  if (!uniqueChatIds.length) return unreadCountByChatId;
+
+  if (await hasChatUserUnreadCountColumn()) {
+    const rows = (await sequelize.query(
+      `
+        SELECT cu.chatId AS chatId, cu.${CHAT_USER_UNREAD_COUNT_COLUMN} AS unreadCount
+        FROM chat_user cu
+        WHERE cu.userId = :userId
+          AND cu.chatId IN (:chatIds)
+      `,
+      {
+        replacements: {
+          userId: uid,
+          chatIds: uniqueChatIds,
+        },
+        type: QueryTypes.SELECT,
+      }
+    )) as Array<{ chatId?: number | string | null; unreadCount?: number | string | null }>;
+
+    for (const row of rows) {
+      const chatId = Number(row.chatId);
+      if (!Number.isFinite(chatId) || chatId <= 0) continue;
+      unreadCountByChatId.set(chatId, Math.max(0, Number(row.unreadCount ?? 0) || 0));
+    }
+
+    return unreadCountByChatId;
+  }
+
+  const unreadRows = await Message.findAll({
+    where: {
+      chatId: { [Op.in]: uniqueChatIds },
+      senderId: { [Op.ne]: uid },
+      deletedBy: { [Op.in]: [0, uid] },
+      status: { [Op.in]: ["sent", "delivered"] },
+    },
+    attributes: [
+      "chatId",
+      [sequelize.fn("COUNT", sequelize.col("id")), "unreadCount"],
+    ],
+    group: ["chatId"],
+    raw: true,
+  });
+
+  for (const row of unreadRows as any[]) {
+    const cid = Number(row.chatId);
+    if (!Number.isFinite(cid) || cid <= 0) continue;
+    unreadCountByChatId.set(cid, Number(row.unreadCount ?? 0) || 0);
+  }
+
+  return unreadCountByChatId;
+};
+
+const buildLegacyClientMessageIdWhere = (clientMessageId: string) => ({
+  [Op.and]: [
+    Sequelize.literal(
+      `JSON_UNQUOTE(JSON_EXTRACT(\`Message\`.\`metadata\`, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
+        clientMessageId
+      )}`
+    ),
+  ],
+});
 
 const normalizeClientMessageId = (value: any): string | null => {
   if (value === undefined || value === null) return null;
@@ -79,21 +248,37 @@ const findMessageByClientMessageId = async ({
   senderId: number;
   clientMessageId: string;
 }) => {
-  return Message.findOne({
-    where: {
-      chatId,
-      senderId,
-      [Op.and]: [
-        Sequelize.literal(
-          `JSON_UNQUOTE(JSON_EXTRACT(\`Message\`.\`metadata\`, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
-            clientMessageId
-          )}`
-        ),
-      ],
-    },
-    attributes: ["id"],
-    order: [["id", "DESC"]],
-  });
+  const supportsColumn = await hasClientMessageIdColumn();
+  const whereByMetadata = {
+    chatId,
+    senderId,
+    ...buildLegacyClientMessageIdWhere(clientMessageId),
+  };
+
+  const whereByColumn = {
+    chatId,
+    senderId,
+    [CLIENT_MESSAGE_ID_COLUMN]: clientMessageId,
+  } as any;
+
+  try {
+    return await Message.findOne({
+      where: supportsColumn ? whereByColumn : whereByMetadata,
+      attributes: ["id"],
+      order: [["id", "DESC"]],
+    });
+  } catch (error) {
+    if (supportsColumn && isMissingClientMessageIdColumnError(error)) {
+      hasClientMessageIdColumnCache = false;
+      hasClientMessageIdColumnCheckedAtMs = Date.now();
+      return Message.findOne({
+        where: whereByMetadata,
+        attributes: ["id"],
+        order: [["id", "DESC"]],
+      });
+    }
+    throw error;
+  }
 };
 
 
@@ -161,12 +346,12 @@ export const initNewChat = async (
 
   // Mantener milisegundos evita empates de `date` en ráfagas.
   const now = new Date();
-  const existingChat = await chatExist(me, other);
+  const existingChatId = await findDirectChatIdByUsers(me, other);
 
   let chatId: number;
   let chat: any = null;
 
-  if (existingChat.length === 0) {
+  if (!existingChatId) {
     const newChat = await Chat.create();
     chatId = newChat.id;
 
@@ -177,11 +362,11 @@ export const initNewChat = async (
 
     chat = newChat;
   } else {
-    chatId = existingChat[0].chatId;
+    chatId = existingChatId;
 
     // Reactivar si estÃ¡ eliminado
     chat = await Chat.findByPk(chatId);
-    if (chat && existingChat[0].deletedBy !== 0) {
+    if (chat && Number((chat as any).deletedBy) !== 0) {
       await chat.update({ deletedBy: 0 });
     }
   }
@@ -189,6 +374,7 @@ export const initNewChat = async (
   const normalizedClientMessageId = normalizeClientMessageId(
     messagePayload?.clientMessageId
   );
+  const supportsClientMessageIdColumn = await hasClientMessageIdColumn();
 
   if (normalizedClientMessageId) {
     const existingMessage = await findMessageByClientMessageId({
@@ -206,7 +392,7 @@ export const initNewChat = async (
     }
   }
 
-  const createdMessage = await Message.create({
+  const createPayload: Record<string, any> = {
     text: messagePayload?.text ?? null,
     messageType: messagePayload?.messageType ?? "text",
     mediaUrl: messagePayload?.mediaUrl ?? null,
@@ -223,7 +409,44 @@ export const initNewChat = async (
     date: now,
     deletedBy: 0,
     replyToMessageId: replyToMessageId ?? null,
-  });
+  };
+  if (supportsClientMessageIdColumn && normalizedClientMessageId) {
+    createPayload[CLIENT_MESSAGE_ID_COLUMN] = normalizedClientMessageId;
+  }
+
+  let createdMessage: any;
+  try {
+    createdMessage = await Message.create(createPayload);
+  } catch (error) {
+    if (supportsClientMessageIdColumn && isMissingClientMessageIdColumnError(error)) {
+      hasClientMessageIdColumnCache = false;
+      hasClientMessageIdColumnCheckedAtMs = Date.now();
+      delete createPayload[CLIENT_MESSAGE_ID_COLUMN];
+      createdMessage = await Message.create(createPayload);
+    } else if (
+      normalizedClientMessageId &&
+      isClientMessageIdUniqueConstraintError(error)
+    ) {
+      const existingMessage = await findMessageByClientMessageId({
+        chatId,
+        senderId: me,
+        clientMessageId: normalizedClientMessageId,
+      });
+      if (existingMessage) {
+        return {
+          chatId,
+          messageId: Number((existingMessage as any).id),
+          chat,
+          deduplicated: true,
+        };
+      }
+      throw error;
+    } else {
+      throw error;
+    }
+  }
+
+  await incrementUnreadCountForChatUser(chatId, other, 1);
 
   await pruneChatHistory(chatId, MAX_MESSAGES_PER_CHAT);
 
@@ -410,18 +633,13 @@ export const getChatByUser = async (
 
   if (await isBlockedEitherWay(me, other)) return [];
 
-  const existingChat = await chatExist(me, other);
-  if (!existingChat?.length) return [];
-
-  const chatId = existingChat[0].chatId;
-
-  const chat = await Chat.findOne({
-    where: {
-      id: chatId,
-      deletedBy: { [Op.in]: [0, me] },
-    },
+  const existingChatId = await findDirectChatIdByUsers(me, other, {
+    visibleForUserId: me,
   });
-  if (!chat) return [];
+  if (!existingChatId) return [];
+
+  const chatId = Number(existingChatId);
+  if (!Number.isFinite(chatId) || chatId <= 0) return [];
 
   const limit = Math.max(1, Math.min(Number(opts?.limit ?? 50) || 50, 200));
   const beforeMessageId =
@@ -499,20 +717,15 @@ export const getChatByUserSummary = async (
 
   if (await isBlockedEitherWay(me, other)) return [];
 
-  const existingChat = await chatExist(me, other);
-  if (!existingChat?.length) return [];
-
-  const chatId = existingChat[0].chatId;
-  const chat = await Chat.findOne({
-    where: {
-      id: chatId,
-      deletedBy: { [Op.in]: [0, me] },
-    },
-    attributes: ["id"],
+  const existingChatId = await findDirectChatIdByUsers(me, other, {
+    visibleForUserId: me,
   });
-  if (!chat) return [];
+  if (!existingChatId) return [];
 
-  const limit = Math.max(1, Math.min(Number(opts?.limit ?? 50) || 50, 50));
+  const chatId = Number(existingChatId);
+  if (!Number.isFinite(chatId) || chatId <= 0) return [];
+
+  const limit = Math.max(1, Math.min(Number(opts?.limit ?? 50) || 50, 200));
   const beforeMessageId =
     opts?.beforeMessageId == null ? null : Number(opts?.beforeMessageId);
   const sort = String(opts?.sort ?? "asc").toLowerCase() === "desc" ? "desc" : "asc";
@@ -571,21 +784,13 @@ export const getDirectChatIdByUsers = async (
     return null;
   }
 
-  const existingChat = await chatExist(me, other);
-  if (!existingChat?.length) return null;
-
-  const chatId = Number(existingChat[0].chatId);
-  if (!Number.isFinite(chatId) || chatId <= 0) return null;
-
-  const chat = await Chat.findOne({
-    where: {
-      id: chatId,
-      deletedBy: { [Op.in]: [0, me] },
-    },
-    attributes: ["id"],
+  const existingChatId = await findDirectChatIdByUsers(me, other, {
+    visibleForUserId: me,
   });
+  if (!existingChatId) return null;
 
-  if (!chat) return null;
+  const chatId = Number(existingChatId);
+  if (!Number.isFinite(chatId) || chatId <= 0) return null;
   return chatId;
 };
 
@@ -640,7 +845,7 @@ export const getRelatedUserIdsByUser = async (
 
 // Chat-only mode:
 // exclude any chat room linked to groups (active or inactive) from DM flows.
-const getActiveGroupChatIds = async (): Promise<number[]> => {
+const fetchActiveGroupChatIds = async (): Promise<number[]> => {
   const rows = await Group.findAll({
     where: {
       chatId: {
@@ -658,6 +863,35 @@ const getActiveGroupChatIds = async (): Promise<number[]> => {
         .filter((id) => Number.isFinite(id) && id > 0)
     )
   );
+};
+
+const getActiveGroupChatIds = async (): Promise<number[]> => {
+  const now = Date.now();
+  if (groupChatIdsCache && now < groupChatIdsCacheExpiresAtMs) {
+    return groupChatIdsCache;
+  }
+
+  if (groupChatIdsInFlight) {
+    return groupChatIdsInFlight;
+  }
+
+  groupChatIdsInFlight = fetchActiveGroupChatIds()
+    .then((ids) => {
+      groupChatIdsCache = ids;
+      groupChatIdsCacheExpiresAtMs = Date.now() + GROUP_CHAT_IDS_CACHE_TTL_MS;
+      return ids;
+    })
+    .catch((error) => {
+      if (groupChatIdsCache) {
+        return groupChatIdsCache;
+      }
+      throw error;
+    })
+    .finally(() => {
+      groupChatIdsInFlight = null;
+    });
+
+  return groupChatIdsInFlight;
 };
 
 const getBlockedUserIdsForUser = async (userId: number): Promise<number[]> => {
@@ -710,6 +944,171 @@ const chatSummaryMessageAttributes = [
   "status",
 ];
 
+const CHAT_LIST_MAX_LIMIT = Math.max(
+  1,
+  Number(process.env.CHAT_LIST_MAX_LIMIT ?? 100) || 100
+);
+
+type ChatListCursorPayload = {
+  pinnedAt: string | null;
+  updatedAt: string;
+  chatId: number;
+};
+
+const isValidChatListCursorPayload = (
+  cursor: ChatListCursorPayload | null | undefined
+): cursor is ChatListCursorPayload => {
+  if (!cursor) return false;
+  const chatId = Number((cursor as any).chatId);
+  if (!Number.isFinite(chatId) || chatId <= 0) return false;
+  const updatedAt = new Date(String((cursor as any).updatedAt ?? ""));
+  if (!Number.isFinite(updatedAt.getTime())) return false;
+  const pinnedAtRaw = (cursor as any).pinnedAt;
+  if (pinnedAtRaw == null) return true;
+  const pinnedAt = new Date(String(pinnedAtRaw));
+  return Number.isFinite(pinnedAt.getTime());
+};
+
+const buildChatListCursorWhere = (
+  cursor: ChatListCursorPayload | null | undefined
+): any | null => {
+  if (!isValidChatListCursorPayload(cursor)) return null;
+  const cursorChatId = Number(cursor.chatId);
+  const cursorUpdatedAt = new Date(cursor.updatedAt);
+  const cursorPinnedAt =
+    cursor.pinnedAt == null ? null : new Date(String(cursor.pinnedAt));
+
+  if (cursorPinnedAt) {
+    return {
+      [Op.or]: [
+        { pinnedAt: { [Op.is]: null } },
+        {
+          [Op.and]: [
+            { pinnedAt: { [Op.not]: null } },
+            {
+              [Op.or]: [
+                { pinnedAt: { [Op.lt]: cursorPinnedAt } },
+                {
+                  [Op.and]: [
+                    { pinnedAt: cursorPinnedAt },
+                    {
+                      [Op.or]: [
+                        { updatedAt: { [Op.lt]: cursorUpdatedAt } },
+                        {
+                          [Op.and]: [
+                            { updatedAt: cursorUpdatedAt },
+                            { chatId: { [Op.lt]: cursorChatId } },
+                          ],
+                        },
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  return {
+    [Op.and]: [
+      { pinnedAt: { [Op.is]: null } },
+      {
+        [Op.or]: [
+          { updatedAt: { [Op.lt]: cursorUpdatedAt } },
+          {
+            [Op.and]: [
+              { updatedAt: cursorUpdatedAt },
+              { chatId: { [Op.lt]: cursorChatId } },
+            ],
+          },
+        ],
+      },
+    ],
+  };
+};
+
+const buildNextChatListCursor = (row: any): ChatListCursorPayload | null => {
+  if (!row) return null;
+  const chatId = Number((row as any)?.chatId ?? (row as any)?.get?.("chatId"));
+  if (!Number.isFinite(chatId) || chatId <= 0) return null;
+
+  const updatedAtRaw = (row as any)?.updatedAt ?? (row as any)?.get?.("updatedAt");
+  const updatedAt = new Date(updatedAtRaw ?? 0);
+  if (!Number.isFinite(updatedAt.getTime())) return null;
+
+  const pinnedAtRaw = (row as any)?.pinnedAt ?? (row as any)?.get?.("pinnedAt");
+  const pinnedAt = pinnedAtRaw == null ? null : new Date(pinnedAtRaw);
+  const pinnedAtIso =
+    pinnedAt && Number.isFinite(pinnedAt.getTime()) ? pinnedAt.toISOString() : null;
+
+  return {
+    pinnedAt: pinnedAtIso,
+    updatedAt: updatedAt.toISOString(),
+    chatId: Math.trunc(chatId),
+  };
+};
+
+const getLatestMessagesByChatIds = async ({
+  chatIds,
+  currentUserId,
+  attributes,
+}: {
+  chatIds: number[];
+  currentUserId: number;
+  attributes: string[];
+}): Promise<Map<number, any>> => {
+  const uid = Number(currentUserId);
+  const uniqueChatIds = Array.from(
+    new Set(
+      (chatIds ?? []).filter((chatId) => Number.isFinite(chatId) && chatId > 0)
+    )
+  );
+
+  const latestMessageByChatId = new Map<number, any>();
+  if (!uniqueChatIds.length) return latestMessageByChatId;
+
+  const latestMessageIdRows = await Message.findAll({
+    where: {
+      chatId: { [Op.in]: uniqueChatIds },
+      deletedBy: { [Op.in]: [0, uid] },
+    },
+    attributes: ["chatId", [sequelize.fn("MAX", sequelize.col("id")), "latestMessageId"]],
+    group: ["chatId"],
+    raw: true,
+  });
+
+  const latestMessageIds = Array.from(
+    new Set(
+      (latestMessageIdRows as any[])
+        .map((row: any) => Number(row.latestMessageId))
+        .filter((id: number) => Number.isFinite(id) && id > 0)
+    )
+  );
+
+  if (!latestMessageIds.length) return latestMessageByChatId;
+
+  const resolvedAttributes = Array.from(new Set(["chatId", ...(attributes ?? [])]));
+  const latestMessages = await Message.findAll({
+    where: {
+      id: { [Op.in]: latestMessageIds },
+      deletedBy: { [Op.in]: [0, uid] },
+    },
+    attributes: resolvedAttributes,
+    raw: true,
+  });
+
+  for (const row of latestMessages as any[]) {
+    const chatId = Number((row as any)?.chatId);
+    if (!Number.isFinite(chatId) || chatId <= 0) continue;
+    latestMessageByChatId.set(chatId, row);
+  }
+
+  return latestMessageByChatId;
+};
+
 /**
  * âœ… GET USER CHATS (LISTA)
  * Objetivo:
@@ -721,10 +1120,19 @@ const chatSummaryMessageAttributes = [
  * - usa deletedBy IN (0, currentUserId) en Chat (misma lÃ³gica del resto)
  * - filtra bloqueos con replacements (sin interpolar me en string)
  */
-export const getUserChats = async (currentUserId: number, meId: any = -1) => {
+export const getUserChats = async (
+  currentUserId: number,
+  meId: any = -1,
+  opts?: { limit?: number | null; cursor?: ChatListCursorPayload | null }
+) => {
   const me = Number(meId);
   const uid = Number(currentUserId);
   const groupChatIds = await getActiveGroupChatIds();
+  const parsedLimit = Number(opts?.limit);
+  const safeLimit = Number.isFinite(parsedLimit)
+    ? Math.max(1, Math.min(Math.trunc(parsedLimit), CHAT_LIST_MAX_LIMIT))
+    : null;
+  const cursorWhere = buildChatListCursorWhere(opts?.cursor ?? null);
 
   const useBlockFilter = Number.isFinite(me) && me > 0;
 
@@ -749,7 +1157,12 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
     ];
   }
 
-  const chats = await Chat_User.findAll({
+  const chatUserWhere: any = { userId: uid };
+  if (cursorWhere) {
+    chatUserWhere[Op.and] = [cursorWhere];
+  }
+
+  const rows = await Chat_User.findAll({
     attributes: [
       "userId",
       "chatId",
@@ -758,7 +1171,7 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
       "createdAt",
       "updatedAt",
     ],
-    where: { userId: uid },
+    where: chatUserWhere,
     include: [
       {
         model: Chat,
@@ -789,20 +1202,31 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
     ],
     // âœ… replacements solo si usamos filtro
     ...(useBlockFilter ? { replacements: { me } } : {}),
+    order: [
+      ["pinnedAt", "DESC"],
+      ["updatedAt", "DESC"],
+      ["chatId", "DESC"],
+    ],
+    subQuery: false,
+    ...(safeLimit != null ? { limit: safeLimit + 1 } : {}),
   });
+
+  const hasMore = safeLimit != null && rows.length > safeLimit;
+  const chats = hasMore && safeLimit != null ? rows.slice(0, safeLimit) : rows;
 
   const chatIds = (chats as any[])
     .map((row: any) => Number(row.chatId ?? row.get?.("chatId")))
     .filter((id: number) => Number.isFinite(id) && id > 0);
 
   const latestMessageByChatId = new Map<number, any>();
-  const unreadCountByChatId = new Map<number, number>();
+  const unreadCountByChatId =
+    chatIds.length > 0
+      ? await getUnreadCountByChatIds({ userId: uid, chatIds })
+      : new Map<number, number>();
   if (chatIds.length > 0) {
-    const latestCandidates = await Message.findAll({
-      where: {
-        chatId: { [Op.in]: chatIds },
-        deletedBy: { [Op.in]: [0, uid] },
-      },
+    const latestByChat = await getLatestMessagesByChatIds({
+      chatIds,
+      currentUserId: uid,
       attributes: [
         "id",
         "chatId",
@@ -823,61 +1247,10 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
         "replyToMessageId",
         "reactions",
       ],
-      order: [
-        ["chatId", "ASC"],
-        ["date", "DESC"],
-        ["id", "DESC"],
-      ],
-      raw: true,
     });
-
-    for (const row of latestCandidates as any[]) {
-      const cid = Number(row.chatId);
-      if (!Number.isFinite(cid) || cid <= 0) continue;
-      if (!latestMessageByChatId.has(cid)) {
-        latestMessageByChatId.set(cid, row);
-      }
-    }
-
-    const unreadRows = await Message.findAll({
-      where: {
-        chatId: { [Op.in]: chatIds },
-        senderId: { [Op.ne]: uid },
-        deletedBy: { [Op.in]: [0, uid] },
-        status: { [Op.in]: ["sent", "delivered"] },
-      },
-      attributes: [
-        "chatId",
-        [sequelize.fn("COUNT", sequelize.col("id")), "unreadCount"],
-      ],
-      group: ["chatId"],
-      raw: true,
-    });
-
-    for (const row of unreadRows as any[]) {
-      const cid = Number(row.chatId);
-      if (!Number.isFinite(cid) || cid <= 0) continue;
-      unreadCountByChatId.set(cid, Number(row.unreadCount ?? 0) || 0);
-    }
+    latestByChat.forEach((value, key) => latestMessageByChatId.set(key, value));
   }
 
-  const pinnedRows = await Chat_User.findAll({
-    attributes: ["chatId", "pinnedAt", "pinnedOrder"],
-    where: { userId: uid },
-    raw: true,
-  });
-  const pinnedByChatId = new Map<
-    number,
-    { pinnedAt: Date | null; pinnedOrder: number | null }
-  >();
-  for (const row of pinnedRows as any[]) {
-    const chatId = Number(row.chatId);
-    if (!Number.isFinite(chatId)) continue;
-    pinnedByChatId.set(chatId, {
-      pinnedAt: row.pinnedAt ?? null,
-      pinnedOrder: row.pinnedOrder ?? null,
-    });
-  }
   for (const chat of chats as any[]) {
     const chatId = Number(chat.chatId ?? chat.get?.("chatId"));
     if (!Number.isFinite(chatId)) continue;
@@ -890,17 +1263,9 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
       chat.Chat.messages = lastMessage ? [lastMessage] : [];
       chat.Chat.unreadCount = unreadCountByChatId.get(chatId) ?? 0;
     }
-    const pinned = pinnedByChatId.get(chatId);
-    if (!pinned) continue;
-    if (typeof chat.setDataValue === "function") {
-      chat.setDataValue("pinnedAt", pinned.pinnedAt);
-      chat.setDataValue("pinnedOrder", pinned.pinnedOrder);
-    }
-    chat.pinnedAt = pinned.pinnedAt;
-    chat.pinnedOrder = pinned.pinnedOrder;
   }
 
-  // ordenar por pin + fecha del último mensaje
+  // ordenar por pin + updatedAt para mantener paginación estable
   chats.sort((a: any, b: any) => {
     const pinA = a.pinnedAt ? new Date(a.pinnedAt).getTime() : 0;
     const pinB = b.pinnedAt ? new Date(b.pinnedAt).getTime() : 0;
@@ -909,9 +1274,13 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
     if (!pinA && pinB) return 1;
     if (pinA && pinB && pinA !== pinB) return pinB - pinA;
 
-    const dateA = new Date(a.Chat?.messages?.[0]?.date ?? 0).getTime() || 0;
-    const dateB = new Date(b.Chat?.messages?.[0]?.date ?? 0).getTime() || 0;
-    return dateB - dateA;
+    const updatedA = new Date(a.updatedAt ?? 0).getTime() || 0;
+    const updatedB = new Date(b.updatedAt ?? 0).getTime() || 0;
+    if (updatedA !== updatedB) return updatedB - updatedA;
+
+    const chatIdA = Number(a.chatId ?? a.get?.("chatId")) || 0;
+    const chatIdB = Number(b.chatId ?? b.get?.("chatId")) || 0;
+    return chatIdB - chatIdA;
   });
 
   const chatUsers = (chats as any[]).flatMap((chat: any) => {
@@ -925,14 +1294,32 @@ export const getUserChats = async (currentUserId: number, meId: any = -1) => {
     viewerIdRaw: uid,
   });
 
-  return chats;
+  const nextCursor =
+    hasMore && chats.length > 0 ? buildNextChatListCursor(chats[chats.length - 1]) : null;
+
+  return {
+    chats,
+    paging: {
+      limit: safeLimit,
+      nextCursor,
+    },
+  };
 };
 
-export const getUserChatsSummary = async (currentUserId: number, meId: any = -1) => {
+export const getUserChatsSummary = async (
+  currentUserId: number,
+  meId: any = -1,
+  opts?: { limit?: number | null; cursor?: ChatListCursorPayload | null }
+) => {
   const me = Number(meId);
   const uid = Number(currentUserId);
   const groupChatIds = await getActiveGroupChatIds();
   const useBlockFilter = Number.isFinite(me) && me > 0;
+  const parsedLimit = Number(opts?.limit);
+  const safeLimit = Number.isFinite(parsedLimit)
+    ? Math.max(1, Math.min(Math.trunc(parsedLimit), CHAT_LIST_MAX_LIMIT))
+    : null;
+  const cursorWhere = buildChatListCursorWhere(opts?.cursor ?? null);
 
   const userWhere: any = {
     id: { [Op.ne]: uid },
@@ -954,9 +1341,14 @@ export const getUserChatsSummary = async (currentUserId: number, meId: any = -1)
     ];
   }
 
-  const chats = await Chat_User.findAll({
+  const chatUserWhere: any = { userId: uid };
+  if (cursorWhere) {
+    chatUserWhere[Op.and] = [cursorWhere];
+  }
+
+  const rows = await Chat_User.findAll({
     attributes: ["userId", "chatId", "pinnedAt", "pinnedOrder", "updatedAt"],
-    where: { userId: uid },
+    where: chatUserWhere,
     include: [
       {
         model: Chat,
@@ -984,76 +1376,35 @@ export const getUserChatsSummary = async (currentUserId: number, meId: any = -1)
       },
     ],
     ...(useBlockFilter ? { replacements: { me } } : {}),
+    order: [
+      ["pinnedAt", "DESC"],
+      ["updatedAt", "DESC"],
+      ["chatId", "DESC"],
+    ],
+    subQuery: false,
+    ...(safeLimit != null ? { limit: safeLimit + 1 } : {}),
   });
+
+  const hasMore = safeLimit != null && rows.length > safeLimit;
+  const chats = hasMore && safeLimit != null ? rows.slice(0, safeLimit) : rows;
 
   const chatIds = (chats as any[])
     .map((row: any) => Number(row.chatId ?? row.get?.("chatId")))
     .filter((id: number) => Number.isFinite(id) && id > 0);
 
   const latestMessageByChatId = new Map<number, any>();
-  const unreadCountByChatId = new Map<number, number>();
+  const unreadCountByChatId =
+    chatIds.length > 0
+      ? await getUnreadCountByChatIds({ userId: uid, chatIds })
+      : new Map<number, number>();
 
   if (chatIds.length > 0) {
-    const latestCandidates = await Message.findAll({
-      where: {
-        chatId: { [Op.in]: chatIds },
-        deletedBy: { [Op.in]: [0, uid] },
-      },
+    const latestByChat = await getLatestMessagesByChatIds({
+      chatIds,
+      currentUserId: uid,
       attributes: chatSummaryMessageAttributes,
-      order: [
-        ["chatId", "ASC"],
-        ["date", "DESC"],
-        ["id", "DESC"],
-      ],
-      raw: true,
     });
-
-    for (const row of latestCandidates as any[]) {
-      const cid = Number(row.chatId);
-      if (!Number.isFinite(cid) || cid <= 0) continue;
-      if (!latestMessageByChatId.has(cid)) {
-        latestMessageByChatId.set(cid, row);
-      }
-    }
-
-    const unreadRows = await Message.findAll({
-      where: {
-        chatId: { [Op.in]: chatIds },
-        senderId: { [Op.ne]: uid },
-        deletedBy: { [Op.in]: [0, uid] },
-        status: { [Op.in]: ["sent", "delivered"] },
-      },
-      attributes: [
-        "chatId",
-        [sequelize.fn("COUNT", sequelize.col("id")), "unreadCount"],
-      ],
-      group: ["chatId"],
-      raw: true,
-    });
-
-    for (const row of unreadRows as any[]) {
-      const cid = Number(row.chatId);
-      if (!Number.isFinite(cid) || cid <= 0) continue;
-      unreadCountByChatId.set(cid, Number(row.unreadCount ?? 0) || 0);
-    }
-  }
-
-  const pinnedRows = await Chat_User.findAll({
-    attributes: ["chatId", "pinnedAt", "pinnedOrder"],
-    where: { userId: uid },
-    raw: true,
-  });
-  const pinnedByChatId = new Map<
-    number,
-    { pinnedAt: Date | null; pinnedOrder: number | null }
-  >();
-  for (const row of pinnedRows as any[]) {
-    const chatId = Number(row.chatId);
-    if (!Number.isFinite(chatId)) continue;
-    pinnedByChatId.set(chatId, {
-      pinnedAt: row.pinnedAt ?? null,
-      pinnedOrder: row.pinnedOrder ?? null,
-    });
+    latestByChat.forEach((value, key) => latestMessageByChatId.set(key, value));
   }
 
   for (const chat of chats as any[]) {
@@ -1068,14 +1419,6 @@ export const getUserChatsSummary = async (currentUserId: number, meId: any = -1)
       chat.Chat.messages = lastMessage ? [lastMessage] : [];
       chat.Chat.unreadCount = unreadCountByChatId.get(chatId) ?? 0;
     }
-    const pinned = pinnedByChatId.get(chatId);
-    if (!pinned) continue;
-    if (typeof chat.setDataValue === "function") {
-      chat.setDataValue("pinnedAt", pinned.pinnedAt);
-      chat.setDataValue("pinnedOrder", pinned.pinnedOrder);
-    }
-    chat.pinnedAt = pinned.pinnedAt;
-    chat.pinnedOrder = pinned.pinnedOrder;
   }
 
   chats.sort((a: any, b: any) => {
@@ -1086,12 +1429,25 @@ export const getUserChatsSummary = async (currentUserId: number, meId: any = -1)
     if (!pinA && pinB) return 1;
     if (pinA && pinB && pinA !== pinB) return pinB - pinA;
 
-    const dateA = new Date(a.Chat?.messages?.[0]?.date ?? 0).getTime() || 0;
-    const dateB = new Date(b.Chat?.messages?.[0]?.date ?? 0).getTime() || 0;
-    return dateB - dateA;
+    const updatedA = new Date(a.updatedAt ?? 0).getTime() || 0;
+    const updatedB = new Date(b.updatedAt ?? 0).getTime() || 0;
+    if (updatedA !== updatedB) return updatedB - updatedA;
+
+    const chatIdA = Number(a.chatId ?? a.get?.("chatId")) || 0;
+    const chatIdB = Number(b.chatId ?? b.get?.("chatId")) || 0;
+    return chatIdB - chatIdA;
   });
 
-  return chats;
+  const nextCursor =
+    hasMore && chats.length > 0 ? buildNextChatListCursor(chats[chats.length - 1]) : null;
+
+  return {
+    chats,
+    paging: {
+      limit: safeLimit,
+      nextCursor,
+    },
+  };
 };
 
 export const getUserStarredChats = async ({
@@ -1209,49 +1565,30 @@ export const getUserStarredChats = async ({
     .map((row: any) => Number(row.chatId ?? row.get?.("chatId")))
     .filter((id: number) => Number.isFinite(id) && id > 0);
 
-  const latestMessageByChatId = new Map<number, any>();
-  if (chatIds.length > 0) {
-    const latestCandidates = await Message.findAll({
-      where: {
-        chatId: { [Op.in]: chatIds },
-        deletedBy: { [Op.in]: [0, uid] },
-      },
-      attributes: [
-        "id",
-        "chatId",
-        "senderId",
-        "text",
-        "messageType",
-        "mediaUrl",
-        "mediaMime",
-        "mediaDurationMs",
-        "mediaSizeBytes",
-        "waveform",
-        "metadata",
-        "date",
-        "deletedBy",
-        "status",
-        "deliveredAt",
-        "readAt",
-        "replyToMessageId",
-        "reactions",
-      ],
-      order: [
-        ["chatId", "ASC"],
-        ["date", "DESC"],
-        ["id", "DESC"],
-      ],
-      raw: true,
-    });
-
-    for (const row of latestCandidates as any[]) {
-      const cid = Number(row.chatId);
-      if (!Number.isFinite(cid) || cid <= 0) continue;
-      if (!latestMessageByChatId.has(cid)) {
-        latestMessageByChatId.set(cid, row);
-      }
-    }
-  }
+  const latestMessageByChatId = await getLatestMessagesByChatIds({
+    chatIds,
+    currentUserId: uid,
+    attributes: [
+      "id",
+      "chatId",
+      "senderId",
+      "text",
+      "messageType",
+      "mediaUrl",
+      "mediaMime",
+      "mediaDurationMs",
+      "mediaSizeBytes",
+      "waveform",
+      "metadata",
+      "date",
+      "deletedBy",
+      "status",
+      "deliveredAt",
+      "readAt",
+      "replyToMessageId",
+      "reactions",
+    ],
+  });
 
   for (const chat of chats as any[]) {
     const chatId = Number(chat.chatId ?? chat.get?.("chatId"));
@@ -1383,6 +1720,74 @@ export const updateMessageStatus = async ({
   await Message.update({ status }, { where: { id: messageId } });
 };
 
+export const incrementUnreadCountForChatUser = async (
+  chatIdRaw: number,
+  userIdRaw: number,
+  incrementByRaw = 1
+) => {
+  const chatId = Number(chatIdRaw);
+  const userId = Number(userIdRaw);
+  const incrementBy = Math.max(0, Number(incrementByRaw) || 0);
+  if (!Number.isFinite(chatId) || chatId <= 0) return;
+  if (!Number.isFinite(userId) || userId <= 0) return;
+  if (incrementBy <= 0) return;
+  if (!(await hasChatUserUnreadCountColumn())) return;
+
+  await sequelize.query(
+    `
+      UPDATE chat_user
+      SET ${CHAT_USER_UNREAD_COUNT_COLUMN} = GREATEST(
+        COALESCE(${CHAT_USER_UNREAD_COUNT_COLUMN}, 0) + :incrementBy,
+        0
+      )
+      WHERE chatId = :chatId
+        AND userId = :userId
+    `,
+    {
+      replacements: {
+        chatId,
+        userId,
+        incrementBy,
+      },
+      type: QueryTypes.UPDATE,
+    }
+  );
+};
+
+export const decrementUnreadCountForChatUser = async (
+  chatIdRaw: number,
+  userIdRaw: number,
+  decrementByRaw = 1
+) => {
+  const chatId = Number(chatIdRaw);
+  const userId = Number(userIdRaw);
+  const decrementBy = Math.max(0, Number(decrementByRaw) || 0);
+  if (!Number.isFinite(chatId) || chatId <= 0) return;
+  if (!Number.isFinite(userId) || userId <= 0) return;
+  if (decrementBy <= 0) return;
+  if (!(await hasChatUserUnreadCountColumn())) return;
+
+  await sequelize.query(
+    `
+      UPDATE chat_user
+      SET ${CHAT_USER_UNREAD_COUNT_COLUMN} = GREATEST(
+        COALESCE(${CHAT_USER_UNREAD_COUNT_COLUMN}, 0) - :decrementBy,
+        0
+      )
+      WHERE chatId = :chatId
+        AND userId = :userId
+    `,
+    {
+      replacements: {
+        chatId,
+        userId,
+        decrementBy,
+      },
+      type: QueryTypes.UPDATE,
+    }
+  );
+};
+
 export const markMessagesAsReadBulk = async (
   messageIds: Array<number | string | null | undefined>
 ) => {
@@ -1476,41 +1881,54 @@ export const getChatParticipantUserIds = async (chatId: number): Promise<number[
 
 // =======================================================
 
-async function chatExist(currentUserId: any, otherUserId: any) {
-  const groupChatIds = await getActiveGroupChatIds();
+const findDirectChatIdByUsers = async (
+  currentUserId: number,
+  otherUserId: number,
+  opts?: { visibleForUserId?: number | null }
+): Promise<number | null> => {
+  const me = Number(currentUserId);
+  const other = Number(otherUserId);
+  if (!Number.isFinite(me) || me <= 0 || !Number.isFinite(other) || other <= 0) {
+    return null;
+  }
 
-  const sharedChats = await Chat_User.findAll({
-    where: {
-      userId: { [Op.or]: [currentUserId, otherUserId] },
-    },
-    attributes: ["chatId"],
-    group: ["chatId"],
-    having: sequelize.literal("COUNT(DISTINCT userId) = 2"),
-  });
+  const visibleForUserIdRaw =
+    opts?.visibleForUserId == null ? null : Number(opts.visibleForUserId);
+  const hasVisibilityFilter =
+    Number.isFinite(visibleForUserIdRaw as any) && (visibleForUserIdRaw as number) > 0;
+  const visibleForUserId = hasVisibilityFilter ? Number(visibleForUserIdRaw) : null;
 
-  const sharedChatIds = (sharedChats as any[])
-    .map((c) => Number((c as any).chatId))
-    .filter((id) => Number.isFinite(id) && id > 0)
-    .filter((id) => !groupChatIds.includes(id));
+  const rows = (await sequelize.query(
+    `
+      SELECT cu1.chatId AS chatId
+      FROM chat_user cu1
+      INNER JOIN chat_user cu2
+        ON cu2.chatId = cu1.chatId
+       AND cu2.userId = :otherUserId
+      LEFT JOIN chat_groups cg
+        ON cg.chatId = cu1.chatId
+      ${hasVisibilityFilter ? "INNER JOIN chats c ON c.id = cu1.chatId" : ""}
+      WHERE cu1.userId = :currentUserId
+        AND cg.chatId IS NULL
+      ${hasVisibilityFilter ? "AND c.deletedBy IN (0, :visibleForUserId)" : ""}
+      ORDER BY cu1.chatId DESC
+      LIMIT 1
+    `,
+    {
+      replacements: {
+        currentUserId: me,
+        otherUserId: other,
+        ...(hasVisibilityFilter ? { visibleForUserId } : {}),
+      },
+      type: QueryTypes.SELECT,
+    }
+  )) as Array<{ chatId?: number | string | null }>;
 
-  if (!sharedChatIds.length) return [];
-
-  const chat = await Chat_User.findAll({
-    where: {
-      [Op.and]: [
-        { [Op.or]: [{ userId: currentUserId }, { userId: otherUserId }] },
-        {
-          chatId: {
-            [Op.in]: sharedChatIds,
-          },
-        },
-      ],
-    },
-    order: ["userId"],
-  });
-
-  return chat;
-}
+  if (!rows.length) return null;
+  const chatId = Number(rows[0]?.chatId);
+  if (!Number.isFinite(chatId) || chatId <= 0) return null;
+  return Math.trunc(chatId);
+};
 
 async function isBlockedEitherWay(a: number, b: number): Promise<boolean> {
   if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return false;

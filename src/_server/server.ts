@@ -7,6 +7,7 @@ import express, { Router, Application } from "express";
 import { socketController } from "../_sockets/socket_controller";
 import { setSocketInstance } from "../_sockets/socket_instance";
 import { responseMetricsMiddleware } from "./middleware/response_metrics";
+const compression = require("compression");
 
 console.log(t);
 
@@ -40,6 +41,17 @@ const isProduction = () =>
   String(process.env.NODE_ENV ?? "").trim().toLowerCase() === "production";
 
 const shouldTrustProxy = () => isTruthy(process.env.TRUST_PROXY);
+const shouldEnableHttpCompression = () => !isTruthy(process.env.HTTP_COMPRESSION_DISABLED);
+const resolveHttpCompressionLevel = () => {
+  const parsed = Number(process.env.HTTP_COMPRESSION_LEVEL ?? 6);
+  if (!Number.isFinite(parsed)) return 6;
+  return Math.min(9, Math.max(-1, Math.trunc(parsed)));
+};
+const resolveHttpCompressionThresholdBytes = () => {
+  const parsed = Number(process.env.HTTP_COMPRESSION_THRESHOLD_BYTES ?? 1024);
+  if (!Number.isFinite(parsed) || parsed < 0) return 1024;
+  return Math.trunc(parsed);
+};
 
 class Server {
   public readonly app = express();
@@ -134,6 +146,21 @@ class Server {
 
     this.app.disable("x-powered-by");
     this.app.use(responseMetricsMiddleware);
+    if (shouldEnableHttpCompression()) {
+      const level = resolveHttpCompressionLevel();
+      const threshold = resolveHttpCompressionThresholdBytes();
+      this.app.use(
+        compression({
+          level,
+          threshold,
+          filter: (req: any, res: any) => {
+            const cacheControl = String(res.getHeader("cache-control") ?? "").toLowerCase();
+            if (cacheControl.includes("no-transform")) return false;
+            return compression.filter(req, res);
+          },
+        })
+      );
+    }
     // CORS con allowlist en producción.
     this.app.use(
       cors({

@@ -57,6 +57,10 @@ const BAIL = argv.has("--bail");
 
 const tests = [
   { script: "test:profile:follow-realtime", retries: 0 },
+  { script: "test:profile:follow-summary", retries: 0 },
+  { script: "test:bootstrap:home", retries: 0 },
+  { script: "test:post:summary", retries: 0 },
+  { script: "test:reel:summary", retries: 0 },
   { script: "test:profile:orbits-route", retries: 0 },
   { script: "test:orbit:flags", retries: 0 },
   { script: "test:orbit:ring24h", retries: 0 },
@@ -64,6 +68,8 @@ const tests = [
   { script: "test:orbit:comment-realtime", retries: 1 },
   { script: "test:reel:realtime-delete", retries: 0 },
   { script: "test:chat:realtime", retries: 1 },
+  { script: "test:chat:message-summary", retries: 0 },
+  { script: "test:chat:list-pagination", retries: 0 },
   { script: "test:profile:saved-state", retries: 1 },
   { script: "test:orbit:find:no-consecutive-creator", retries: 0 },
 ];

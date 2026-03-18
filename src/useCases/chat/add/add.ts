@@ -66,6 +66,14 @@ const VIDEO_MAX_SIZE_BYTES = 100 * 1024 * 1024;
 const DOCUMENT_MAX_SIZE_BYTES = 20 * 1024 * 1024;
 const WAVEFORM_MAX_POINTS = 256;
 const CLIENT_MESSAGE_ID_MAX_LENGTH = 128;
+const CHAT_SEND_RESPONSE_DEFAULT_LIMIT = Math.max(
+  1,
+  Math.min(Number(process.env.CHAT_SEND_RESPONSE_DEFAULT_LIMIT ?? 20) || 20, 200)
+);
+const CHAT_SEND_RESPONSE_MAX_LIMIT = Math.max(
+  CHAT_SEND_RESPONSE_DEFAULT_LIMIT,
+  Math.min(Number(process.env.CHAT_SEND_RESPONSE_MAX_LIMIT ?? 50) || 50, 200)
+);
 
 const DOCUMENT_ALLOWED_MIME_TYPES = new Set<string>([
   "application/pdf",
@@ -145,6 +153,234 @@ export const normalizeClientMessageId = (value: any): string | null => {
   if (normalized.length > CLIENT_MESSAGE_ID_MAX_LENGTH) return null;
   if (!/^[A-Za-z0-9._:-]+$/.test(normalized)) return null;
   return normalized;
+};
+
+const resolveSendResponseLimit = (req: Request): number => {
+  const body: any = req.body ?? {};
+  const query: any = req.query ?? {};
+  const candidateRaw =
+    body?.response_messages_limit ??
+    body?.responseMessagesLimit ??
+    query?.response_messages_limit ??
+    query?.responseMessagesLimit ??
+    null;
+  const parsed = toPositiveInt(candidateRaw);
+  if (!parsed) return CHAT_SEND_RESPONSE_DEFAULT_LIMIT;
+  return Math.min(Math.max(parsed, 1), CHAT_SEND_RESPONSE_MAX_LIMIT);
+};
+
+type ClientMessageIdCandidate = {
+  source: string;
+  rawValue: any;
+};
+
+const hasMeaningfulValue = (value: any): boolean => {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  return true;
+};
+
+const normalizeOptionalBoolean = (value: any): boolean | null => {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return null;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off"].includes(normalized)) return false;
+  }
+  return null;
+};
+
+const normalizeBoundedText = (
+  value: any,
+  maxLength: number
+): string | null | undefined => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+  if (normalized.length > maxLength) return undefined;
+  return normalized;
+};
+
+const parseE2eEnvelope = (value: any): Record<string, any> | null | undefined => {
+  if (value === undefined || value === null || value === "") return null;
+
+  let source = value;
+  if (typeof source === "string") {
+    const trimmed = source.trim();
+    if (!trimmed) return null;
+    try {
+      source = JSON.parse(trimmed);
+    } catch {
+      return undefined;
+    }
+  }
+
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return undefined;
+  }
+
+  const version = normalizeBoundedText(
+    (source as any)?.version ?? (source as any)?.v,
+    16
+  );
+  const algorithm = normalizeBoundedText(
+    (source as any)?.algorithm ?? (source as any)?.alg,
+    64
+  );
+  const keyId = normalizeBoundedText((source as any)?.keyId ?? (source as any)?.kid, 255);
+  const senderDeviceId = normalizeBoundedText(
+    (source as any)?.senderDeviceId ?? (source as any)?.sender_device_id,
+    255
+  );
+  const nonce = normalizeBoundedText(
+    (source as any)?.nonce ?? (source as any)?.iv,
+    512
+  );
+  const ciphertext = normalizeBoundedText(
+    (source as any)?.ciphertext ?? (source as any)?.cipher,
+    65535
+  );
+  const aad = normalizeBoundedText((source as any)?.aad, 8192);
+  const encryptedRaw =
+    (source as any)?.encrypted ?? (source as any)?.isEncrypted ?? (source as any)?.is_encrypted;
+  const encrypted = normalizeOptionalBoolean(encryptedRaw);
+
+  if (
+    version === undefined ||
+    algorithm === undefined ||
+    keyId === undefined ||
+    senderDeviceId === undefined ||
+    nonce === undefined ||
+    ciphertext === undefined ||
+    aad === undefined
+  ) {
+    return undefined;
+  }
+
+  if (encryptedRaw !== undefined && encrypted === null) {
+    return undefined;
+  }
+
+  const envelope: Record<string, any> = {
+    encrypted: encrypted ?? true,
+  };
+  if (version) envelope.version = version;
+  if (algorithm) envelope.algorithm = algorithm;
+  if (keyId) envelope.keyId = keyId;
+  if (senderDeviceId) envelope.senderDeviceId = senderDeviceId;
+  if (nonce) envelope.nonce = nonce;
+  if (ciphertext) envelope.ciphertext = ciphertext;
+  if (aad) envelope.aad = aad;
+
+  return envelope;
+};
+
+export const hasE2eMetadata = (metadata: any): boolean => {
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const envelope = (metadata as any)?._e2e ?? (metadata as any)?.e2e;
+  if (!envelope || typeof envelope !== "object" || Array.isArray(envelope)) return false;
+  return true;
+};
+
+const attachE2eMetadata = (
+  metadata: Record<string, any> | null,
+  body: any
+): { ok: true; metadata: Record<string, any> | null } | { ok: false; error: string } => {
+  const bodyEnvelopeRaw = (body as any)?._e2e ?? (body as any)?.e2e;
+  const metadataEnvelopeRaw =
+    metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? (metadata as any)?._e2e ?? (metadata as any)?.e2e
+      : undefined;
+  const envelopeRaw = hasMeaningfulValue(bodyEnvelopeRaw)
+    ? bodyEnvelopeRaw
+    : metadataEnvelopeRaw;
+
+  if (!hasMeaningfulValue(envelopeRaw)) {
+    return { ok: true, metadata };
+  }
+
+  const parsedEnvelope = parseE2eEnvelope(envelopeRaw);
+  if (!parsedEnvelope) {
+    return { ok: false, error: "_e2e is invalid" };
+  }
+
+  const baseMetadata =
+    metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? { ...metadata }
+      : {};
+  baseMetadata._e2e = parsedEnvelope;
+  if ("e2e" in baseMetadata) {
+    delete (baseMetadata as any).e2e;
+  }
+
+  return { ok: true, metadata: baseMetadata };
+};
+
+export const mergePayloadWithE2eMetadata = (
+  payloadMetadata: Record<string, any> | null,
+  sourceMetadata: Record<string, any> | null
+): Record<string, any> | null => {
+  if (!hasE2eMetadata(sourceMetadata)) return payloadMetadata;
+
+  const e2e = (sourceMetadata as any)._e2e ?? (sourceMetadata as any).e2e;
+  const baseMetadata =
+    payloadMetadata && typeof payloadMetadata === "object" && !Array.isArray(payloadMetadata)
+      ? { ...payloadMetadata }
+      : {};
+  baseMetadata._e2e = e2e;
+  return baseMetadata;
+};
+
+export const resolveClientMessageIdFromRequest = (
+  req: Request
+):
+  | { ok: true; clientMessageId: string | null; source: string | null }
+  | { ok: false; code: number; message: string } => {
+  const candidates: ClientMessageIdCandidate[] = [
+    { source: "clientMessageId", rawValue: (req.body as any)?.clientMessageId },
+    { source: "client_message_id", rawValue: (req.body as any)?.client_message_id },
+    { source: "idempotencyKey", rawValue: (req.body as any)?.idempotencyKey },
+    { source: "idempotency_key", rawValue: (req.body as any)?.idempotency_key },
+    { source: "Idempotency-Key", rawValue: req.header("Idempotency-Key") },
+    { source: "X-Idempotency-Key", rawValue: req.header("X-Idempotency-Key") },
+  ];
+
+  const provided = candidates.filter((candidate) => hasMeaningfulValue(candidate.rawValue));
+  if (!provided.length) {
+    return { ok: true, clientMessageId: null, source: null };
+  }
+
+  const normalizedCandidates = provided.map((candidate) => ({
+    source: candidate.source,
+    normalized: normalizeClientMessageId(candidate.rawValue),
+  }));
+  const invalid = normalizedCandidates.find((candidate) => !candidate.normalized);
+  if (invalid) {
+    return { ok: false, code: 400, message: `${invalid.source} is invalid` };
+  }
+
+  const distinctNormalized = new Set(normalizedCandidates.map((candidate) => candidate.normalized));
+  if (distinctNormalized.size > 1) {
+    return {
+      ok: false,
+      code: 409,
+      message: "idempotency key mismatch between body/header values",
+    };
+  }
+
+  return {
+    ok: true,
+    clientMessageId: normalizedCandidates[0]?.normalized ?? null,
+    source: normalizedCandidates[0]?.source ?? null,
+  };
 };
 
 const parseContactMetadata = (value: any): ContactMetadata | undefined => {
@@ -413,24 +649,33 @@ export const buildMessagePayload = async (
   }
 
   const text = String((body as any)?.message ?? "").trim();
+  const metadataResult = attachE2eMetadata(parseMediaMetadata((body as any)?.metadata), body);
+  if (!metadataResult.ok) {
+    return {
+      ok: false,
+      error: metadataResult.error,
+    };
+  }
+  const metadataWithE2e = metadataResult.metadata;
 
   if (messageType === "text") {
-    if (!text) {
+    const encryptedMessage = hasE2eMetadata(metadataWithE2e);
+    if (!text && !encryptedMessage) {
       return { ok: false, error: "message is required for text messages" };
     }
     return {
       ok: true,
       payload: {
         messageType: "text",
-        text,
+        text: text || null,
         mediaUrl: null,
         mediaMime: null,
         mediaDurationMs: null,
         mediaSizeBytes: null,
         waveform: null,
-        metadata: null,
+        metadata: metadataWithE2e,
       },
-      notificationPreview: text,
+      notificationPreview: encryptedMessage ? "🔐 Encrypted message" : text,
     };
   }
 
@@ -458,7 +703,7 @@ export const buildMessagePayload = async (
         mediaDurationMs: null,
         mediaSizeBytes: null,
         waveform: null,
-        metadata: contact,
+        metadata: mergePayloadWithE2eMetadata(contact, metadataWithE2e),
       },
       notificationPreview: "👤 Profile",
     };
@@ -489,7 +734,7 @@ export const buildMessagePayload = async (
         mediaDurationMs: null,
         mediaSizeBytes: null,
         waveform: null,
-        metadata: share,
+        metadata: mergePayloadWithE2eMetadata(share, metadataWithE2e),
       },
       notificationPreview: previewTitle
         ? `🔗 ${previewTitle}`
@@ -621,8 +866,6 @@ export const buildMessagePayload = async (
     document: "📄 Document",
   };
 
-  const mediaMetadata = parseMediaMetadata((body as any)?.metadata);
-
   return {
     ok: true,
     payload: {
@@ -633,7 +876,7 @@ export const buildMessagePayload = async (
       mediaDurationMs,
       mediaSizeBytes,
       waveform,
-      metadata: mediaMetadata,
+      metadata: metadataWithE2e,
     },
     notificationPreview: notificationPreviewByType[messageType],
   };
@@ -726,21 +969,17 @@ export const sendMessage = async (req: Request, res: Response) => {
   }
 
   const messagePayload = payloadResult.payload;
-  const rawClientMessageId =
-    (req.body as any)?.clientMessageId ?? (req.body as any)?.client_message_id;
-  const hasClientMessageId =
-    rawClientMessageId !== undefined &&
-    rawClientMessageId !== null &&
-    String(rawClientMessageId).trim() !== "";
-  const clientMessageId = normalizeClientMessageId(rawClientMessageId);
-  if (hasClientMessageId && !clientMessageId) {
+  const resolvedClientMessageId = resolveClientMessageIdFromRequest(req);
+  if (!resolvedClientMessageId.ok) {
     return formatResponse({
       res,
       success: false,
-      code: 400,
-      message: "clientMessageId is invalid",
+      code: resolvedClientMessageId.code,
+      message: resolvedClientMessageId.message,
     });
   }
+  const clientMessageId = resolvedClientMessageId.clientMessageId;
+  const clientMessageIdSource = resolvedClientMessageId.source;
   if (clientMessageId) {
     messagePayload.clientMessageId = clientMessageId;
   }
@@ -764,7 +1003,10 @@ export const sendMessage = async (req: Request, res: Response) => {
         });
       }
 
-      messagePayload.metadata = hydratedContact;
+      messagePayload.metadata = mergePayloadWithE2eMetadata(
+        hydratedContact as any,
+        messagePayload.metadata as any
+      );
     }
 
     const flag = await repository.validateBlock(req.userId, receiverUserId);
@@ -850,7 +1092,12 @@ export const sendMessage = async (req: Request, res: Response) => {
 
     const senderName = buildSenderTitle(senderId, fullName || "Nuevo mensaje");
 
-    const rawPreview = payloadResult.notificationPreview.trim();
+    const encryptedMessage = hasE2eMetadata(
+      (serializedMessage as any)?.metadata ?? messagePayload.metadata
+    );
+    const rawPreview = encryptedMessage
+      ? "🔐 Encrypted message"
+      : payloadResult.notificationPreview.trim();
     const snippet =
       rawPreview.length > 60 ? `${rawPreview.slice(0, 60)}...` : rawPreview;
     const notificationBody = snippet || "You have a new message";
@@ -875,11 +1122,31 @@ export const sendMessage = async (req: Request, res: Response) => {
       });
     }
 
-    const messages = await repository.getChatByUser(req.userId, receiverUserId);
+    const responseMessagesLimit = resolveSendResponseLimit(req);
+    const messages = await repository.getChatByUser(req.userId, receiverUserId, {
+      limit: responseMessagesLimit,
+      sort: "asc",
+    });
+    const responseClientMessageId =
+      normalizeClientMessageId(
+        (serializedMessage as any)?.clientMessageId ?? (serializedMessage as any)?.client_message_id
+      ) ?? clientMessageId;
 
     const payload = {
       chatId: messages.length > 0 ? messages[0].chatId : chatId,
       messages: serializeMessagesToCanonical(messages, { includeLegacy: true }),
+      paging: {
+        limit: responseMessagesLimit,
+        messages_truncated: messages.length >= responseMessagesLimit,
+        messagesTruncated: messages.length >= responseMessagesLimit,
+      },
+      deduplicated: wasDeduplicated,
+      clientMessageId: responseClientMessageId,
+      client_message_id: responseClientMessageId,
+      idempotencyKey: responseClientMessageId,
+      idempotency_key: responseClientMessageId,
+      idempotencySource: clientMessageIdSource,
+      idempotency_source: clientMessageIdSource,
     };
 
     return formatResponse({ res, success: true, body: payload });

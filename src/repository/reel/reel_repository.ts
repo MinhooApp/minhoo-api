@@ -32,8 +32,33 @@ const reelUserInclude = {
 const reelUserSummaryInclude = {
   model: User,
   as: "user",
-  attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
+  attributes: [
+    "id",
+    "name",
+    "last_name",
+    "username",
+    "image_profil",
+    "verified",
+    "job_categories_labels",
+  ],
 };
+
+const reelSummaryCandidateAttributes: string[] = [
+  "id",
+  "userId",
+  "description",
+  "thumbnail_url",
+  "stream_url",
+  "video_uid",
+  "createdAt",
+  "status",
+  "likes_count",
+  "comments_count",
+  "saves_count",
+  "views_count",
+  "shares_count",
+  "metadata",
+];
 
 const normalizeNumber = (value: any, fallback: number) => {
   const n = Number(value);
@@ -962,9 +987,11 @@ const fetchOrbitCandidatePool = async ({
       Reel.findAll({
         where: mergeFeedWhere(where, params.extraWhere),
         include: [summary ? reelUserSummaryInclude : reelUserInclude],
+        ...(summary ? { attributes: reelSummaryCandidateAttributes } : {}),
         replacements: { meId: viewerId ?? -1 },
         order: params.order,
         limit: Math.max(1, Math.floor(params.limit)),
+        ...(summary ? { raw: true, nest: true } : {}),
       })
     );
   };

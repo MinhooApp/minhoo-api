@@ -118,25 +118,113 @@ const resolveRequestLocale = async (req: Request): Promise<AppLocale> => {
   }
 };
 
+const resolveNextBeforeMessageId = (messages: any[], limit: number): number | null => {
+  if (!Array.isArray(messages) || messages.length < limit) return null;
+  let minId = Number.POSITIVE_INFINITY;
+
+  messages.forEach((message: any) => {
+    const id = Number((message as any)?.id);
+    if (Number.isFinite(id) && id > 0) {
+      minId = Math.min(minId, Math.trunc(id));
+    }
+  });
+
+  if (!Number.isFinite(minId) || minId <= 0) return null;
+  return minId;
+};
+
+type ChatListCursorPayload = {
+  pinnedAt: string | null;
+  updatedAt: string;
+  chatId: number;
+};
+
+const parseChatListLimit = (raw: any): number | null => {
+  if (raw == null || String(raw).trim() === "") return null;
+  const parsed = parseInt(String(raw), 10);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(1, Math.min(parsed, 100));
+};
+
+const isValidChatListCursorPayload = (
+  cursor: ChatListCursorPayload | null | undefined
+): cursor is ChatListCursorPayload => {
+  if (!cursor) return false;
+  const chatId = Number((cursor as any).chatId);
+  if (!Number.isFinite(chatId) || chatId <= 0) return false;
+  const updatedAt = new Date(String((cursor as any).updatedAt ?? ""));
+  if (!Number.isFinite(updatedAt.getTime())) return false;
+  const pinnedAtRaw = (cursor as any).pinnedAt;
+  if (pinnedAtRaw == null) return true;
+  const pinnedAt = new Date(String(pinnedAtRaw));
+  return Number.isFinite(pinnedAt.getTime());
+};
+
+const encodeChatListCursor = (cursor: ChatListCursorPayload | null): string | null => {
+  if (!isValidChatListCursorPayload(cursor)) return null;
+  return Buffer.from(JSON.stringify(cursor), "utf8").toString("base64url");
+};
+
+const decodeChatListCursor = (raw: any): ChatListCursorPayload | null => {
+  if (raw == null) return null;
+  const normalized = String(raw).trim();
+  if (!normalized) return null;
+
+  const candidates = [normalized];
+  try {
+    candidates.push(Buffer.from(normalized, "base64url").toString("utf8"));
+  } catch (_) {
+    // ignore decode error
+  }
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (isValidChatListCursorPayload(parsed)) {
+        return {
+          pinnedAt: parsed.pinnedAt ?? null,
+          updatedAt: String(parsed.updatedAt),
+          chatId: Math.trunc(Number(parsed.chatId)),
+        };
+      }
+    } catch (_) {
+      // ignore parse error
+    }
+  }
+
+  return null;
+};
+
 export const myChats = async (req: Request, res: Response) => {
   const startedAt = Date.now();
   try {
     setNoCacheHeaders(res);
     const summary = isSummaryMode((req.query as any)?.summary);
     const locale = await resolveRequestLocale(req);
+    const limit = parseChatListLimit((req.query as any)?.limit);
+    const cursor = decodeChatListCursor((req.query as any)?.cursor);
 
-    const chats = summary
-      ? await repository.getUserChatsSummary(req.userId, req.userId)
-      : await repository.getUserChats(req.userId, req.userId);
+    const response = summary
+      ? await repository.getUserChatsSummary(req.userId, req.userId, { limit, cursor })
+      : await repository.getUserChats(req.userId, req.userId, { limit, cursor });
+    const chats = Array.isArray((response as any)?.chats) ? (response as any).chats : [];
     console.log(
       `[perf][myChats] userId=${req.userId} chats=${Array.isArray(chats) ? chats.length : 0} totalMs=${Date.now() - startedAt}`
     );
 
-    const body = {
+    const nextCursor = encodeChatListCursor((response as any)?.paging?.nextCursor ?? null);
+    const body: any = {
       chatsByUser: summary
         ? (chats ?? []).map((chat: any) => toChatSummary(chat, locale))
         : applyRelativeToLegacyChats(chats ?? [], locale),
     };
+    if ((response as any)?.paging?.limit != null || nextCursor) {
+      body.paging = {
+        limit: (response as any)?.paging?.limit ?? null,
+        next_cursor: nextCursor,
+        nextCursor,
+      };
+    }
     const etag = buildWeakEtag(body);
     res.set("ETag", etag);
     if (isEtagFresh(req, etag)) {
@@ -259,6 +347,11 @@ export const messages = async (req: Request, res: Response) => {
         const { readAt } = await repository.markMessagesAsReadBulk(
           pendingToRead.map((m) => m.id)
         );
+        await repository.decrementUnreadCountForChatUser(
+          Number(chatId),
+          Number(req.userId),
+          pendingToRead.length
+        );
         const now = readAt ?? new Date();
         const deliveredAtIso = now.toISOString();
 
@@ -294,6 +387,12 @@ export const messages = async (req: Request, res: Response) => {
       emitChatsRefreshRealtime(req.userId);
     }
 
+    const nextBeforeMessageId = resolveNextBeforeMessageId(messageRows as any[], limit);
+    res.set(
+      "X-Paging-Next-Before-Message-Id",
+      nextBeforeMessageId == null ? "" : String(nextBeforeMessageId)
+    );
+
     const payload = {
       chatId,
       messages: summary
@@ -303,6 +402,8 @@ export const messages = async (req: Request, res: Response) => {
         limit,
         beforeMessageId,
         sort,
+        next_before_message_id: nextBeforeMessageId,
+        nextBeforeMessageId,
       },
     };
 
