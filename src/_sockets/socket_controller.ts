@@ -9,6 +9,7 @@ import Notification from "_models/notification/notification";
 import { Op } from "sequelize";
 import jwt from "jsonwebtoken";
 import { sendNotification } from "../useCases/notification/add/add";
+import { createInMemoryRateLimiter, RateLimitResult } from "../libs/security/inmemory_rate_limiter";
 
 type ChatStatus = "sent" | "delivered" | "read";
 
@@ -54,11 +55,64 @@ type ReactionMap = Record<string, number[]>;
 const chatRoom = (chatId: number) => `chat_${chatId}`;
 const userRoom = (userId: number) => `user_${userId}`;
 const CHAT_ROOM_REGEX = /^chat_\d+$/;
-const ALLOW_SOCKET_USERID_FALLBACK =
-  String(process.env.ALLOW_SOCKET_USERID_FALLBACK ?? "1").trim() !== "0";
+const parsePositiveIntEnv = (value: any, fallback: number, min = 1): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.trunc(parsed));
+};
+const IS_PRODUCTION =
+  String(process.env.NODE_ENV ?? "").trim().toLowerCase() === "production";
+const ALLOW_SOCKET_USERID_FALLBACK = (() => {
+  const raw = String(
+    process.env.ALLOW_SOCKET_USERID_FALLBACK ?? (IS_PRODUCTION ? "0" : "1")
+  )
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+})();
 const SESSION_VALIDATION_TTL_MS = 15 * 1000;
 const EMIT_REELS_EVENT_ON_REEL_DELETE =
   String(process.env.EMIT_REELS_EVENT_ON_REEL_DELETE ?? "1").trim() === "1";
+const SOCKET_CHAT_SEND_RATE_WINDOW_MS = parsePositiveIntEnv(
+  process.env.SOCKET_CHAT_SEND_RATE_WINDOW_MS,
+  10_000,
+  1000
+);
+const SOCKET_CHAT_SEND_RATE_MAX = parsePositiveIntEnv(
+  process.env.SOCKET_CHAT_SEND_RATE_MAX,
+  45,
+  1
+);
+const SOCKET_CHAT_SEND_RATE_BLOCK_MS = parsePositiveIntEnv(
+  process.env.SOCKET_CHAT_SEND_RATE_BLOCK_MS,
+  20_000,
+  SOCKET_CHAT_SEND_RATE_WINDOW_MS
+);
+const SOCKET_CHAT_META_RATE_WINDOW_MS = parsePositiveIntEnv(
+  process.env.SOCKET_CHAT_META_RATE_WINDOW_MS,
+  10_000,
+  1000
+);
+const SOCKET_CHAT_META_RATE_MAX = parsePositiveIntEnv(
+  process.env.SOCKET_CHAT_META_RATE_MAX,
+  80,
+  1
+);
+const SOCKET_CHAT_META_RATE_BLOCK_MS = parsePositiveIntEnv(
+  process.env.SOCKET_CHAT_META_RATE_BLOCK_MS,
+  15_000,
+  SOCKET_CHAT_META_RATE_WINDOW_MS
+);
+const socketChatSendRateLimiter = createInMemoryRateLimiter({
+  windowMs: SOCKET_CHAT_SEND_RATE_WINDOW_MS,
+  max: SOCKET_CHAT_SEND_RATE_MAX,
+  blockDurationMs: SOCKET_CHAT_SEND_RATE_BLOCK_MS,
+});
+const socketChatMetaRateLimiter = createInMemoryRateLimiter({
+  windowMs: SOCKET_CHAT_META_RATE_WINDOW_MS,
+  max: SOCKET_CHAT_META_RATE_MAX,
+  blockDurationMs: SOCKET_CHAT_META_RATE_BLOCK_MS,
+});
 
 function normalizePositiveInt(value: any): number {
   const n = Number(value);
@@ -690,6 +744,34 @@ async function getChatParticipantUserIds(chatId: number): Promise<number[]> {
   );
 }
 
+type InMemoryRateLimiter = ReturnType<typeof createInMemoryRateLimiter>;
+
+function consumeSocketRateLimit(params: {
+  socket: Socket;
+  limiter: InMemoryRateLimiter;
+  event: string;
+  userId: number;
+  chatId?: number;
+}): boolean {
+  const { socket, limiter, event, userId, chatId } = params;
+  const key = `${event}:${userId}:${chatId ?? 0}`;
+  const result: RateLimitResult = limiter.consume(key);
+  if (result.allowed) return true;
+
+  const retryAfterSeconds = Math.max(1, Math.ceil(result.retryAfterMs / 1000));
+  socket.emit("chat:rate_limited", {
+    event,
+    chatId: chatId ?? null,
+    retryAfterMs: result.retryAfterMs,
+    retryAfterSeconds,
+    resetAt: new Date(result.resetAtMs).toISOString(),
+  });
+  console.log(
+    `[socket] ${event} rate-limited socket=${socket.id} userId=${userId} chatId=${chatId ?? 0} retryAfterMs=${result.retryAfterMs}`
+  );
+  return false;
+}
+
 function normalizeToken(raw: any): string {
   const value = String(raw ?? "").trim();
   if (!value) return "";
@@ -1156,6 +1238,17 @@ export const socketController = (socket: Socket) => {
           parseUserId(payload)
         );
         if (!actorUserId) return;
+        if (
+          !consumeSocketRateLimit({
+            socket,
+            limiter: socketChatMetaRateLimiter,
+            event: "chat:join",
+            userId: actorUserId,
+            chatId,
+          })
+        ) {
+          return;
+        }
 
         const isMember = await isUserParticipantInChat(chatId, actorUserId);
         if (!isMember) {
@@ -1269,6 +1362,17 @@ export const socketController = (socket: Socket) => {
         parseUserId(payload)
       );
       if (!actorUserId) return;
+      if (
+        !consumeSocketRateLimit({
+          socket,
+          limiter: socketChatMetaRateLimiter,
+          event: "chat:sync",
+          userId: actorUserId,
+          chatId,
+        })
+      ) {
+        return;
+      }
 
       const isMember = await isUserParticipantInChat(chatId, actorUserId);
       if (!isMember) {
@@ -1404,6 +1508,17 @@ export const socketController = (socket: Socket) => {
       });
       const actorUserId = await requireAuthenticatedUser(socket, "chat", payloadUserId);
       if (!actorUserId) return;
+      if (
+        !consumeSocketRateLimit({
+          socket,
+          limiter: socketChatSendRateLimiter,
+          event: "chat",
+          userId: actorUserId,
+          chatId,
+        })
+      ) {
+        return;
+      }
 
       const isMember = await isUserParticipantInChat(chatId, actorUserId);
       if (!isMember) {
