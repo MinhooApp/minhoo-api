@@ -1,4 +1,4 @@
-import { Op, Sequelize } from "sequelize";
+import { Op, QueryTypes, Sequelize } from "sequelize";
 import Message from "../../_models/chat/message";
 import User from "../../_models/user/user";
 import sequelize from "../../_db/connection";
@@ -44,6 +44,70 @@ export type GroupMessagePayload = {
 };
 
 const CLIENT_MESSAGE_ID_METADATA_KEY = "_clientMessageId";
+const CLIENT_MESSAGE_ID_COLUMN = "clientMessageId";
+const CLIENT_MESSAGE_ID_UNIQUE_INDEX = "uq_messages_chat_sender_client_message_id";
+const CLIENT_MESSAGE_ID_COLUMN_CACHE_TTL_MS = Math.max(
+  10_000,
+  Number(process.env.CLIENT_MESSAGE_ID_COLUMN_CACHE_TTL_MS ?? 60_000) || 60_000
+);
+let hasClientMessageIdColumnCache: boolean | null = null;
+let hasClientMessageIdColumnCheckedAtMs = 0;
+
+const isMissingClientMessageIdColumnError = (error: any): boolean => {
+  const dbCode = String(error?.original?.code ?? error?.parent?.code ?? "").trim();
+  if (dbCode === "ER_BAD_FIELD_ERROR" || dbCode === "42703") return true;
+  const message = String(error?.message ?? "").toLowerCase();
+  return (
+    message.includes("unknown column") && message.includes(CLIENT_MESSAGE_ID_COLUMN.toLowerCase())
+  );
+};
+
+const isClientMessageIdUniqueConstraintError = (error: any): boolean => {
+  const dbCode = String(error?.original?.code ?? error?.parent?.code ?? "").trim();
+  if (dbCode === "ER_DUP_ENTRY" || dbCode === "23505" || dbCode === "SQLITE_CONSTRAINT") {
+    return true;
+  }
+
+  const message = String(error?.message ?? "").toLowerCase();
+  return (
+    message.includes(CLIENT_MESSAGE_ID_UNIQUE_INDEX.toLowerCase()) ||
+    message.includes(CLIENT_MESSAGE_ID_COLUMN.toLowerCase())
+  );
+};
+
+const hasClientMessageIdColumn = async (forceRefresh = false): Promise<boolean> => {
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    hasClientMessageIdColumnCache !== null &&
+    now - hasClientMessageIdColumnCheckedAtMs < CLIENT_MESSAGE_ID_COLUMN_CACHE_TTL_MS
+  ) {
+    return hasClientMessageIdColumnCache;
+  }
+
+  try {
+    const rows = (await sequelize.query(
+      `SHOW COLUMNS FROM \`messages\` LIKE '${CLIENT_MESSAGE_ID_COLUMN}'`,
+      { type: QueryTypes.SELECT }
+    )) as Array<Record<string, any>>;
+    hasClientMessageIdColumnCache = Array.isArray(rows) && rows.length > 0;
+  } catch (_) {
+    hasClientMessageIdColumnCache = false;
+  }
+
+  hasClientMessageIdColumnCheckedAtMs = now;
+  return hasClientMessageIdColumnCache;
+};
+
+const buildLegacyClientMessageIdWhere = (clientMessageId: string) => ({
+  [Op.and]: [
+    Sequelize.literal(
+      `JSON_UNQUOTE(JSON_EXTRACT(\`Message\`.\`metadata\`, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
+        clientMessageId
+      )}`
+    ),
+  ],
+});
 
 const normalizeClientMessageId = (value: any): string | null => {
   if (value === undefined || value === null) return null;
@@ -108,21 +172,36 @@ const findGroupMessageByClientMessageId = async ({
   senderId: number;
   clientMessageId: string;
 }) => {
-  return Message.findOne({
-    where: {
-      chatId,
-      senderId,
-      [Op.and]: [
-        Sequelize.literal(
-          `JSON_UNQUOTE(JSON_EXTRACT(\`Message\`.\`metadata\`, '$.${CLIENT_MESSAGE_ID_METADATA_KEY}')) = ${sequelize.escape(
-            clientMessageId
-          )}`
-        ),
-      ],
-    },
-    include: buildMessageInclude(),
-    order: [["id", "DESC"]],
-  });
+  const supportsColumn = await hasClientMessageIdColumn();
+  const whereByMetadata = {
+    chatId,
+    senderId,
+    ...buildLegacyClientMessageIdWhere(clientMessageId),
+  };
+  const whereByColumn = {
+    chatId,
+    senderId,
+    [CLIENT_MESSAGE_ID_COLUMN]: clientMessageId,
+  } as any;
+
+  try {
+    return await Message.findOne({
+      where: supportsColumn ? whereByColumn : whereByMetadata,
+      include: buildMessageInclude(),
+      order: [["id", "DESC"]],
+    });
+  } catch (error) {
+    if (supportsColumn && isMissingClientMessageIdColumnError(error)) {
+      hasClientMessageIdColumnCache = false;
+      hasClientMessageIdColumnCheckedAtMs = Date.now();
+      return Message.findOne({
+        where: whereByMetadata,
+        include: buildMessageInclude(),
+        order: [["id", "DESC"]],
+      });
+    }
+    throw error;
+  }
 };
 
 export const getGroupMessagesPage = async ({
@@ -257,6 +336,7 @@ export const createGroupMessage = async ({
   }
 
   const normalizedClientMessageId = normalizeClientMessageId(payload?.clientMessageId);
+  const supportsClientMessageIdColumn = await hasClientMessageIdColumn();
   if (normalizedClientMessageId) {
     const existingMessage = await findGroupMessageByClientMessageId({
       chatId,
@@ -278,7 +358,7 @@ export const createGroupMessage = async ({
   }
 
   const now = new Date();
-  const created = await Message.create({
+  const createPayload: Record<string, any> = {
     text: payload.text ?? null,
     messageType: payload.messageType,
     mediaUrl: payload.mediaUrl ?? null,
@@ -295,7 +375,46 @@ export const createGroupMessage = async ({
     date: now,
     deletedBy: 0,
     replyToMessageId: toPositiveInt(replyToMessageId) ?? null,
-  });
+  };
+  if (supportsClientMessageIdColumn && normalizedClientMessageId) {
+    createPayload[CLIENT_MESSAGE_ID_COLUMN] = normalizedClientMessageId;
+  }
+
+  let created: any;
+  try {
+    created = await Message.create(createPayload);
+  } catch (error) {
+    if (supportsClientMessageIdColumn && isMissingClientMessageIdColumnError(error)) {
+      hasClientMessageIdColumnCache = false;
+      hasClientMessageIdColumnCheckedAtMs = Date.now();
+      delete createPayload[CLIENT_MESSAGE_ID_COLUMN];
+      created = await Message.create(createPayload);
+    } else if (
+      normalizedClientMessageId &&
+      isClientMessageIdUniqueConstraintError(error)
+    ) {
+      const existingMessage = await findGroupMessageByClientMessageId({
+        chatId,
+        senderId: senderUserId,
+        clientMessageId: normalizedClientMessageId,
+      });
+      if (existingMessage) {
+        const memberUserIds = await getActiveMemberUserIds(groupId);
+        return {
+          ok: true as const,
+          chatId,
+          message: existingMessage,
+          group: access.group,
+          policy: access.policy,
+          memberUserIds,
+          deduplicated: true,
+        };
+      }
+      throw error;
+    } else {
+      throw error;
+    }
+  }
 
   await pruneChatHistoryForChat(chatId);
 

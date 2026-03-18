@@ -94,6 +94,33 @@ function extractIds(responseData) {
   );
 }
 
+async function waitForIds(api, url, expectedIds, timeoutMs, label) {
+  const started = Date.now();
+  let lastStatus = 0;
+  let lastBody = null;
+  let lastIds = new Set();
+
+  while (Date.now() - started < timeoutMs) {
+    const response = await api.get(url);
+    lastStatus = response.status;
+    lastBody = response.data;
+    if (response.status >= 200 && response.status < 300) {
+      lastIds = extractIds(response.data);
+      const allFound = expectedIds.every((id) => lastIds.has(id));
+      if (allFound) {
+        return { response, ids: lastIds };
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 120));
+  }
+
+  throw new Error(
+    `${label} timeout waiting ids=${expectedIds.join(",")} status=${lastStatus} ids=${[
+      ...lastIds,
+    ].join(",")} body=${JSON.stringify(lastBody)}`
+  );
+}
+
 async function getRelationship(api, targetUserId) {
   const response = await api.get(`/user/${targetUserId}/relationship`);
   assert(
@@ -151,12 +178,15 @@ async function main() {
       createdReelIds.push({ reelId, visibility: definition.visibility });
     }
 
-    const ownerResponse = await apiOwner.get(`/reel/user/${owner.userId}`);
-    assert(
-      ownerResponse.status >= 200 && ownerResponse.status < 300,
-      `Owner GET /reel/user/${owner.userId} failed status=${ownerResponse.status}`
+    const ownerExpectedIds = createdReelIds.map((row) => row.reelId);
+    const ownerResult = await waitForIds(
+      apiOwner,
+      `/reel/user/${owner.userId}`,
+      ownerExpectedIds,
+      TIMEOUT_MS,
+      "Owner GET /reel/user"
     );
-    const ownerIds = extractIds(ownerResponse.data);
+    const ownerIds = ownerResult.ids;
     createdReelIds.forEach(({ reelId }) => {
       assert(ownerIds.has(reelId), `Owner response missing reelId=${reelId}`);
     });

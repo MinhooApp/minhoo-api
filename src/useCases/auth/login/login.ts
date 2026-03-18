@@ -52,6 +52,55 @@ const extractDeviceToken = (req: Request): string => {
   return "";
 };
 
+const normalizePreferredLanguage = (raw: any): "es" | "en" | undefined => {
+  const normalized = String(raw ?? "").trim().toLowerCase();
+  if (!normalized) return undefined;
+
+  if (
+    normalized.startsWith("es") ||
+    normalized.includes("spanish") ||
+    normalized.includes("espanol") ||
+    normalized.includes("español")
+  ) {
+    return "es";
+  }
+
+  if (
+    normalized.startsWith("en") ||
+    normalized.includes("english") ||
+    normalized.includes("ingles") ||
+    normalized.includes("inglés")
+  ) {
+    return "en";
+  }
+
+  return undefined;
+};
+
+const extractPreferredLanguage = (req: Request): "es" | "en" | undefined => {
+  const body: any = req.body ?? {};
+  const headers: any = req.headers ?? {};
+  const candidates = [
+    body?.language,
+    body?.preferred_language,
+    body?.preferredLanguage,
+    body?.app_language,
+    body?.appLanguage,
+    body?.locale,
+    body?.lang,
+    headers?.["x-app-language"],
+    headers?.["x-language"],
+    headers?.["x-locale"],
+  ];
+
+  for (const candidate of candidates) {
+    const normalized = normalizePreferredLanguage(candidate);
+    if (normalized) return normalized;
+  }
+
+  return undefined;
+};
+
 export const login = async (req: Request, res: Response) => {
   const startedAt = Date.now();
   try {
@@ -61,6 +110,7 @@ export const login = async (req: Request, res: Response) => {
       req.body?.password ?? req.body?.clave ?? req.body?.pass ?? ""
     );
     const uuid = extractDeviceToken(req);
+    const preferredLanguage = extractPreferredLanguage(req);
 
     if (!email || !inputPassword) {
       return formatResponse({
@@ -166,6 +216,19 @@ export const login = async (req: Request, res: Response) => {
             ? userTemp?.get("worker")["id"]
             : null,
       });
+
+      if (preferredLanguage && preferredLanguage !== String((user as any)?.language ?? "")) {
+        try {
+          await uRepository.update(userTemp.id, { language: preferredLanguage });
+          if (typeof (user as any)?.setDataValue === "function") {
+            (user as any).setDataValue("language", preferredLanguage);
+          } else if (user) {
+            (user as any).language = preferredLanguage;
+          }
+        } catch (languageError) {
+          console.log("[login] preferred language update skipped", languageError);
+        }
+      }
 
       const loginUserId = Number((user as any)?.id ?? (user as any)?.get?.("id"));
       let counts: { followersCount: number; followingCount: number } | null = null;

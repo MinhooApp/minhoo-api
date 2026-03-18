@@ -159,25 +159,15 @@ const emitToChatExcludingUsers = (
     return;
   }
 
-  const excluded = new Set(toUserIds(excludeUserIds));
-  if (excluded.size === 0) {
-    emitToChat(chatId, event, payload);
-    return;
-  }
-
   const room = chatRoom(chatId);
+  const excludedRooms = toUserIds(excludeUserIds).map((userId) => userRoom(userId));
   for (const namespace of COMPAT_NAMESPACES) {
-    const nsp = io.of(namespace);
-    const socketIds = nsp.adapter.rooms.get(room);
-    if (!socketIds || socketIds.size === 0) continue;
-
-    for (const socketId of socketIds) {
-      const sock = nsp.sockets.get(socketId);
-      if (!sock) continue;
-      const boundUserId = Number((sock.data as any)?.userId ?? 0);
-      if (excluded.has(boundUserId)) continue;
-      sock.emit(event, payload);
+    const nsp = io.of(namespace).to(room);
+    if (excludedRooms.length > 0) {
+      nsp.except(excludedRooms).emit(event, payload);
+      continue;
     }
+    nsp.emit(event, payload);
   }
 };
 
@@ -214,16 +204,8 @@ const emitToUsersOutsideChat = (
   const chatRoomName = chatRoom(chatId);
   for (const namespace of COMPAT_NAMESPACES) {
     const nsp = io.of(namespace);
-    const chatSockets = nsp.adapter.rooms.get(chatRoomName) ?? new Set<string>();
-
     for (const id of ids) {
-      const roomSockets = nsp.adapter.rooms.get(userRoom(id));
-      if (!roomSockets) continue;
-
-      for (const socketId of roomSockets) {
-        if (chatSockets.has(socketId)) continue;
-        nsp.to(socketId).emit(event, payload);
-      }
+      nsp.to(userRoom(id)).except(chatRoomName).emit(event, payload);
     }
   }
 };

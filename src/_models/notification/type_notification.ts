@@ -8,6 +8,7 @@ export const TypeNotificationEnum = [
   "like",
   "admin",
   "follow",
+  "profile_recommendation",
   "message",
   "requestCanceled",
   "newService",

@@ -29,6 +29,7 @@ import ReelLike from "./reel/reel_like";
 import ReelSave from "./reel/reel_save";
 import ReelComment from "./reel/reel_comment";
 import ReelView from "./reel/reel_view";
+import ReelReport from "./reel/reel_report";
 const ver = Verification;
 console.log(ver.toString());
 
@@ -101,6 +102,12 @@ User.hasMany(ReelView, { as: "reel_views", foreignKey: "userId" });
 ReelView.belongsTo(User, { as: "viewer_user", foreignKey: "userId" });
 Reel.hasMany(ReelView, { as: "reel_views", foreignKey: "reelId" });
 ReelView.belongsTo(Reel, { as: "reel", foreignKey: "reelId" });
+
+//Association ReelReport with User/Reel
+User.hasMany(ReelReport, { as: "reel_reports", foreignKey: "reporterId" });
+ReelReport.belongsTo(User, { as: "reporter_user", foreignKey: "reporterId" });
+Reel.hasMany(ReelReport, { as: "reports", foreignKey: "reelId" });
+ReelReport.belongsTo(Reel, { as: "reel", foreignKey: "reelId" });
 
 //Association Like with Comment
 Comment.hasMany(Like, { as: "likes", foreignKey: "commentId" });

@@ -1,3 +1,6 @@
+import { AppLocale } from "../../../libs/localization/locale";
+import { formatRelativeTime } from "../../../libs/localization/relative_time";
+
 const toPlain = (value: any) =>
   value && typeof value.toJSON === "function" ? value.toJSON() : value ?? {};
 
@@ -109,6 +112,29 @@ const toPositiveNumber = (value: any): number | null => {
   if (!Number.isFinite(parsed)) return null;
   if (parsed <= 0) return null;
   return Math.trunc(parsed);
+};
+
+const toBooleanOrNull = (value: any): boolean | null => {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return null;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off"].includes(normalized)) return false;
+  }
+  return null;
+};
+
+const toBoundedText = (value: any, maxLength: number): string | null => {
+  const text = toText(value);
+  if (!text) return null;
+  if (text.length <= maxLength) return text;
+  return text.slice(0, maxLength);
 };
 
 const resolveVideoDownloadUrl = (message: any, mediaUrl: string | null): string | null => {
@@ -271,6 +297,48 @@ const resolveShare = (message: any): Record<string, any> | null => {
   return null;
 };
 
+const resolveE2eEnvelope = (message: any): Record<string, any> | null => {
+  const metadata = parseMetadataObject((message as any)?.metadata);
+  if (!metadata) return null;
+
+  const source = (metadata as any)?._e2e ?? (metadata as any)?.e2e;
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return null;
+  }
+
+  const encrypted =
+    toBooleanOrNull(
+      (source as any)?.encrypted ??
+        (source as any)?.isEncrypted ??
+        (source as any)?.is_encrypted
+    ) ?? true;
+
+  const envelope: Record<string, any> = {
+    encrypted,
+  };
+
+  const version = toBoundedText((source as any)?.version ?? (source as any)?.v, 16);
+  const algorithm = toBoundedText((source as any)?.algorithm ?? (source as any)?.alg, 64);
+  const keyId = toBoundedText((source as any)?.keyId ?? (source as any)?.kid, 255);
+  const senderDeviceId = toBoundedText(
+    (source as any)?.senderDeviceId ?? (source as any)?.sender_device_id,
+    255
+  );
+  const nonce = toBoundedText((source as any)?.nonce ?? (source as any)?.iv, 512);
+  const ciphertext = toBoundedText((source as any)?.ciphertext ?? (source as any)?.cipher, 65535);
+  const aad = toBoundedText((source as any)?.aad, 8192);
+
+  if (version) envelope.version = version;
+  if (algorithm) envelope.algorithm = algorithm;
+  if (keyId) envelope.keyId = keyId;
+  if (senderDeviceId) envelope.senderDeviceId = senderDeviceId;
+  if (nonce) envelope.nonce = nonce;
+  if (ciphertext) envelope.ciphertext = ciphertext;
+  if (aad) envelope.aad = aad;
+
+  return envelope;
+};
+
 const resolveSenderFields = (message: any) => {
   const sender = toPlain((message as any)?.sender);
   const senderId =
@@ -328,11 +396,20 @@ export type CanonicalChatMessage = {
   senderName: string | null;
   senderUsername: string | null;
   senderAvatarUrl: string | null;
+  relativeTime: string | null;
+  relative_time: string | null;
+  relativeTimeEn: string | null;
+  relative_time_en: string | null;
+  relativeTimeEs: string | null;
+  relative_time_es: string | null;
+  isEncrypted: boolean;
+  is_encrypted: boolean;
+  e2e: Record<string, any> | null;
 };
 
 export const serializeMessageToCanonical = (
   value: any,
-  opts?: { includeLegacy?: boolean }
+  opts?: { includeLegacy?: boolean; locale?: AppLocale }
 ) => {
   const message = toPlain(value);
   const senderFields = resolveSenderFields(message);
@@ -352,6 +429,18 @@ export const serializeMessageToCanonical = (
       };
 
   const clientMessageId = resolveClientMessageId(message);
+  const relativeTimeEn = formatRelativeTime(
+    (message as any)?.date ?? (message as any)?.createdAt ?? (message as any)?.updatedAt,
+    "en"
+  );
+  const relativeTimeEs = formatRelativeTime(
+    (message as any)?.date ?? (message as any)?.createdAt ?? (message as any)?.updatedAt,
+    "es"
+  );
+  const preferredLocale = opts?.locale ?? "en";
+  const relativeTime = preferredLocale === "es" ? relativeTimeEs : relativeTimeEn;
+  const e2e = resolveE2eEnvelope(message);
+  const isEncrypted = Boolean(e2e?.encrypted ?? e2e);
 
   const canonical: CanonicalChatMessage = {
     id: toPositiveInt((message as any)?.id) ?? 0,
@@ -381,6 +470,15 @@ export const serializeMessageToCanonical = (
     senderName: senderFields.senderName,
     senderUsername: senderFields.senderUsername,
     senderAvatarUrl: senderFields.senderAvatarUrl,
+    relativeTime,
+    relative_time: relativeTime,
+    relativeTimeEn,
+    relative_time_en: relativeTimeEn,
+    relativeTimeEs,
+    relative_time_es: relativeTimeEs,
+    isEncrypted,
+    is_encrypted: isEncrypted,
+    e2e,
   };
 
   const isVideoMessage = canonical.messageType.toLowerCase() === "video";
@@ -457,6 +555,11 @@ export const serializeMessageToCanonical = (
     sender_name: canonical.senderName,
     sender_username: canonical.senderUsername,
     sender_avatar_url: canonical.senderAvatarUrl,
+    relativeTime: canonical.relativeTime,
+    relative_time: canonical.relative_time,
+    isEncrypted: canonical.isEncrypted,
+    is_encrypted: canonical.is_encrypted,
+    e2e: canonical.e2e,
     sender: senderFields.sender,
     metadata:
       metadataWithThumbnail ??
@@ -469,7 +572,7 @@ export const serializeMessageToCanonical = (
 
 export const serializeMessagesToCanonical = (
   values: any[],
-  opts?: { includeLegacy?: boolean }
+  opts?: { includeLegacy?: boolean; locale?: AppLocale }
 ) =>
   Array.isArray(values)
     ? values.map((item) => serializeMessageToCanonical(item, opts))

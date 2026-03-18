@@ -1,0 +1,120 @@
+name: Realtime Suite CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: realtime-suite-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  realtime-suite:
+    name: Realtime Stable Suite
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false }}
+    env:
+      NODE_ENV: test
+      PORT: "3000"
+      DIALECT_DB: mysql
+      DB_SYNC_ON_BOOT: "0"
+      CORS_ALLOW_ALL_IN_PROD: "1"
+      ALLOW_SOCKET_USERID_FALLBACK: "1"
+      API_BASE_URL: http://127.0.0.1:3000/api/v1
+      SOCKET_URL: http://127.0.0.1:3000
+
+      DB_HOST: ${{ secrets.CI_DB_HOST }}
+      DB: ${{ secrets.CI_DB_NAME }}
+      USER_DB: ${{ secrets.CI_DB_USER }}
+      DB_PASSWORD: ${{ secrets.CI_DB_PASSWORD }}
+      JWT_SECRET: ${{ secrets.CI_JWT_SECRET }}
+      SECRETORPRIVATEKEY: ${{ secrets.CI_SECRETORPRIVATEKEY }}
+
+      SUITE_OWNER_EMAIL: ${{ secrets.SUITE_OWNER_EMAIL }}
+      SUITE_OWNER_PASSWORD: ${{ secrets.SUITE_OWNER_PASSWORD }}
+      SUITE_OWNER_LOGIN_UUID: ${{ secrets.SUITE_OWNER_LOGIN_UUID }}
+      SUITE_VIEWER_EMAIL: ${{ secrets.SUITE_VIEWER_EMAIL }}
+      SUITE_VIEWER_PASSWORD: ${{ secrets.SUITE_VIEWER_PASSWORD }}
+      SUITE_VIEWER_LOGIN_UUID: ${{ secrets.SUITE_VIEWER_LOGIN_UUID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Validate Required Secrets
+        run: |
+          required=(
+            CI_DB_HOST
+            CI_DB_NAME
+            CI_DB_USER
+            CI_DB_PASSWORD
+            CI_JWT_SECRET
+            CI_SECRETORPRIVATEKEY
+            SUITE_OWNER_EMAIL
+            SUITE_OWNER_PASSWORD
+            SUITE_VIEWER_EMAIL
+            SUITE_VIEWER_PASSWORD
+          )
+          missing=0
+          for v in "${required[@]}"; do
+            if [ -z "${!v:-}" ]; then
+              echo "::error::Missing secret/env: $v"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Run Migrations
+        run: npm run migration
+
+      - name: Start API
+        run: |
+          nohup npm run start:prod > server.log 2>&1 &
+          echo $! > server.pid
+
+      - name: Wait API Ready
+        run: |
+          for i in $(seq 1 90); do
+            code="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/ || true)"
+            if [ "$code" != "000" ]; then
+              echo "API ready with HTTP code: $code"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::API did not become ready on time"
+          tail -n 200 server.log || true
+          exit 1
+
+      - name: Run Realtime Stable Suite
+        run: npm run test:realtime:suite:ci -- --bail
+
+      - name: Upload Server Log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: realtime-suite-server-log
+          path: server.log
+          if-no-files-found: ignore
+
+      - name: Stop API
+        if: always()
+        run: |
+          if [ -f server.pid ]; then
+            kill "$(cat server.pid)" || true
+          fi

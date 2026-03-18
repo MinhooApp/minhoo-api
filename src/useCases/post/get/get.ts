@@ -6,6 +6,10 @@ import {
 } from "../_module/module";
 import crypto from "crypto";
 import * as savedRepository from "../../../repository/saved/saved_repository";
+import { isSummaryMode, toPostSummary } from "../../../libs/summary_response";
+import * as userRepository from "../../../repository/user/user_repository";
+import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
+import { formatRelativeTime } from "../../../libs/localization/relative_time";
 
 const isTruthy = (value: any) => {
   const v = String(value ?? "").trim().toLowerCase();
@@ -71,6 +75,78 @@ const setSavedCount = (post: any, count: number) => {
   post.savedCount = count;
 };
 
+const setValue = (target: any, key: string, value: any) => {
+  if (!target) return;
+  if (typeof target.setDataValue === "function") {
+    target.setDataValue(key, value);
+    return;
+  }
+  target[key] = value;
+};
+
+const applyRelativeToComment = (comment: any, locale: AppLocale) => {
+  if (!comment) return;
+  const referenceDate =
+    (comment as any)?.created_date ??
+    (comment as any)?.createdAt ??
+    (comment as any)?.created_at ??
+    null;
+  const relativeTime = formatRelativeTime(referenceDate, locale);
+  if (!relativeTime) return;
+  setValue(comment, "relativeTime", relativeTime);
+  setValue(comment, "relative_time", relativeTime);
+};
+
+const applyRelativeToPostComments = (post: any, locale: AppLocale) => {
+  if (!post) return;
+
+  const comments =
+    Array.isArray((post as any)?.comments) ? (post as any).comments : [];
+  if (!Array.isArray(comments) || comments.length === 0) return;
+
+  comments.forEach((comment: any) => applyRelativeToComment(comment, locale));
+  setValue(post, "comments", comments);
+};
+
+const applyRelativeToPostsComments = (posts: any[], locale: AppLocale) => {
+  if (!Array.isArray(posts)) return;
+  posts.forEach((post: any) => applyRelativeToPostComments(post, locale));
+};
+
+const resolveRequestLocale = async (req: Request): Promise<AppLocale> => {
+  const preferredLanguage =
+    (req.query as any)?.language ??
+    (req.query as any)?.lang ??
+    req.header("x-app-language") ??
+    req.header("x-language") ??
+    req.header("x-lang");
+  const acceptLanguage = req.header("accept-language");
+  const userId = normalizeUserId(req.userId);
+
+  if (!userId) {
+    return resolveLocale({
+      preferredLanguage,
+      acceptLanguage,
+    });
+  }
+
+  try {
+    const pushSettings = await userRepository.getPushSettings(userId);
+    return resolveLocale({
+      preferredLanguage,
+      acceptLanguage,
+      storedLanguage: pushSettings?.language,
+      storedLanguageCodes: pushSettings?.language_codes,
+      storedLanguageNames: pushSettings?.language_names,
+    });
+  } catch {
+    return resolveLocale({
+      preferredLanguage,
+      acceptLanguage,
+    });
+  }
+};
+
 const attachSavedFlags = async (viewerIdRaw: any, posts: any[]) => {
   if (!Array.isArray(posts) || !posts.length) return;
 
@@ -97,11 +173,17 @@ const attachSavedFlags = async (viewerIdRaw: any, posts: any[]) => {
 export const gets = async (req: Request, res: Response) => {
   try {
     const startedAtMs = nowMs();
-    const { page = 0, size = 10 } = req.query;
-    const posts = await repository.gets(page, size, req.userId, {
+    const page = Math.max(0, Number(req.query.page ?? 0) || 0);
+    const size = Math.min(Math.max(Number(req.query.size ?? 10) || 10, 1), 20);
+    const summary = isSummaryMode((req.query as any)?.summary);
+    const posts = await (summary ? repository.getsSummary : repository.gets)(page, size, req.userId, {
       sessionKey: toSessionKey(req),
     });
     await attachSavedFlags(req.userId, posts.rows);
+    const locale = await resolveRequestLocale(req);
+    if (!summary) {
+      applyRelativeToPostsComments(posts.rows, locale);
+    }
     if (shouldLogFindProfile()) {
       console.log(
         `[find/post/endpoint] ${JSON.stringify({
@@ -120,10 +202,12 @@ export const gets = async (req: Request, res: Response) => {
       res: res,
       success: true,
       body: {
-        page: +page,
-        size: +size,
+        page,
+        size,
         count: posts.count,
-        posts: posts.rows,
+        posts: summary
+          ? (posts.rows ?? []).map((post: any) => toPostSummary(post, req.userId))
+          : posts.rows,
       },
     });
   } catch (error) {
@@ -134,11 +218,22 @@ export const gets = async (req: Request, res: Response) => {
 export const getsSuggested = async (req: Request, res: Response) => {
   try {
     const startedAtMs = nowMs();
-    const { page = 0, size = 10 } = req.query;
-    const posts = await repository.getsSuggested(page, size, req.userId, {
+    const page = Math.max(0, Number(req.query.page ?? 0) || 0);
+    const size = Math.min(Math.max(Number(req.query.size ?? 10) || 10, 1), 20);
+    const summary = isSummaryMode((req.query as any)?.summary);
+    const posts = await (summary ? repository.getsSuggestedSummary : repository.getsSuggested)(
+      page,
+      size,
+      req.userId,
+      {
       sessionKey: toSessionKey(req),
-    });
+      }
+    );
     await attachSavedFlags(req.userId, posts.rows);
+    const locale = await resolveRequestLocale(req);
+    if (!summary) {
+      applyRelativeToPostsComments(posts.rows, locale);
+    }
     if (shouldLogFindProfile()) {
       console.log(
         `[find/post/endpoint] ${JSON.stringify({
@@ -157,10 +252,12 @@ export const getsSuggested = async (req: Request, res: Response) => {
       res: res,
       success: true,
       body: {
-        page: +page,
-        size: +size,
+        page,
+        size,
         count: posts.count,
-        posts: posts.rows,
+        posts: summary
+          ? (posts.rows ?? []).map((post: any) => toPostSummary(post, req.userId))
+          : posts.rows,
       },
     });
   } catch (error) {
@@ -171,6 +268,7 @@ export const getsSuggested = async (req: Request, res: Response) => {
 export const get = async (req: Request, res: Response) => {
   const { id } = req.params;
   try {
+    const locale = await resolveRequestLocale(req);
     const post = await repository.get(id, req.userId);
     if (post) {
       const postId = Number(post.id);
@@ -187,6 +285,8 @@ export const get = async (req: Request, res: Response) => {
         );
         setSavedFlag(post, isSaved);
       }
+
+      applyRelativeToPostComments(post, locale);
     }
 
     return formatResponse({ res: res, success: true, body: { post: post } });

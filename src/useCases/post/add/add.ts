@@ -62,9 +62,49 @@ const validateDirectMediaPayload = (value: any): string | null => {
   return null;
 };
 
+const normalizeMediaPresenceItems = (value: any): any[] => {
+  if (value === undefined || value === null) return [];
+
+  let source: any = value;
+  if (typeof source === "string") {
+    const trimmed = source.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        source = JSON.parse(trimmed);
+      } catch {
+        source = trimmed;
+      }
+    }
+  }
+
+  const items = Array.isArray(source) ? source : [source];
+  return items.filter((item) => {
+    if (typeof item === "string") return item.trim().length > 0;
+    if (!item || typeof item !== "object") return false;
+    const url = String(item.url ?? item.media_url ?? "").trim();
+    return url.length > 0;
+  });
+};
+
 const createPost = async (req: Request, res: Response, mediaItems?: any) => {
+  const rawPost = (req.body as any)?.post;
+  const postText = rawPost === undefined || rawPost === null ? "" : String(rawPost);
+  const hasText = postText.trim().length > 0;
+  const hasMedia = normalizeMediaPresenceItems(mediaItems).length > 0;
+
+  if (!hasText && !hasMedia) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "post text or media is required",
+    });
+  }
+
   req.body.userId = req.userId;
   req.body.created_date = new Date(new Date().toUTCString());
+  req.body.post = hasText ? postText : "";
 
   if (mediaItems !== undefined) {
     req.body.media_items = mediaItems;

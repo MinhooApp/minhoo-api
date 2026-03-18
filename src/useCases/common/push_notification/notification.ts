@@ -1,17 +1,57 @@
 import admin from "firebase-admin";
-import { firebase_key } from "./firebase_key";
+import {
+  firebase_key,
+  hasFirebaseCredentials,
+  firebaseCredentialsSource,
+} from "./firebase_key";
 import { TypeNotification } from "../../../_models/notification/type_notification";
 
 /**
  * ✅ Init seguro (evita reinicializar en hot-reload / serverless)
  */
+let firebaseMessagingConfigured = false;
 if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(firebase_key as admin.ServiceAccount),
-  });
+  if (hasFirebaseCredentials && firebase_key) {
+    try {
+      admin.initializeApp({
+        credential: admin.credential.cert(firebase_key as admin.ServiceAccount),
+      });
+      firebaseMessagingConfigured = true;
+      console.log(
+        `[push] Firebase admin initialized using ${firebaseCredentialsSource ?? "unknown source"}`
+      );
+    } catch (error) {
+      firebaseMessagingConfigured = false;
+      console.error("[push] Firebase admin init failed:", error);
+    }
+  } else {
+    console.warn(
+      "[push] Firebase credentials are not configured. Push notifications are disabled until credentials are provided."
+    );
+  }
+} else {
+  firebaseMessagingConfigured = true;
 }
 
-const HIGH_IMPORTANCE_CHANNEL_ID = "high_importance_channel";
+const ANDROID_PUSH_CHANNEL_ID = String(
+  process.env.PUSH_ANDROID_CHANNEL_ID ?? ""
+).trim();
+const isFirebaseReady = () => firebaseMessagingConfigured || admin.apps.length > 0;
+
+const buildAndroidPushConfig = (): admin.messaging.AndroidConfig => {
+  if (!ANDROID_PUSH_CHANNEL_ID) {
+    return {
+      priority: "high",
+    };
+  }
+
+  return {
+    priority: "high",
+    notification: {
+      channelId: ANDROID_PUSH_CHANNEL_ID,
+    },
+  };
+};
 
 type PushPayload = {
   title: string;
@@ -54,6 +94,10 @@ export async function sendPushToSingleUser(
   notificationId: number,
   extraData?: Record<string, any> // ✅ NUEVO
 ) {
+  if (!isFirebaseReady()) {
+    return { ok: false, reason: "NOT_CONFIGURED" as const };
+  }
+
   if (!token?.trim()) {
     return { ok: false, reason: "EMPTY_TOKEN" as const };
   }
@@ -72,10 +116,7 @@ export async function sendPushToSingleUser(
       extraData
     ),
 
-    android: {
-      priority: "high",
-      notification: { channelId: HIGH_IMPORTANCE_CHANNEL_ID },
-    },
+    android: buildAndroidPushConfig(),
 
     apns: {
       headers: { "apns-priority": "10" },
@@ -126,6 +167,10 @@ export async function sendPushToMultipleUsers(
   tokens: string[],
   extraData?: Record<string, any> // ✅ NUEVO
 ) {
+  if (!isFirebaseReady()) {
+    return { ok: false, reason: "NOT_CONFIGURED" as const };
+  }
+
   const cleanTokens = (tokens ?? []).map(t => t?.trim()).filter(Boolean);
 
   if (cleanTokens.length === 0) {
@@ -142,10 +187,7 @@ export async function sendPushToMultipleUsers(
       extraData
     ),
 
-    android: {
-      priority: "high",
-      notification: { channelId: HIGH_IMPORTANCE_CHANNEL_ID },
-    },
+    android: buildAndroidPushConfig(),
 
     apns: {
       headers: { "apns-priority": "10" },

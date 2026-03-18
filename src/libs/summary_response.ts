@@ -253,6 +253,7 @@ export const toNotificationSummary = (
 export const toFollowSummary = (entryRaw: any) => {
   const entry = toPlain(entryRaw);
   const user = entry?.user ? toPlain(entry.user) : toPlain(entry?.following_data ?? entry?.follower_data);
+  const cursorId = Number(entry?.cursor_id ?? entry?.id ?? 0) || null;
   const id = Number(user?.id ?? entry?.id ?? 0) || null;
   const name = toText(user?.name);
   const lastName = toText(user?.last_name);
@@ -285,6 +286,7 @@ export const toFollowSummary = (entryRaw: any) => {
     Boolean(activeOrbitReelId && orbitRingUntil && new Date(orbitRingUntil).getTime() > Date.now());
 
   return {
+    cursor_id: cursorId,
     id,
     name,
     last_name: lastName,
@@ -304,6 +306,8 @@ export const toFollowSummary = (entryRaw: any) => {
     activeOrbitReelId: hasActiveOrbit ? activeOrbitReelId : null,
     orbit_ring_until: hasActiveOrbit ? orbitRingUntil : null,
     orbitRingUntil: hasActiveOrbit ? orbitRingUntil : null,
+    followed_at: toIsoDate(entry?.followed_at),
+    followed_me_at: toIsoDate(entry?.followed_me_at),
     flags: {
       verified,
       isMutual: Boolean(entry?.isMutual),

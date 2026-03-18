@@ -22,6 +22,7 @@ class Message extends Model {
   public mediaSizeBytes!: number | null;
   public waveform!: number[] | null;
   public metadata!: Record<string, any> | null;
+  public clientMessageId!: string | null;
   public date!: Date;
   public deletedBy!: number;
 
@@ -86,6 +87,10 @@ Message.init(
     },
     metadata: {
       type: DataTypes.JSON,
+      allowNull: true,
+    },
+    clientMessageId: {
+      type: DataTypes.STRING(128),
       allowNull: true,
     },
     date: {

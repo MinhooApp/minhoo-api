@@ -219,6 +219,32 @@ const normalizeStringArray = (value: any) => {
   return value.map((v) => String(v)).filter((v) => v.length > 0);
 };
 
+const normalizePreferredLanguage = (value: any): "es" | "en" | null | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (
+    normalized.startsWith("es") ||
+    normalized.includes("spanish") ||
+    normalized.includes("espanol") ||
+    normalized.includes("español")
+  ) {
+    return "es";
+  }
+
+  if (
+    normalized.startsWith("en") ||
+    normalized.includes("english") ||
+    normalized.includes("ingles") ||
+    normalized.includes("inglés")
+  ) {
+    return "en";
+  }
+
+  return null;
+};
+
 export const update_profile = async (req: Request, res: Response) => {
   try {
     const body: any = {};
@@ -246,6 +272,25 @@ export const update_profile = async (req: Request, res: Response) => {
     if (languageCodes) body.language_codes = languageCodes;
     const languageNames = normalizeStringArray((req.body as any)?.language_names);
     if (languageNames) body.language_names = languageNames;
+
+    const languageRaw =
+      (req.body as any)?.language ??
+      (req.body as any)?.preferred_language ??
+      (req.body as any)?.preferredLanguage ??
+      (req.body as any)?.app_language ??
+      (req.body as any)?.appLanguage ??
+      (req.body as any)?.locale ??
+      (req.body as any)?.lang;
+    const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
+    if (languageRaw !== undefined && normalizedPreferredLanguage === null) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "language must be 'es' or 'en'",
+      });
+    }
+    if (normalizedPreferredLanguage) body.language = normalizedPreferredLanguage;
 
     const countryOriginId = Number((req.body as any)?.country_origin_id);
     if (Number.isFinite(countryOriginId)) body.country_origin_id = countryOriginId;
@@ -305,6 +350,25 @@ export const update_visibility = async (req: Request, res: Response) => {
     if (showLanguages !== undefined) body.show_languages = showLanguages;
     if (showLocation !== undefined) body.show_location = showLocation;
 
+    const languageRaw =
+      (req.body as any)?.language ??
+      (req.body as any)?.preferred_language ??
+      (req.body as any)?.preferredLanguage ??
+      (req.body as any)?.app_language ??
+      (req.body as any)?.appLanguage ??
+      (req.body as any)?.locale ??
+      (req.body as any)?.lang;
+    const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
+    if (languageRaw !== undefined && normalizedPreferredLanguage === null) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "language must be 'es' or 'en'",
+      });
+    }
+    if (normalizedPreferredLanguage) body.language = normalizedPreferredLanguage;
+
     await repository.update(req.userId, body);
     const user = await repository.get(req.userId);
     return formatResponse({
@@ -317,4 +381,3 @@ export const update_visibility = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
-

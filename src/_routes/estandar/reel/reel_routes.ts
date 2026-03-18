@@ -19,6 +19,7 @@ import {
   unsave_reel,
   record_reel_view,
   share_reel,
+  report,
   delete_reel,
   delete_reel_comment,
 } from "../../../useCases/reel/_controller/controller";
@@ -30,6 +31,7 @@ import {
   resolveShareAssetUrl,
   resolveStoreFallback,
 } from "../../../libs/share_page";
+import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
 
 const router = Router();
 
@@ -96,6 +98,13 @@ router.get("/user/:id", TokenOptional(), user_reels);
 router.get("/share/:id", async (req, res) => {
   try {
     const html = await renderShareLandingPage(await buildReelSharePage(req));
+    setCacheControl(res, {
+      visibility: "public",
+      maxAgeSeconds: 600,
+      staleWhileRevalidateSeconds: 3600,
+      staleIfErrorSeconds: 86400,
+    });
+    if (respondNotModifiedIfFresh(req, res, html)) return;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(html);
   } catch (error) {
@@ -107,6 +116,7 @@ router.get("/:id", TokenOptional(), reel_by_id);
 router.get("/:id/download", TokenOptional(), reel_download);
 router.post("/:id/view", TokenOptional(), record_reel_view);
 router.post("/:id/share", TokenValidation(), share_reel);
+router.post("/:id/report", TokenValidation(), report);
 router.put("/like/:id", TokenValidation(), toggle_reel_star);
 router.put("/star/:id", TokenValidation(), toggle_reel_star);
 router.post("/:id/save", TokenValidation(), save_reel);

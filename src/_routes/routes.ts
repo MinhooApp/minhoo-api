@@ -17,6 +17,8 @@ import media_routes from "./estandar/media/media_routes";
 import saved_routes from "./estandar/saved/saved_routes";
 import group_routes from "./estandar/group/group_routes";
 import reel_routes from "./estandar/reel/reel_routes";
+import bootstrap_routes from "./estandar/bootstrap/bootstrap_routes";
+import internal_routes from "./estandar/internal/internal_routes";
 
 // 👇 Importa rutas comunes (ping, healthcheck)
 import common_routes from "./common";
@@ -46,6 +48,8 @@ export class AppRoutes {
     router.use("/api/v1/saved", saved_routes);
     router.use("/api/v1/group", group_routes);
     router.use("/api/v1/reel", reel_routes);
+    router.use("/api/v1/bootstrap", bootstrap_routes);
+    router.use("/api/v1/internal", internal_routes);
 
     // -----------------------------
     // 🔹 RUTAS ADMINISTRATIVAS

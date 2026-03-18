@@ -1,0 +1,78 @@
+name: Deploy Main (Gated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        default: "production"
+        type: choice
+        options:
+          - staging
+          - production
+
+permissions:
+  contents: read
+  checks: read
+
+jobs:
+  verify-realtime-suite:
+    name: Verify Realtime Stable Suite
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure latest main commit passed realtime suite
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = "main";
+            const expectedCheckName = "Realtime Stable Suite";
+
+            const ref = await github.rest.git.getRef({
+              owner,
+              repo,
+              ref: `heads/${branch}`,
+            });
+            const sha = ref.data.object.sha;
+
+            const checks = await github.rest.checks.listForRef({
+              owner,
+              repo,
+              ref: sha,
+              per_page: 100,
+            });
+
+            const target = checks.data.check_runs.find(
+              (item) => item.name === expectedCheckName
+            );
+
+            if (!target) {
+              core.setFailed(
+                `Missing required check run "${expectedCheckName}" on main (${sha}).`
+              );
+              return;
+            }
+
+            if (target.status !== "completed" || target.conclusion !== "success") {
+              core.setFailed(
+                `Check "${expectedCheckName}" is not green on main (${sha}). status=${target.status} conclusion=${target.conclusion}`
+              );
+              return;
+            }
+
+            core.info(`Gate passed: ${expectedCheckName} is success on ${sha}`);
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [verify-realtime-suite]
+    environment:
+      name: ${{ github.event.inputs.environment }}
+    steps:
+      - name: Placeholder deploy step
+        run: |
+          echo "Deploy is gated by Realtime Stable Suite."
+          echo "Environment: ${{ github.event.inputs.environment }}"
+          echo "Replace this step with your real deploy command."

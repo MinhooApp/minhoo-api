@@ -1,9 +1,10 @@
-import { Op, Sequelize } from "sequelize";
+import { Op, Sequelize, UniqueConstraintError } from "sequelize";
 import Reel from "../../_models/reel/reel";
 import ReelLike from "../../_models/reel/reel_like";
 import ReelSave from "../../_models/reel/reel_save";
 import ReelView from "../../_models/reel/reel_view";
 import ReelComment from "../../_models/reel/reel_comment";
+import ReelReport from "../../_models/reel/reel_report";
 import Follower from "../../_models/follower/follower";
 import User from "../../_models/user/user";
 import {
@@ -26,6 +27,12 @@ const reelUserInclude = {
     "image_profil",
     "job_categories_labels",
   ],
+};
+
+const reelUserSummaryInclude = {
+  model: User,
+  as: "user",
+  attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
 };
 
 const normalizeNumber = (value: any, fallback: number) => {
@@ -130,6 +137,10 @@ const ORBIT_CREATOR_COOLDOWN = 5;
 const ORBIT_MAX_TOPIC_STREAK = 2;
 const ORBIT_NEW_CREATOR_EVERY = 6;
 const ORBIT_TOPK_SHUFFLE_WINDOW = 40;
+const REEL_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
+  1,
+  Number(process.env.REEL_REPORT_AUTO_DELETE_THRESHOLD ?? 10) || 10
+);
 
 type OrbitBucket = "affinity" | "trending" | "social" | "exploration";
 type OrbitListFeedOptions = {
@@ -248,21 +259,28 @@ const toValidDate = (value: any): Date | null => {
   return Number.isNaN(date.getTime()) ? null : date;
 };
 
-const buildReelFreshness = (createdAtRaw: any) => {
-  const createdAt = toValidDate(createdAtRaw);
-  if (!createdAt) {
-    return {
-      isNew: false,
-      newUntil: null as string | null,
-      createdAtIso: null as string | null,
-    };
-  }
+const resolveReelRingUntilDate = (reel: any): Date | null => {
+  const persistedRingUntil = toValidDate(reel?.new_until ?? reel?.newUntil);
+  if (persistedRingUntil) return persistedRingUntil;
 
-  const newUntilDate = new Date(createdAt.getTime() + ORBIT_NEW_WINDOW_MS);
+  const createdAt = toValidDate(reel?.createdAt ?? reel?.created_at);
+  if (!createdAt) return null;
+
+  return new Date(createdAt.getTime() + ORBIT_NEW_WINDOW_MS);
+};
+
+const buildReelFreshness = (reel: any) => {
+  const createdAt = toValidDate(reel?.createdAt ?? reel?.created_at);
+  const ringUntilDate = resolveReelRingUntilDate(reel);
+  const ringUntil = ringUntilDate ? ringUntilDate.toISOString() : null;
+  const ringActive = ringUntilDate ? ringUntilDate.getTime() > Date.now() : false;
+
   return {
-    isNew: newUntilDate.getTime() > Date.now(),
-    newUntil: newUntilDate.toISOString(),
-    createdAtIso: createdAt.toISOString(),
+    ringActive,
+    ringUntil,
+    isNew: ringActive,
+    newUntil: ringUntil,
+    createdAtIso: createdAt ? createdAt.toISOString() : null,
   };
 };
 
@@ -390,7 +408,7 @@ const withFlagAliases = (row: any) => {
   const reel = toPlain(row);
   const isStarred = Boolean(reel?.isStarred ?? reel?.is_starred ?? reel?.is_liked);
   const isSaved = Boolean(reel?.isSaved ?? reel?.is_saved);
-  const freshness = buildReelFreshness(reel?.createdAt);
+  const freshness = buildReelFreshness(reel);
   const playback = buildPlaybackState(reel);
 
   const user = reel?.user && typeof reel.user === "object" ? reel.user : null;
@@ -487,6 +505,10 @@ const withFlagAliases = (row: any) => {
     isStarred,
     isLiked: isStarred,
     isSaved,
+    ring_active: freshness.ringActive,
+    ringActive: freshness.ringActive,
+    ring_until: freshness.ringUntil,
+    ringUntil: freshness.ringUntil,
     is_new: freshness.isNew,
     isNew: freshness.isNew,
     new_until: freshness.newUntil,
@@ -908,6 +930,7 @@ const fetchOrbitCandidatePool = async ({
   page,
   followedCreatorIds,
   profiler,
+  summary = false,
 }: {
   where: any;
   viewerId: number | null;
@@ -915,6 +938,7 @@ const fetchOrbitCandidatePool = async ({
   page: number;
   followedCreatorIds: Set<number>;
   profiler?: OrbitFindProfiler;
+  summary?: boolean;
 }) => {
   const pageFactor = Math.max(1, page + 1);
   const basePoolSize = Math.min(
@@ -937,7 +961,7 @@ const fetchOrbitCandidatePool = async ({
     return withOrbitDbProfile(profiler, params.label, () =>
       Reel.findAll({
         where: mergeFeedWhere(where, params.extraWhere),
-        include: [reelUserInclude],
+        include: [summary ? reelUserSummaryInclude : reelUserInclude],
         replacements: { meId: viewerId ?? -1 },
         order: params.order,
         limit: Math.max(1, Math.floor(params.limit)),
@@ -1630,11 +1654,11 @@ export const listFeed = async (
   sizeRaw: any,
   viewerIdRaw: any,
   suggested = false,
-  options: OrbitListFeedOptions = {}
+  options: OrbitListFeedOptions & { summary?: boolean } = {}
 ) => {
   const profiler = createOrbitFindProfiler();
   const page = normalizePage(pageRaw, 0);
-  const size = normalizeLimit(sizeRaw, 15, 40);
+  const size = normalizeLimit(sizeRaw, 15, 20);
   const viewerId = normalizeUserId(viewerIdRaw);
   const sessionToken = normalizeSessionToken(options?.sessionKey);
   const sessionMemoryKey = buildOrbitSessionMemoryKey(viewerId, sessionToken);
@@ -1670,6 +1694,7 @@ export const listFeed = async (
     page,
     followedCreatorIds: viewerContext.followedCreatorIds,
     profiler,
+    summary: Boolean(options.summary),
   });
 
   const rerankStartedAtMs = nowMs();
@@ -1730,8 +1755,10 @@ export const listFeed = async (
   profiler.rerankMs = nowMs() - rerankStartedAtMs;
   const pageRows = pageCandidates.map((candidate) => candidate.row);
 
-  await attachInteractionFlags(viewerId, pageRows, profiler);
-  await attachUserOrbitRing(pageRows, profiler);
+  if (!options.summary) {
+    await attachInteractionFlags(viewerId, pageRows, profiler);
+    await attachUserOrbitRing(pageRows, profiler);
+  }
   const sessionSaveStartedAtMs = nowMs();
   const sessionSaveBackend = await updateOrbitSessionState(
     sessionMemoryKey,
@@ -1765,7 +1792,7 @@ export const listFeed = async (
     page,
     size,
     count: Number(totalCount || 0),
-    rows: mapWithFlagAliases(pageRows),
+    rows: options.summary ? pageRows : mapWithFlagAliases(pageRows),
   };
 };
 
@@ -1854,7 +1881,17 @@ export const listByUser = async (
 
   const reels = await Reel.findAndCountAll({
     where: baseWhere,
-    include: [reelUserInclude],
+    include: [
+      {
+        ...reelUserInclude,
+        required: true,
+        where: {
+          id: targetUserId,
+          disabled: false,
+          is_deleted: false,
+        },
+      },
+    ],
     replacements: { meId: viewerId ?? -1, targetId: targetUserId },
     order: [["createdAt", "DESC"]],
     distinct: true,
@@ -1924,6 +1961,116 @@ export const deleteReel = async (idRaw: any, userIdRaw: any) => {
 
   await reel.update({ is_delete: true, deleted_date: new Date(new Date().toUTCString()) });
   return { notFound: false, forbidden: false, reel };
+};
+
+export const reportReel = async ({
+  reelIdRaw,
+  reporterIdRaw,
+  reason,
+  details,
+}: {
+  reelIdRaw: any;
+  reporterIdRaw: any;
+  reason: string;
+  details?: string | null;
+}) => {
+  const reelId = Number(reelIdRaw);
+  const reporterId = Number(reporterIdRaw);
+  if (!Number.isFinite(reelId) || reelId <= 0) {
+    return { notFound: true };
+  }
+  if (!Number.isFinite(reporterId) || reporterId <= 0) {
+    return { invalidReporter: true };
+  }
+
+  const sequelize = (Reel as any).sequelize;
+  const normalizedDetails = String(details ?? "").trim().slice(0, 4000) || null;
+
+  return sequelize.transaction(async (transaction: any) => {
+    const reel = await Reel.findOne({
+      where: { id: reelId, is_delete: false },
+      attributes: ["id", "userId", "is_delete"],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!reel) {
+      return { notFound: true };
+    }
+
+    const ownerId = Number((reel as any)?.userId ?? 0);
+    if (ownerId > 0 && ownerId === reporterId) {
+      return { selfReport: true };
+    }
+
+    const existing = await ReelReport.findOne({
+      where: { reelId, reporterId },
+      attributes: ["id"],
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    let alreadyReported = false;
+    if (!existing) {
+      try {
+        await ReelReport.create(
+          {
+            reelId,
+            reporterId,
+            reason,
+            details: normalizedDetails,
+          },
+          { transaction }
+        );
+      } catch (error: any) {
+        if (error instanceof UniqueConstraintError) {
+          alreadyReported = true;
+        } else {
+          throw error;
+        }
+      }
+    } else {
+      alreadyReported = true;
+    }
+
+    const reportsCount = await ReelReport.count({
+      where: { reelId },
+      distinct: true,
+      col: "reporterId",
+      transaction,
+    });
+
+    const shouldAutoDelete =
+      Number(reportsCount) >= REEL_REPORT_AUTO_DELETE_THRESHOLD &&
+      !Boolean((reel as any)?.is_delete);
+
+    let autoDeleted = false;
+    if (shouldAutoDelete) {
+      await Reel.update(
+        {
+          is_delete: true,
+          deleted_date: new Date(new Date().toUTCString()),
+        },
+        {
+          where: { id: reelId },
+          transaction,
+        }
+      );
+      autoDeleted = true;
+    }
+
+    return {
+      notFound: false,
+      invalidReporter: false,
+      selfReport: false,
+      alreadyReported,
+      reportsCount: Number(reportsCount) || 0,
+      threshold: REEL_REPORT_AUTO_DELETE_THRESHOLD,
+      autoDeleted,
+      reelId,
+      ownerId,
+    };
+  });
 };
 
 export const toggleStar = async (userIdRaw: any, idRaw: any) => {

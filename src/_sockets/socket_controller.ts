@@ -9,6 +9,16 @@ import Notification from "_models/notification/notification";
 import { Op } from "sequelize";
 import jwt from "jsonwebtoken";
 import { sendNotification } from "../useCases/notification/add/add";
+import {
+  trackBindUserAttempt,
+  trackBindUserResult,
+  trackChatAuthError,
+  trackChatEvent,
+  trackChatRateLimited,
+  trackSocketConnected,
+  trackSocketDisconnected,
+} from "../libs/chat_realtime_metrics";
+import { checkDistributedIdentityRateLimit } from "../libs/cache/socket_rate_limit_store";
 
 type ChatStatus = "sent" | "delivered" | "read";
 
@@ -50,6 +60,18 @@ type ChatReactionPayload = {
 };
 
 type ReactionMap = Record<string, number[]>;
+type SessionValidationResult = "valid" | "invalid" | "timeout";
+type SocketRateLimitBucket = {
+  windowStartMs: number;
+  count: number;
+  lastWarnMs: number;
+};
+type IdentityRateLimitBucket = {
+  windowStartMs: number;
+  count: number;
+  blockedUntilMs: number;
+  lastWarnMs: number;
+};
 
 const chatRoom = (chatId: number) => `chat_${chatId}`;
 const userRoom = (userId: number) => `user_${userId}`;
@@ -57,8 +79,69 @@ const CHAT_ROOM_REGEX = /^chat_\d+$/;
 const ALLOW_SOCKET_USERID_FALLBACK =
   String(process.env.ALLOW_SOCKET_USERID_FALLBACK ?? "1").trim() !== "0";
 const SESSION_VALIDATION_TTL_MS = 15 * 1000;
+const BIND_USER_VALIDATE_TIMEOUT_MS = Math.max(
+  400,
+  Number(process.env.BIND_USER_VALIDATE_TIMEOUT_MS ?? 1800) || 1800
+);
 const EMIT_REELS_EVENT_ON_REEL_DELETE =
   String(process.env.EMIT_REELS_EVENT_ON_REEL_DELETE ?? "1").trim() === "1";
+const RL_BIND_USER_MAX = Math.max(1, Number(process.env.RL_BIND_USER_MAX ?? 8) || 8);
+const RL_BIND_USER_WINDOW_MS = Math.max(
+  500,
+  Number(process.env.RL_BIND_USER_WINDOW_MS ?? 15000) || 15000
+);
+const RL_CHAT_SEND_MAX = Math.max(1, Number(process.env.RL_CHAT_SEND_MAX ?? 24) || 24);
+const RL_CHAT_SEND_WINDOW_MS = Math.max(
+  500,
+  Number(process.env.RL_CHAT_SEND_WINDOW_MS ?? 10000) || 10000
+);
+const RL_CHAT_TYPING_MAX = Math.max(
+  1,
+  Number(process.env.RL_CHAT_TYPING_MAX ?? 45) || 45
+);
+const RL_CHAT_TYPING_WINDOW_MS = Math.max(
+  500,
+  Number(process.env.RL_CHAT_TYPING_WINDOW_MS ?? 10000) || 10000
+);
+const RL_CHAT_REACTION_MAX = Math.max(
+  1,
+  Number(process.env.RL_CHAT_REACTION_MAX ?? 35) || 35
+);
+const RL_CHAT_REACTION_WINDOW_MS = Math.max(
+  500,
+  Number(process.env.RL_CHAT_REACTION_WINDOW_MS ?? 10000) || 10000
+);
+const RL_CHAT_STATUS_MAX = Math.max(1, Number(process.env.RL_CHAT_STATUS_MAX ?? 80) || 80);
+const RL_CHAT_STATUS_WINDOW_MS = Math.max(
+  500,
+  Number(process.env.RL_CHAT_STATUS_WINDOW_MS ?? 10000) || 10000
+);
+const RL_CHAT_JOIN_SYNC_MAX = Math.max(
+  1,
+  Number(process.env.RL_CHAT_JOIN_SYNC_MAX ?? 25) || 25
+);
+const RL_CHAT_JOIN_SYNC_WINDOW_MS = Math.max(
+  500,
+  Number(process.env.RL_CHAT_JOIN_SYNC_WINDOW_MS ?? 10000) || 10000
+);
+const IDENTITY_RATE_BLOCK_MULTIPLIER = Math.max(
+  2,
+  Number(process.env.IDENTITY_RATE_BLOCK_MULTIPLIER ?? 3) || 3
+);
+const IDENTITY_RATE_BLOCK_MS = Math.max(
+  1000,
+  Number(process.env.IDENTITY_RATE_BLOCK_MS ?? 60000) || 60000
+);
+const IDENTITY_RATE_STATE_MAX = Math.max(
+  1000,
+  Number(process.env.IDENTITY_RATE_STATE_MAX ?? 50000) || 50000
+);
+const IDENTITY_RATE_GC_INTERVAL = Math.max(
+  10,
+  Number(process.env.IDENTITY_RATE_GC_INTERVAL ?? 200) || 200
+);
+const identityRateLimitState = new Map<string, IdentityRateLimitBucket>();
+let identityRateLimitGcTick = 0;
 
 function normalizePositiveInt(value: any): number {
   const n = Number(value);
@@ -605,11 +688,13 @@ async function validateSocketSession(socket: Socket): Promise<boolean> {
 
   const user = await User.findOne({
     where: { id: socketUserId },
-    attributes: ["id", "available", "disabled"],
+    attributes: ["id", "available", "disabled", "auth_token"],
     raw: true,
   });
   if (!user) return false;
   if (!(user as any).available || Boolean((user as any).disabled)) return false;
+  const storedAuthToken = normalizeToken((user as any).auth_token);
+  if (!storedAuthToken || storedAuthToken !== authToken) return false;
 
   (socket.data as any).sessionValidated = true;
   (socket.data as any).sessionValidatedAt = now;
@@ -629,7 +714,7 @@ async function requireAuthenticatedUser(
   }
 
   if (tokenAuthenticated) {
-    const validSession = await validateSocketSession(socket);
+    const validSession = await ensureSessionValidation(socket);
     if (!validSession) {
       console.log(`[socket] ${event} rejected invalid session socket=${socket.id}`);
       socket.emit("auth:error", { event, code: "INVALID_SESSION" });
@@ -935,8 +1020,346 @@ function addUnique(arr: number[], id: number) {
   if (!arr.includes(id)) arr.push(id);
 }
 
+function safeAck(ack: any, payload: any) {
+  if (typeof ack !== "function") return;
+  try {
+    ack(payload);
+  } catch (_) {
+    // ignore ack errors from client
+  }
+}
+
+function clearSocketAuthState(socket: Socket) {
+  (socket.data as any).userId = 0;
+  (socket.data as any).authenticatedByToken = false;
+  (socket.data as any).authToken = null;
+  (socket.data as any).sessionValidated = false;
+  (socket.data as any).sessionValidatedAt = 0;
+  (socket.data as any).sessionValidationPromise = null;
+}
+
+function ensureSessionValidation(socket: Socket): Promise<boolean> {
+  const current = (socket.data as any)?.sessionValidationPromise;
+  if (current && typeof current?.then === "function") {
+    return current as Promise<boolean>;
+  }
+
+  const promise = Promise.resolve(validateSocketSession(socket))
+    .then((value) => Boolean(value))
+    .catch(() => false)
+    .finally(() => {
+      if ((socket.data as any)?.sessionValidationPromise === promise) {
+        (socket.data as any).sessionValidationPromise = null;
+      }
+    });
+
+  (socket.data as any).sessionValidationPromise = promise;
+  return promise;
+}
+
+async function validateSessionWithTimeout(
+  socket: Socket,
+  timeoutMs: number
+): Promise<SessionValidationResult> {
+  const timeoutValue = Math.max(100, Number(timeoutMs) || 100);
+  const timeoutPromise = new Promise<SessionValidationResult>((resolve) => {
+    setTimeout(() => resolve("timeout"), timeoutValue);
+  });
+  const validationPromise = ensureSessionValidation(socket).then((ok) =>
+    ok ? "valid" : "invalid"
+  );
+  return Promise.race([validationPromise, timeoutPromise]);
+}
+
+function resolveSocketIdentity(socket: Socket): string {
+  const data = (socket.data as any) ?? {};
+  const activeUserId =
+    normalizePositiveInt(data.userId) || normalizePositiveInt(resolveUserIdFromHandshake(socket));
+  if (activeUserId > 0) {
+    return `user:${activeUserId}`;
+  }
+
+  const headers: any = socket.handshake?.headers ?? {};
+  const forwardedRaw = String(
+    headers?.["x-forwarded-for"] ?? headers?.["x-real-ip"] ?? ""
+  ).trim();
+  const forwardedIp = forwardedRaw ? forwardedRaw.split(",")[0].trim() : "";
+  const handshakeIp = String(socket.handshake?.address ?? "").trim();
+  const remoteIp = String((socket as any)?.conn?.remoteAddress ?? "").trim();
+  const resolvedIp = forwardedIp || handshakeIp || remoteIp;
+  if (resolvedIp) {
+    return `ip:${resolvedIp}`;
+  }
+
+  return `socket:${socket.id}`;
+}
+
+function pruneIdentityRateLimitState(now: number, windowSize: number) {
+  identityRateLimitGcTick += 1;
+  const shouldGc =
+    identityRateLimitState.size > IDENTITY_RATE_STATE_MAX ||
+    identityRateLimitGcTick % IDENTITY_RATE_GC_INTERVAL === 0;
+  if (!shouldGc) return;
+
+  const staleBeforeMs = now - Math.max(windowSize * 4, IDENTITY_RATE_BLOCK_MS * 2);
+  for (const [key, bucket] of identityRateLimitState.entries()) {
+    const inactiveWindow = bucket.windowStartMs < staleBeforeMs;
+    const unblocked = bucket.blockedUntilMs <= now;
+    if (inactiveWindow && unblocked) {
+      identityRateLimitState.delete(key);
+    }
+  }
+
+  if (identityRateLimitState.size <= IDENTITY_RATE_STATE_MAX) return;
+
+  const staleFirst = [...identityRateLimitState.entries()].sort((a, b) => {
+    const aTs = Math.max(a[1].windowStartMs, a[1].blockedUntilMs);
+    const bTs = Math.max(b[1].windowStartMs, b[1].blockedUntilMs);
+    return aTs - bTs;
+  });
+  const overflow = identityRateLimitState.size - IDENTITY_RATE_STATE_MAX;
+  for (let i = 0; i < overflow; i += 1) {
+    const candidateKey = staleFirst[i]?.[0];
+    if (candidateKey) {
+      identityRateLimitState.delete(candidateKey);
+    }
+  }
+}
+
+function shouldWarnRateLimit(socket: Socket, event: string, scope: string, now: number) {
+  const data = socket.data as any;
+  if (!data.rateLimitWarnState || typeof data.rateLimitWarnState !== "object") {
+    data.rateLimitWarnState = {};
+  }
+
+  const warnState = data.rateLimitWarnState as Record<string, number>;
+  const warnKey = `${event}:${scope}`;
+  const lastWarnMs = Number(warnState[warnKey] ?? 0);
+  if (now - lastWarnMs < 1000) return false;
+  warnState[warnKey] = now;
+  return true;
+}
+
+function emitIdentityBlocked(
+  socket: Socket,
+  event: string,
+  retryAfterMs: number,
+  maxPerWindow: number,
+  windowMs: number,
+  now: number
+) {
+  if (!shouldWarnRateLimit(socket, event, "identity_blocked", now)) return;
+  trackChatRateLimited(`${event}:identity_blocked`);
+  trackChatAuthError(event, "RATE_LIMIT_BLOCKED");
+  socket.emit("auth:error", {
+    event,
+    code: "RATE_LIMIT_BLOCKED",
+    scope: "identity",
+    retryAfterMs,
+  });
+  socket.emit("rate:limited", {
+    event,
+    code: "RATE_LIMIT_BLOCKED",
+    scope: "identity",
+    retryAfterMs,
+    maxPerWindow,
+    windowMs,
+  });
+}
+
+function emitIdentityTooManyRequests(
+  socket: Socket,
+  event: string,
+  retryAfterMs: number,
+  maxPerWindow: number,
+  windowMs: number,
+  now: number
+) {
+  if (!shouldWarnRateLimit(socket, event, "identity", now)) return;
+  trackChatRateLimited(`${event}:identity`);
+  socket.emit("rate:limited", {
+    event,
+    code: "TOO_MANY_REQUESTS",
+    scope: "identity",
+    retryAfterMs,
+    maxPerWindow,
+    windowMs,
+  });
+}
+
+async function checkRateLimit(
+  socket: Socket,
+  event: string,
+  maxPerWindow: number,
+  windowMs: number
+): Promise<boolean> {
+  const now = Date.now();
+  const data = socket.data as any;
+  if (!data.rateLimitState || typeof data.rateLimitState !== "object") {
+    data.rateLimitState = {};
+  }
+
+  const key = String(event || "unknown").trim() || "unknown";
+  const state = data.rateLimitState as Record<string, SocketRateLimitBucket>;
+  const current = state[key];
+  const max = Math.max(1, Number(maxPerWindow) || 1);
+  const windowSize = Math.max(250, Number(windowMs) || 250);
+
+  let bucket: SocketRateLimitBucket;
+  if (!current || now - current.windowStartMs >= windowSize) {
+    bucket = { windowStartMs: now, count: 0, lastWarnMs: 0 };
+  } else {
+    bucket = current;
+  }
+
+  bucket.count += 1;
+  state[key] = bucket;
+  const socketLimited = bucket.count > max;
+  const socketRetryAfterMs = Math.max(0, windowSize - (now - bucket.windowStartMs));
+  if (socketLimited && now - bucket.lastWarnMs >= 1000) {
+    bucket.lastWarnMs = now;
+    trackChatRateLimited(key);
+    socket.emit("rate:limited", {
+      event: key,
+      code: "TOO_MANY_REQUESTS",
+      scope: "socket",
+      retryAfterMs: socketRetryAfterMs,
+      maxPerWindow: max,
+      windowMs: windowSize,
+    });
+  }
+
+  const identity = resolveSocketIdentity(socket);
+  const identityKey = `${key}:${identity}`;
+  const identityThreshold = Math.max(max + 1, max * IDENTITY_RATE_BLOCK_MULTIPLIER);
+  const distributedIdentityResult = await checkDistributedIdentityRateLimit({
+    event: key,
+    identity,
+    maxPerWindow: max,
+    windowMs: windowSize,
+    identityThreshold,
+    blockMs: IDENTITY_RATE_BLOCK_MS,
+  });
+
+  if (distributedIdentityResult) {
+    if (distributedIdentityResult.blocked) {
+      emitIdentityBlocked(
+        socket,
+        key,
+        distributedIdentityResult.retryAfterMs,
+        max,
+        windowSize,
+        now
+      );
+      console.log(
+        `[socket] ${key} blocked identity=${identity} socket=${socket.id} retryAfterMs=${distributedIdentityResult.retryAfterMs} backend=${distributedIdentityResult.backend}`
+      );
+      return true;
+    }
+
+    if (distributedIdentityResult.limited) {
+      emitIdentityTooManyRequests(
+        socket,
+        key,
+        distributedIdentityResult.retryAfterMs,
+        max,
+        windowSize,
+        now
+      );
+      console.log(
+        `[socket] ${key} rate-limited identity=${identity} count=${distributedIdentityResult.count} max=${max} windowMs=${windowSize} backend=${distributedIdentityResult.backend}`
+      );
+      return true;
+    }
+
+    if (socketLimited) {
+      console.log(
+        `[socket] ${key} rate-limited socket=${socket.id} count=${bucket.count} max=${max} windowMs=${windowSize}`
+      );
+      return true;
+    }
+
+    return false;
+  }
+
+  const existingIdentityBucket = identityRateLimitState.get(identityKey);
+
+  let identityBucket: IdentityRateLimitBucket;
+  if (!existingIdentityBucket || now - existingIdentityBucket.windowStartMs >= windowSize) {
+    identityBucket = {
+      windowStartMs: now,
+      count: 0,
+      blockedUntilMs: 0,
+      lastWarnMs: 0,
+    };
+  } else {
+    identityBucket = existingIdentityBucket;
+  }
+
+  if (identityBucket.blockedUntilMs > now) {
+    const blockedRetryAfterMs = identityBucket.blockedUntilMs - now;
+    emitIdentityBlocked(socket, key, blockedRetryAfterMs, max, windowSize, now);
+    identityBucket.lastWarnMs = now;
+
+    identityRateLimitState.set(identityKey, identityBucket);
+    pruneIdentityRateLimitState(now, windowSize);
+    console.log(
+      `[socket] ${key} blocked identity=${identity} socket=${socket.id} retryAfterMs=${blockedRetryAfterMs}`
+    );
+    return true;
+  }
+
+  identityBucket.count += 1;
+  const identityLimited = identityBucket.count > max;
+
+  if (identityBucket.count >= identityThreshold) {
+    identityBucket.blockedUntilMs = now + IDENTITY_RATE_BLOCK_MS;
+    const blockedRetryAfterMs = IDENTITY_RATE_BLOCK_MS;
+    emitIdentityBlocked(socket, key, blockedRetryAfterMs, max, windowSize, now);
+    identityBucket.lastWarnMs = now;
+    identityRateLimitState.set(identityKey, identityBucket);
+    pruneIdentityRateLimitState(now, windowSize);
+    console.log(
+      `[socket] ${key} identity-threshold identity=${identity} count=${identityBucket.count} threshold=${identityThreshold}`
+    );
+    return true;
+  }
+
+  if (identityLimited) {
+    identityBucket.lastWarnMs = now;
+    emitIdentityTooManyRequests(
+      socket,
+      key,
+      Math.max(0, windowSize - (now - identityBucket.windowStartMs)),
+      max,
+      windowSize,
+      now
+    );
+  }
+
+  identityRateLimitState.set(identityKey, identityBucket);
+  pruneIdentityRateLimitState(now, windowSize);
+
+  if (socketLimited) {
+    console.log(
+      `[socket] ${key} rate-limited socket=${socket.id} count=${bucket.count} max=${max} windowMs=${windowSize}`
+    );
+    return true;
+  }
+
+  if (identityLimited) {
+    console.log(
+      `[socket] ${key} rate-limited identity=${identity} count=${identityBucket.count} max=${max} windowMs=${windowSize}`
+    );
+    return true;
+  }
+
+  return false;
+}
+
 export const socketController = (socket: Socket) => {
   console.log(`Cliente conectado ${socket.id}`);
+  trackSocketConnected();
 
   const auth: any = socket.handshake?.auth ?? {};
   const query: any = socket.handshake?.query ?? {};
@@ -958,16 +1381,13 @@ export const socketController = (socket: Socket) => {
     );
     if ((socket.data as any).authenticatedByToken) {
       void (async () => {
-        const validSession = await validateSocketSession(socket);
+        const validSession = await ensureSessionValidation(socket);
         if (validSession) return;
 
         socket.leave(userRoom(handshakeUserId));
-        (socket.data as any).userId = 0;
-        (socket.data as any).authenticatedByToken = false;
-        (socket.data as any).authToken = null;
-        (socket.data as any).sessionValidated = false;
-        (socket.data as any).sessionValidatedAt = 0;
+        clearSocketAuthState(socket);
         console.log(`[socket] handshake rejected invalid session socket=${socket.id}`);
+        trackChatAuthError("handshake", "INVALID_SESSION");
         socket.emit("auth:error", { event: "handshake", code: "INVALID_SESSION" });
       })().catch((err) => {
         console.log("❌ handshake session validation error", err);
@@ -981,7 +1401,21 @@ export const socketController = (socket: Socket) => {
     console.log(`[socket] bind userId=0 source=handshake socket=${socket.id}`);
   }
 
-  socket.on("bind-user", async (payload: any) => {
+  socket.on("bind-user", async (payload: any, ack?: (response: any) => void) => {
+    trackBindUserAttempt();
+    trackChatEvent("bind-user");
+    if (
+      await checkRateLimit(socket, "bind-user", RL_BIND_USER_MAX, RL_BIND_USER_WINDOW_MS)
+    ) {
+      trackBindUserResult("error");
+      safeAck(ack, {
+        ok: false,
+        event: "bind-user",
+        code: "TOO_MANY_REQUESTS",
+      });
+      return;
+    }
+
     try {
       const payloadUserId = parseUserId(payload);
       const bindTokenRaw = resolveTokenFromSources(payload);
@@ -1003,9 +1437,13 @@ export const socketController = (socket: Socket) => {
         resolvedUserId = payloadUserId > 0 ? payloadUserId : socketUserId;
         tokenAuthenticated = false;
       }
+
       if (!resolvedUserId) {
         console.log(`[socket] bind-user rejected unauthenticated socket=${socket.id}`);
+        trackBindUserResult("error");
+        trackChatAuthError("bind-user", "UNAUTHENTICATED");
         socket.emit("auth:error", { event: "bind-user", code: "UNAUTHENTICATED" });
+        safeAck(ack, { ok: false, event: "bind-user", code: "UNAUTHENTICATED" });
         return;
       }
 
@@ -1013,7 +1451,10 @@ export const socketController = (socket: Socket) => {
         console.log(
           `[socket] bind-user rejected user mismatch socket=${socket.id} resolvedUserId=${resolvedUserId} payloadUserId=${payloadUserId}`
         );
+        trackBindUserResult("error");
+        trackChatAuthError("bind-user", "USER_MISMATCH");
         socket.emit("auth:error", { event: "bind-user", code: "USER_MISMATCH" });
+        safeAck(ack, { ok: false, event: "bind-user", code: "USER_MISMATCH" });
         return;
       }
 
@@ -1024,31 +1465,71 @@ export const socketController = (socket: Socket) => {
         : null;
       (socket.data as any).sessionValidated = false;
       (socket.data as any).sessionValidatedAt = 0;
+
+      const emitBindOk = (validation: "valid" | "pending") => {
+        socket.join(userRoom(resolvedUserId));
+        trackBindUserResult(validation === "valid" ? "ok" : "pending");
+        console.log(
+          `[socket] bind userId=${resolvedUserId} source=bind-user tokenAuth=${tokenAuthenticated} validation=${validation} socket=${socket.id}`
+        );
+        socket.emit("bind-user:ok", { userId: resolvedUserId, validation });
+        safeAck(ack, {
+          ok: true,
+          event: "bind-user",
+          userId: resolvedUserId,
+          validation,
+        });
+      };
+
       if (tokenAuthenticated) {
-        const validSession = await validateSocketSession(socket);
-        if (!validSession) {
-          (socket.data as any).userId = 0;
-          (socket.data as any).authenticatedByToken = false;
-          (socket.data as any).authToken = null;
-          (socket.data as any).sessionValidated = false;
-          (socket.data as any).sessionValidatedAt = 0;
+        const validation = await validateSessionWithTimeout(
+          socket,
+          BIND_USER_VALIDATE_TIMEOUT_MS
+        );
+        if (validation === "invalid") {
+          clearSocketAuthState(socket);
           console.log(`[socket] bind-user rejected invalid session socket=${socket.id}`);
+          trackBindUserResult("invalid");
+          trackChatAuthError("bind-user", "INVALID_SESSION");
           socket.emit("auth:error", { event: "bind-user", code: "INVALID_SESSION" });
+          safeAck(ack, { ok: false, event: "bind-user", code: "INVALID_SESSION" });
+          return;
+        }
+        if (validation === "timeout") {
+          emitBindOk("pending");
+          void ensureSessionValidation(socket)
+            .then((valid) => {
+              if (valid) return;
+              socket.leave(userRoom(resolvedUserId));
+              clearSocketAuthState(socket);
+              console.log(
+                `[socket] bind-user async validation failed socket=${socket.id} userId=${resolvedUserId}`
+              );
+              trackBindUserResult("invalid");
+              trackChatAuthError("bind-user", "INVALID_SESSION");
+              socket.emit("auth:error", {
+                event: "bind-user",
+                code: "INVALID_SESSION",
+              });
+            })
+            .catch((err) => console.log("❌ bind-user async validation error", err));
           return;
         }
       }
-      socket.join(userRoom(resolvedUserId));
-      console.log(
-        `[socket] bind userId=${resolvedUserId} source=bind-user tokenAuth=${tokenAuthenticated} socket=${socket.id}`
-      );
-      socket.emit("bind-user:ok", { userId: resolvedUserId });
+
+      emitBindOk("valid");
     } catch (e) {
       console.log("❌ bind-user error", e);
+      trackBindUserResult("error");
+      trackChatAuthError("bind-user", "SERVER_ERROR");
+      socket.emit("auth:error", { event: "bind-user", code: "SERVER_ERROR" });
+      safeAck(ack, { ok: false, event: "bind-user", code: "SERVER_ERROR" });
     }
   });
 
   socket.on("disconnect", () => {
     console.log(`Cliente desconectado ${socket.id}`);
+    trackSocketDisconnected();
   });
 
   ////////////////////// Services ////////////////////////
@@ -1139,11 +1620,22 @@ export const socketController = (socket: Socket) => {
   //////////////////////////// Chat //////////////////////
 
   // ✅ join a room del chat (APK nueva)
-  socket.on("chat:join", (payload: ChatJoinPayload) => {
+  socket.on("chat:join", async (payload: ChatJoinPayload) => {
+    trackChatEvent("chat:join");
     try {
       const chatId = parseChatId(payload);
       if (!chatId) {
         console.log(`[socket] chat:join ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`);
+        return;
+      }
+      if (
+        await checkRateLimit(
+          socket,
+          "chat:join",
+          RL_CHAT_JOIN_SYNC_MAX,
+          RL_CHAT_JOIN_SYNC_WINDOW_MS
+        )
+      ) {
         return;
       }
 
@@ -1228,10 +1720,21 @@ export const socketController = (socket: Socket) => {
   });
   // ✅ leave room (APK nueva)
   socket.on("chat:leave", async (payload: ChatJoinPayload) => {
+    trackChatEvent("chat:leave");
     try {
       const chatId = parseChatId(payload);
       if (!chatId) {
         console.log(`[socket] chat:leave ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`);
+        return;
+      }
+      if (
+        await checkRateLimit(
+          socket,
+          "chat:leave",
+          RL_CHAT_JOIN_SYNC_MAX,
+          RL_CHAT_JOIN_SYNC_WINDOW_MS
+        )
+      ) {
         return;
       }
       const actorUserId = await requireAuthenticatedUser(
@@ -1252,12 +1755,23 @@ export const socketController = (socket: Socket) => {
 
   // ✅ resync de mensajes al reconectar (chatId + lastMessageId)
   socket.on("chat:sync", async (payload: ChatSyncPayload) => {
+    trackChatEvent("chat:sync");
     try {
       const chatId = parseChatId(payload);
       if (!chatId) {
         console.log(
           `[socket] chat:sync ignored invalid payload socket=${socket.id} payload=${JSON.stringify(payload)}`
         );
+        return;
+      }
+      if (
+        await checkRateLimit(
+          socket,
+          "chat:sync",
+          RL_CHAT_JOIN_SYNC_MAX,
+          RL_CHAT_JOIN_SYNC_WINDOW_MS
+        )
+      ) {
         return;
       }
 
@@ -1373,7 +1887,18 @@ export const socketController = (socket: Socket) => {
 
   // ✅ refresh de lista de chats del usuario autenticado
   socket.on("chats", async (payload: any) => {
+    trackChatEvent("chats");
     try {
+      if (
+        await checkRateLimit(
+          socket,
+          "chats",
+          RL_CHAT_JOIN_SYNC_MAX,
+          RL_CHAT_JOIN_SYNC_WINDOW_MS
+        )
+      ) {
+        return;
+      }
       const payloadUserId = parseUserId(payload);
       const actorUserId = await requireAuthenticatedUser(
         socket,
@@ -1393,7 +1918,11 @@ export const socketController = (socket: Socket) => {
    * - Legacy:  chat/{chatId}
    */
   socket.on("chat", async (message: any) => {
+    trackChatEvent("chat");
     try {
+      if (await checkRateLimit(socket, "chat", RL_CHAT_SEND_MAX, RL_CHAT_SEND_WINDOW_MS)) {
+        return;
+      }
       const chatId = parseChatId(message?.chatId != null ? message : message?.chat);
       if (!chatId) return;
 
@@ -1479,8 +2008,19 @@ export const socketController = (socket: Socket) => {
    * - Nuevo:   room/chat/typing/{chatId}
    * - Legacy:  chat/typing/{chatId}
    */
-  socket.on("chat:typing", (payload: ChatTypingPayload) => {
+  socket.on("chat:typing", async (payload: ChatTypingPayload) => {
+    trackChatEvent("chat:typing");
     try {
+      if (
+        await checkRateLimit(
+          socket,
+          "chat:typing",
+          RL_CHAT_TYPING_MAX,
+          RL_CHAT_TYPING_WINDOW_MS
+        )
+      ) {
+        return;
+      }
       const chatId = parseChatId(payload);
       const typing = !!payload?.typing;
 
@@ -1525,7 +2065,18 @@ export const socketController = (socket: Socket) => {
    * - Legacy:  chat/reaction/{chatId}
    */
   socket.on("chat:reaction", async (payload: ChatReactionPayload) => {
+    trackChatEvent("chat:reaction");
     try {
+      if (
+        await checkRateLimit(
+          socket,
+          "chat:reaction",
+          RL_CHAT_REACTION_MAX,
+          RL_CHAT_REACTION_WINDOW_MS
+        )
+      ) {
+        return;
+      }
       const chatId = parseChatId(payload);
       const messageId = parseMessageId(payload);
       const userId = await requireAuthenticatedUser(
@@ -1544,8 +2095,22 @@ export const socketController = (socket: Socket) => {
         return;
       }
 
-      const msg: any = await Message.findByPk(messageId);
+      const msg: any = await Message.findByPk(messageId, {
+        attributes: ["id", "chatId", "senderId", "text", "reactions"],
+      });
       if (!msg) return;
+      if (Number(msg.chatId) !== chatId) {
+        console.log(
+          `[socket] chat:reaction rejected message mismatch chatId=${chatId} messageId=${messageId} realChatId=${Number(msg.chatId)} socket=${socket.id} userId=${userId}`
+        );
+        socket.emit("auth:error", {
+          event: "chat:reaction",
+          code: "FORBIDDEN_MESSAGE",
+          chatId,
+          messageId,
+        });
+        return;
+      }
 
       const current = normalizeReactions(msg.reactions);
       let shouldNotify = false;
@@ -1618,7 +2183,18 @@ export const socketController = (socket: Socket) => {
    * - Legacy:  chat/status/{chatId}
    */
   socket.on("chat:delivered", async (payload: ChatStatusPayload) => {
+    trackChatEvent("chat:delivered");
     try {
+      if (
+        await checkRateLimit(
+          socket,
+          "chat:delivered",
+          RL_CHAT_STATUS_MAX,
+          RL_CHAT_STATUS_WINDOW_MS
+        )
+      ) {
+        return;
+      }
       const chatId = parseChatId(payload);
       const messageId = parseMessageId(payload);
       if (!chatId || !messageId) return;
@@ -1688,7 +2264,13 @@ export const socketController = (socket: Socket) => {
    * Permite pasar a read desde "sent" o "delivered"
    */
   socket.on("chat:read", async (payload: ChatStatusPayload) => {
+    trackChatEvent("chat:read");
     try {
+      if (
+        await checkRateLimit(socket, "chat:read", RL_CHAT_STATUS_MAX, RL_CHAT_STATUS_WINDOW_MS)
+      ) {
+        return;
+      }
       const chatId = parseChatId(payload);
       const messageId = parseMessageId(payload);
       if (!chatId || !messageId) return;

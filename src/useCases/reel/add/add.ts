@@ -8,6 +8,7 @@ import {
 } from "../_module/module";
 import { emitOrbitRingUpdatedRealtime } from "../../../libs/helper/realtime_dispatch";
 import { getActiveOrbitStateByUser } from "../../../repository/reel/orbit_ring_projection";
+import { formatRelativeTime } from "../../../libs/localization/relative_time";
 
 const parseBool = (value: any, fallback = true) => {
   if (typeof value === "boolean") return value;
@@ -93,6 +94,8 @@ const normalizeReelCommentPayload = (raw: any) => {
   const commentUser = toPlainObject(source.comment_user ?? source.commentUser ?? null);
   const createdAt = toIsoOrNull(source.createdAt ?? source.created_at);
   const updatedAt = toIsoOrNull(source.updatedAt ?? source.updated_at);
+  const relativeTimeEn = formatRelativeTime(createdAt, "en");
+  const relativeTimeEs = formatRelativeTime(createdAt, "es");
 
   return {
     ...source,
@@ -106,6 +109,12 @@ const normalizeReelCommentPayload = (raw: any) => {
     created_at: createdAt,
     updatedAt,
     updated_at: updatedAt,
+    relativeTime: relativeTimeEn,
+    relative_time: relativeTimeEn,
+    relativeTimeEn: relativeTimeEn,
+    relative_time_en: relativeTimeEn,
+    relativeTimeEs: relativeTimeEs,
+    relative_time_es: relativeTimeEs,
   };
 };
 

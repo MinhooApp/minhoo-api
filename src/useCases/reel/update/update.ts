@@ -4,6 +4,7 @@ import {
   Response,
   formatResponse,
   repository,
+  socket,
   sendNotification,
 } from "../_module/module";
 
@@ -30,6 +31,105 @@ const getReelOwnerId = (reel: any): number => {
   const ownerId = Number(reel?.user?.id ?? reel?.userId ?? reel?.user_id ?? 0);
   if (!Number.isFinite(ownerId) || ownerId <= 0) return 0;
   return ownerId;
+};
+
+const toPlainObject = (value: any): any => {
+  if (!value) return value;
+  if (typeof value.toJSON === "function") return value.toJSON();
+  if (value.dataValues && typeof value.dataValues === "object") {
+    return { ...value.dataValues };
+  }
+  return value;
+};
+
+const toIsoOrNull = (value: any): string | null => {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+};
+
+const parseBoolOrNull = (value: any): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const v = value.trim().toLowerCase();
+    if (["1", "true", "yes"].includes(v)) return true;
+    if (["0", "false", "no"].includes(v)) return false;
+  }
+  return null;
+};
+
+const normalizeReelFreshnessState = (rawReel: any) => {
+  const reel = toPlainObject(rawReel) ?? {};
+  const ringUntilIso =
+    toIsoOrNull(reel?.ring_until ?? reel?.ringUntil ?? reel?.new_until ?? reel?.newUntil) ??
+    null;
+  const explicitRingActive = parseBoolOrNull(reel?.ring_active ?? reel?.ringActive);
+  const explicitIsNew = parseBoolOrNull(reel?.is_new ?? reel?.isNew);
+  const fallbackRingActive =
+    ringUntilIso !== null ? new Date(ringUntilIso).getTime() > Date.now() : false;
+
+  const ringActive = explicitRingActive ?? explicitIsNew ?? fallbackRingActive;
+  const ringUntil =
+    ringUntilIso ??
+    toIsoOrNull(reel?.new_until ?? reel?.newUntil) ??
+    null;
+  const isNew = explicitIsNew ?? ringActive;
+  const newUntil =
+    toIsoOrNull(reel?.new_until ?? reel?.newUntil ?? ringUntil) ??
+    ringUntil;
+
+  return {
+    ringActive,
+    ringUntil,
+    isNew,
+    newUntil,
+  };
+};
+
+const buildReelUpdatedRealtimePayload = (rawReel: any, fallbackOwnerIdRaw: any) => {
+  const reel = toPlainObject(rawReel) ?? {};
+  const reelId = Number(reel?.id ?? reel?.reelId ?? reel?.reel_id ?? 0);
+  if (!Number.isFinite(reelId) || reelId <= 0) return null;
+
+  const ownerId = Number(
+    reel?.user?.id ?? reel?.userId ?? reel?.user_id ?? fallbackOwnerIdRaw ?? 0
+  );
+  const freshness = normalizeReelFreshnessState(reel);
+  const normalizedReel = {
+    ...reel,
+    ring_active: freshness.ringActive,
+    ringActive: freshness.ringActive,
+    ring_until: freshness.ringUntil,
+    ringUntil: freshness.ringUntil,
+    is_new: freshness.isNew,
+    isNew: freshness.isNew,
+    new_until: freshness.newUntil,
+    newUntil: freshness.newUntil,
+  };
+
+  return {
+    action: "updated",
+    reelId,
+    reel_id: reelId,
+    ownerId: Number.isFinite(ownerId) && ownerId > 0 ? ownerId : 0,
+    owner_id: Number.isFinite(ownerId) && ownerId > 0 ? ownerId : 0,
+    ring_active: freshness.ringActive,
+    ringActive: freshness.ringActive,
+    ring_until: freshness.ringUntil,
+    ringUntil: freshness.ringUntil,
+    is_new: freshness.isNew,
+    isNew: freshness.isNew,
+    new_until: freshness.newUntil,
+    newUntil: freshness.newUntil,
+    reel: normalizedReel,
+  };
+};
+
+const emitReelUpdatedRealtime = (rawReel: any, fallbackOwnerIdRaw: any) => {
+  const payload = buildReelUpdatedRealtimePayload(rawReel, fallbackOwnerIdRaw);
+  if (!payload) return;
+  socket.emit("reel/updated", payload);
 };
 
 export const toggle_reel_star = async (req: Request, res: Response) => {
@@ -73,6 +173,7 @@ export const toggle_reel_star = async (req: Request, res: Response) => {
         );
       }
     }
+    emitReelUpdatedRealtime((result as any)?.reel, ownerUserId || actorUserId);
 
     return formatResponse({
       res,
@@ -132,6 +233,7 @@ export const save_reel = async (req: Request, res: Response) => {
         );
       }
     }
+    emitReelUpdatedRealtime((result as any)?.reel, ownerUserId || actorUserId);
 
     return formatResponse({
       res,
@@ -163,6 +265,7 @@ export const unsave_reel = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
+    emitReelUpdatedRealtime((result as any)?.reel, req.userId);
 
     return formatResponse({
       res,
@@ -196,6 +299,7 @@ export const record_reel_view = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
+    emitReelUpdatedRealtime((result as any)?.reel, req.userId);
 
     return formatResponse({
       res,
@@ -226,6 +330,7 @@ export const share_reel = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
+    emitReelUpdatedRealtime((result as any)?.reel, req.userId);
 
     return formatResponse({
       res,

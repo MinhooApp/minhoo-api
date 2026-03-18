@@ -62,6 +62,34 @@ const resolveTargetUserId = (idRaw: any, requesterIdRaw: any) => {
   return { ok: true as const, id: Math.trunc(requesterId) };
 };
 
+const normalizeCursor = (cursorRaw: any) => {
+  if (cursorRaw === undefined || cursorRaw === null || String(cursorRaw).trim().length === 0) {
+    return null;
+  }
+  const value = Number(cursorRaw);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.trunc(value);
+};
+
+const normalizeSummaryLimit = (limitRaw: any, fallback = 20, max = 20) => {
+  const parsed = Number(limitRaw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(Math.trunc(parsed), 1), max);
+};
+
+const resolveNextCursor = (items: any[], limit: number) => {
+  if (!Array.isArray(items) || items.length < limit) return null;
+  const last = items[items.length - 1];
+  const cursor = Number((last as any)?.cursor_id ?? 0);
+  return Number.isFinite(cursor) && cursor > 0 ? Math.trunc(cursor) : null;
+};
+
+const setPagingHeaders = (res: Response, limit: number, cursor: number | null, nextCursor: number | null) => {
+  res.set("X-Paging-Limit", String(limit));
+  res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
+  res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
+};
+
 const normalizeSavedCounter = (value: any) => {
   const n = Number(value);
   if (!Number.isFinite(n) || n < 0) return 0;
@@ -403,27 +431,22 @@ export const follows = async (req: Request, res: Response) => {
     const targetId = targetResolution.id;
     const summary = isSummaryMode((req.query as any)?.summary);
     if (summary) {
-      const cursorRaw = (req.query as any)?.cursor;
-      const limitRaw = (req.query as any)?.limit;
-      const limit = limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : 20;
-      const cursor = cursorRaw ? Number(cursorRaw) : null;
+      const cursor = normalizeCursor((req.query as any)?.cursor);
+      const limit = normalizeSummaryLimit((req.query as any)?.limit, 20, 20);
       const items = await followerRepo.listFollowingSummary(targetId, req.userId ?? null, {
         cursor,
         limit,
       });
       await enrichFollowUsersWithOrbitState(items, req.userId);
-      const nextCursor =
-        items.length >= limit
-          ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
-          : null;
-      res.set("X-Paging-Limit", String(limit));
-      res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
-      res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
+      const normalized = items.map((entry: any) => toFollowSummary(entry));
+      const nextCursor = resolveNextCursor(items, limit);
+      setPagingHeaders(res, limit, cursor, nextCursor);
       return formatResponse({
         res,
         success: true,
         body: {
-          following: items.map((entry: any) => toFollowSummary(entry)),
+          following: normalized,
+          follows: normalized,
           paging: { next_cursor: nextCursor, limit },
         },
       });
@@ -458,27 +481,21 @@ export const followers = async (req: Request, res: Response) => {
     const targetId = targetResolution.id;
     const summary = isSummaryMode((req.query as any)?.summary);
     if (summary) {
-      const cursorRaw = (req.query as any)?.cursor;
-      const limitRaw = (req.query as any)?.limit;
-      const limit = limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : 20;
-      const cursor = cursorRaw ? Number(cursorRaw) : null;
+      const cursor = normalizeCursor((req.query as any)?.cursor);
+      const limit = normalizeSummaryLimit((req.query as any)?.limit, 20, 20);
       const items = await followerRepo.listFollowersSummary(targetId, req.userId ?? null, {
         cursor,
         limit,
       });
       await enrichFollowUsersWithOrbitState(items, req.userId);
-      const nextCursor =
-        items.length >= limit
-          ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
-          : null;
-      res.set("X-Paging-Limit", String(limit));
-      res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
-      res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
+      const normalized = items.map((entry: any) => toFollowSummary(entry));
+      const nextCursor = resolveNextCursor(items, limit);
+      setPagingHeaders(res, limit, cursor, nextCursor);
       return formatResponse({
         res,
         success: true,
         body: {
-          followers: items.map((entry: any) => toFollowSummary(entry)),
+          followers: normalized,
           paging: { next_cursor: nextCursor, limit },
         },
       });
@@ -630,9 +647,9 @@ export const get_username = async (req: Request, res: Response) => {
 export const followers_v2 = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const cursorRaw = (req.query as any)?.cursor;
-    const limitRaw = (req.query as any)?.limit;
     const targetId = Number(id ?? req.userId);
+    const cursor = normalizeCursor((req.query as any)?.cursor);
+    const limit = normalizeSummaryLimit((req.query as any)?.limit, 20, 20);
 
     if (!Number.isFinite(targetId)) {
       return formatResponse({
@@ -644,12 +661,22 @@ export const followers_v2 = async (req: Request, res: Response) => {
     }
 
     const items = await followerRepo.listFollowersWithFlags(targetId, req.userId ?? null, {
-      cursor: cursorRaw ? Number(cursorRaw) : null,
-      limit: limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : undefined,
+      cursor,
+      limit,
     });
     await enrichFollowUsersWithOrbitState(items, req.userId);
+    const normalized = items.map((entry: any) => ({ ...toFollowSummary(entry), ...entry }));
+    const nextCursor = resolveNextCursor(items, limit);
+    setPagingHeaders(res, limit, cursor, nextCursor);
 
-    return formatResponse({ res, success: true, body: { followers: items } });
+    return formatResponse({
+      res,
+      success: true,
+      body: {
+        followers: normalized,
+        paging: { next_cursor: nextCursor, limit },
+      },
+    });
   } catch (error) {
     console.error("[user/followers_v2] failed", error);
     return formatResponse({
@@ -664,9 +691,9 @@ export const followers_v2 = async (req: Request, res: Response) => {
 export const following_v2 = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const cursorRaw = (req.query as any)?.cursor;
-    const limitRaw = (req.query as any)?.limit;
     const targetId = Number(id ?? req.userId);
+    const cursor = normalizeCursor((req.query as any)?.cursor);
+    const limit = normalizeSummaryLimit((req.query as any)?.limit, 20, 20);
 
     if (!Number.isFinite(targetId)) {
       return formatResponse({
@@ -678,12 +705,23 @@ export const following_v2 = async (req: Request, res: Response) => {
     }
 
     const items = await followerRepo.listFollowingWithFlags(targetId, req.userId ?? null, {
-      cursor: cursorRaw ? Number(cursorRaw) : null,
-      limit: limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : undefined,
+      cursor,
+      limit,
     });
     await enrichFollowUsersWithOrbitState(items, req.userId);
+    const normalized = items.map((entry: any) => ({ ...toFollowSummary(entry), ...entry }));
+    const nextCursor = resolveNextCursor(items, limit);
+    setPagingHeaders(res, limit, cursor, nextCursor);
 
-    return formatResponse({ res: res, success: true, body: { following: items } });
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        following: normalized,
+        follows: normalized,
+        paging: { next_cursor: nextCursor, limit },
+      },
+    });
   } catch (error) {
     console.error("[user/following_v2] failed", error);
     return formatResponse({

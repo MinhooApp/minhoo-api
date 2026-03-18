@@ -1,8 +1,11 @@
 import { Request, Response, formatResponse, sendNotification } from "../_module/module";
 import {
   buildMessagePayload,
+  mergePayloadWithE2eMetadata,
+  hasE2eMetadata,
   hydrateContactMetadata,
   normalizeClientMessageId,
+  resolveClientMessageIdFromRequest,
   toInt,
 } from "../../chat/add/add";
 import * as repository from "../../../repository/group/group_chat_repository";
@@ -53,21 +56,17 @@ export const send_group_message = async (req: Request, res: Response) => {
     }
 
     const messagePayload = payloadResult.payload;
-    const rawClientMessageId =
-      (req.body as any)?.clientMessageId ?? (req.body as any)?.client_message_id;
-    const hasClientMessageId =
-      rawClientMessageId !== undefined &&
-      rawClientMessageId !== null &&
-      String(rawClientMessageId).trim() !== "";
-    const clientMessageId = normalizeClientMessageId(rawClientMessageId);
-    if (hasClientMessageId && !clientMessageId) {
+    const resolvedClientMessageId = resolveClientMessageIdFromRequest(req as any);
+    if (!resolvedClientMessageId.ok) {
       return formatResponse({
         res,
         success: false,
-        code: 400,
-        message: "clientMessageId is invalid",
+        code: resolvedClientMessageId.code,
+        message: resolvedClientMessageId.message,
       });
     }
+    const clientMessageId = resolvedClientMessageId.clientMessageId;
+    const clientMessageIdSource = resolvedClientMessageId.source;
     if (clientMessageId) {
       (messagePayload as any).clientMessageId = clientMessageId;
     }
@@ -84,7 +83,10 @@ export const send_group_message = async (req: Request, res: Response) => {
           message: "contact is invalid. Send a valid contact.user_id",
         });
       }
-      messagePayload.metadata = hydratedContact as any;
+      messagePayload.metadata = mergePayloadWithE2eMetadata(
+        hydratedContact as any,
+        (messagePayload as any).metadata ?? null
+      ) as any;
     }
 
     const replyToMessageId =
@@ -151,7 +153,12 @@ export const send_group_message = async (req: Request, res: Response) => {
     const groupNameRaw = String((created as any)?.group?.name ?? "").trim();
     const groupAvatarUrlRaw = String((created as any)?.group?.avatarUrl ?? "").trim();
     const groupLabel = groupNameRaw || `Group ${groupId}`;
-    const previewRaw = String(payloadResult.notificationPreview ?? "").trim();
+    const encryptedMessage = hasE2eMetadata(
+      (serializedMessage as any)?.metadata ?? (messagePayload as any)?.metadata
+    );
+    const previewRaw = encryptedMessage
+      ? "🔐 Encrypted message"
+      : String(payloadResult.notificationPreview ?? "").trim();
     const preview = previewRaw.length > 60 ? `${previewRaw.slice(0, 60)}...` : previewRaw;
     const notificationBody = preview
       ? `${groupLabel}: ${preview}`
@@ -160,6 +167,10 @@ export const send_group_message = async (req: Request, res: Response) => {
       String((serializedMessage as any)?.senderName ?? "").trim() ||
       String((serializedMessage as any)?.sender_name ?? "").trim() ||
       "New message";
+    const responseClientMessageId =
+      normalizeClientMessageId(
+        (serializedMessage as any)?.clientMessageId ?? (serializedMessage as any)?.client_message_id
+      ) ?? clientMessageId;
     const normalizedChatId = Number(created.chatId);
     const createdMessageId = Number((serializedMessage as any)?.id ?? 0) || undefined;
 
@@ -198,6 +209,13 @@ export const send_group_message = async (req: Request, res: Response) => {
         group_id: groupId,
         chat_id: normalizedChatId,
         message: serializedMessage,
+        deduplicated: wasDeduplicated,
+        clientMessageId: responseClientMessageId,
+        client_message_id: responseClientMessageId,
+        idempotencyKey: responseClientMessageId,
+        idempotency_key: responseClientMessageId,
+        idempotencySource: clientMessageIdSource,
+        idempotency_source: clientMessageIdSource,
       },
     });
   } catch (error) {
