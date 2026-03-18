@@ -15,6 +15,7 @@
 - Logs in owner/viewer automatically and injects runtime tokens/env for each test.
 - Adds cooldown pauses between tests.
 - Retries known flaky tests by default (`chat`, `profile:saved-state`, `orbit:comment-realtime`).
+- Includes locale regression for notifications (`test:notification:locale`).
 - Prints a final pass/fail summary and exits with code `1` if any test fails.
 
 ## Optional env vars
@@ -44,8 +45,8 @@ npm run test:realtime:suite:ci -- --bail
 - Workflow file:
   - `.github/workflows/realtime-suite.yml`
 - Triggers:
-  - `push`
-  - `pull_request`
+  - `push` (`main`, `server`)
+  - `pull_request` (target `main`, `server`)
   - `workflow_dispatch`
 
 ### GitHub Secrets required
@@ -73,7 +74,7 @@ Optional:
   - `Require a pull request before merging`
   - `Require status checks to pass before merging`
 - Select the check:
-  - `Realtime Stable Suite`
+  - `Realtime Stable Suite / Realtime Stable Suite`
 
 ### Block deploy if tests fail
 
