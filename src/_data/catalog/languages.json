@@ -1,0 +1,22 @@
+[
+  { "id": 1, "name": "English", "native_name": "English", "iso_code": "en" },
+  { "id": 2, "name": "Mandarin Chinese", "native_name": "中文", "iso_code": "zh" },
+  { "id": 3, "name": "Hindi", "native_name": "हिन्दी", "iso_code": "hi" },
+  { "id": 4, "name": "Spanish", "native_name": "Español", "iso_code": "es" },
+  { "id": 5, "name": "French", "native_name": "Français", "iso_code": "fr" },
+  { "id": 6, "name": "Arabic", "native_name": "العربية", "iso_code": "ar" },
+  { "id": 7, "name": "Bengali", "native_name": "বাংলা", "iso_code": "bn" },
+  { "id": 8, "name": "Portuguese", "native_name": "Português", "iso_code": "pt" },
+  { "id": 9, "name": "Russian", "native_name": "Русский", "iso_code": "ru" },
+  { "id": 10, "name": "Urdu", "native_name": "اردو", "iso_code": "ur" },
+  { "id": 11, "name": "Indonesian", "native_name": "Bahasa Indonesia", "iso_code": "id" },
+  { "id": 12, "name": "German", "native_name": "Deutsch", "iso_code": "de" },
+  { "id": 13, "name": "Japanese", "native_name": "日本語", "iso_code": "ja" },
+  { "id": 14, "name": "Swahili", "native_name": "Kiswahili", "iso_code": "sw" },
+  { "id": 15, "name": "Marathi", "native_name": "मराठी", "iso_code": "mr" },
+  { "id": 16, "name": "Telugu", "native_name": "తెలుగు", "iso_code": "te" },
+  { "id": 17, "name": "Turkish", "native_name": "Türkçe", "iso_code": "tr" },
+  { "id": 18, "name": "Tamil", "native_name": "தமிழ்", "iso_code": "ta" },
+  { "id": 19, "name": "Vietnamese", "native_name": "Tiếng Việt", "iso_code": "vi" },
+  { "id": 20, "name": "Korean", "native_name": "한국어", "iso_code": "ko" }
+]

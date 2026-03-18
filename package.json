@@ -1,0 +1,74 @@
+{
+  "name": "minhoo",
+  "version": "1.0.0",
+  "description": "\"minhoo api\"",
+  "main": "index.js",
+  "scripts": {
+    "dev": "concurrently \"tsc -w\" \"nodemon ./dist/app.js\" ",
+    "start": "concurrently \"tsc -w\" \"node ./dist/app.js\"",
+    "build": "tsc",
+    "start:prod": "node ./dist/app.js",
+    "test:chat:realtime": "node ./scripts/test-chat-realtime.js",
+    "test:profile:follow-realtime": "node ./scripts/test-profile-follow-realtime.js",
+    "test:profile:saved-state": "node ./scripts/test-profile-saved-state.js",
+    "test:profile:orbits-route": "node ./scripts/test-profile-orbits-route.js",
+    "test:orbit:flags": "node ./scripts/test-orbit-flags-persistence.js",
+    "test:orbit:comment-notification": "node ./scripts/test-orbit-comment-notification.js",
+    "test:orbit:comment-realtime": "node ./scripts/test-orbit-comment-realtime.js",
+    "test:orbit:ring24h": "node ./scripts/test-orbit-ring-24h.js",
+    "test:orbit:find:no-consecutive-creator": "node ./scripts/test-orbit-find-no-consecutive-creator.js",
+    "test:reel:realtime-delete": "node ./scripts/test-reel-realtime-delete.js",
+    "ops:cloudflare:stream:audit": "node ./scripts/audit-cloudflare-stream.js",
+    "ops:cloudflare:stream:clean": "node ./scripts/audit-cloudflare-stream.js --delete",
+    "create-migration": "node ./node_modules/sequelize-cli/lib/sequelize migration:generate --config config/config.js --name",
+    "migration": "node ./node_modules/sequelize-cli/lib/sequelize db:migrate --config config/config.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://Raven80@bitbucket.org/hybrisoft/minhoo_api.git"
+  },
+  "keywords": [
+    "minhoo"
+  ],
+  "author": "Sergio Gil",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://bitbucket.org/hybrisoft/minhoo_api/issues"
+  },
+  "homepage": "https://bitbucket.org/hybrisoft/minhoo_api#readme",
+  "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/cors": "^2.8.15",
+    "@types/express": "^4.17.20",
+    "@types/jsonwebtoken": "^9.0.4",
+    "@types/multer": "^1.4.13",
+    "@types/node": "^20.8.10",
+    "@types/nodemailer": "^6.4.14",
+    "@types/uuid": "^9.0.7",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.18.2",
+    "mysql2": "^3.6.3",
+    "nodemon": "^3.0.1",
+    "sequelize": "^6.34.0",
+    "tsconfig-paths": "^4.2.0",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "@nestjs/platform-express": "^11.1.5",
+    "axios": "^1.7.3",
+    "bcryptjs": "^2.4.3",
+    "concurrently": "^8.2.2",
+    "firebase": "^10.12.5",
+    "firebase-admin": "^12.0.0",
+    "fs": "^0.0.1-security",
+    "jsonwebtoken": "^9.0.2",
+    "minhoo": "file:",
+    "multer": "^2.0.2",
+    "nodemailer": "^6.9.7",
+    "sequelize-cli": "^6.6.2",
+    "socket.io": "^4.7.5",
+    "socket.io-client": "^4.7.5",
+    "uuid": "^9.0.1"
+  }
+}

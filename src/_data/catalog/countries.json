@@ -1,0 +1,66 @@
+[
+  {
+    "id": 36,
+    "name": "Australia",
+    "iso2": "AU",
+    "iso3": "AUS",
+    "phone_code": "+61",
+    "flag": "AU"
+  },
+  {
+    "id": 170,
+    "name": "Colombia",
+    "iso2": "CO",
+    "iso3": "COL",
+    "phone_code": "+57",
+    "flag": "CO"
+  },
+  {
+    "id": 591,
+    "name": "Panama",
+    "iso2": "PA",
+    "iso3": "PAN",
+    "phone_code": "+507",
+    "flag": "PA"
+  },
+  {
+    "id": 840,
+    "name": "United States",
+    "iso2": "US",
+    "iso3": "USA",
+    "phone_code": "+1",
+    "flag": "US"
+  },
+  {
+    "id": 484,
+    "name": "Mexico",
+    "iso2": "MX",
+    "iso3": "MEX",
+    "phone_code": "+52",
+    "flag": "MX"
+  },
+  {
+    "id": 554,
+    "name": "New Zealand",
+    "iso2": "NZ",
+    "iso3": "NZL",
+    "phone_code": "+64",
+    "flag": "NZ"
+  },
+  {
+    "id": 724,
+    "name": "Spain",
+    "iso2": "ES",
+    "iso3": "ESP",
+    "phone_code": "+34",
+    "flag": "ES"
+  },
+  {
+    "id": 124,
+    "name": "Canada",
+    "iso2": "CA",
+    "iso3": "CAN",
+    "phone_code": "+1",
+    "flag": "CA"
+  }
+]
