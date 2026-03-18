@@ -18,6 +18,7 @@ import {
   serializeMessageToCanonical,
   serializeMessagesToCanonical,
 } from "../_shared/message_contract";
+import { createInMemoryRateLimiter } from "../../../libs/security/inmemory_rate_limiter";
 
 type ChatMessageType =
   | "text"
@@ -66,6 +67,11 @@ const VIDEO_MAX_SIZE_BYTES = 100 * 1024 * 1024;
 const DOCUMENT_MAX_SIZE_BYTES = 20 * 1024 * 1024;
 const WAVEFORM_MAX_POINTS = 256;
 const CLIENT_MESSAGE_ID_MAX_LENGTH = 128;
+const parsePositiveIntEnv = (value: any, fallback: number, min = 1): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(min, Math.trunc(parsed));
+};
 const CHAT_SEND_RESPONSE_DEFAULT_LIMIT = Math.max(
   1,
   Math.min(Number(process.env.CHAT_SEND_RESPONSE_DEFAULT_LIMIT ?? 20) || 20, 200)
@@ -74,6 +80,22 @@ const CHAT_SEND_RESPONSE_MAX_LIMIT = Math.max(
   CHAT_SEND_RESPONSE_DEFAULT_LIMIT,
   Math.min(Number(process.env.CHAT_SEND_RESPONSE_MAX_LIMIT ?? 50) || 50, 200)
 );
+const CHAT_SEND_RATE_WINDOW_MS = parsePositiveIntEnv(
+  process.env.CHAT_SEND_RATE_WINDOW_MS,
+  10_000,
+  1000
+);
+const CHAT_SEND_RATE_MAX = parsePositiveIntEnv(process.env.CHAT_SEND_RATE_MAX, 30, 1);
+const CHAT_SEND_RATE_BLOCK_MS = parsePositiveIntEnv(
+  process.env.CHAT_SEND_RATE_BLOCK_MS,
+  30_000,
+  CHAT_SEND_RATE_WINDOW_MS
+);
+const chatSendRateLimiter = createInMemoryRateLimiter({
+  windowMs: CHAT_SEND_RATE_WINDOW_MS,
+  max: CHAT_SEND_RATE_MAX,
+  blockDurationMs: CHAT_SEND_RATE_BLOCK_MS,
+});
 
 const DOCUMENT_ALLOWED_MIME_TYPES = new Set<string>([
   "application/pdf",
@@ -956,6 +978,21 @@ export const sendMessage = async (req: Request, res: Response) => {
       code: 400,
       message: "userId must be a valid id",
     });
+  }
+  const senderUserId = Number(req.userId ?? 0);
+  if (Number.isFinite(senderUserId) && senderUserId > 0) {
+    const limitResult = chatSendRateLimiter.consume(`chat:http:send:${senderUserId}`);
+    if (!limitResult.allowed) {
+      const retryAfterSeconds = Math.max(1, Math.ceil(limitResult.retryAfterMs / 1000));
+      res.setHeader("Retry-After", String(retryAfterSeconds));
+      return formatResponse({
+        res,
+        success: false,
+        code: 429,
+        islogin: true,
+        message: `Too many messages. Please retry in ${retryAfterSeconds}s.`,
+      });
+    }
   }
 
   const payloadResult = await buildMessagePayload(req.body);

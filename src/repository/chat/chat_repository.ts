@@ -11,9 +11,11 @@ import UserBlock from "../../_models/block/block";
 import { attachActiveOrbitStateToUsers } from "../reel/orbit_ring_projection";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
+const CHAT_ENABLE_HISTORY_PRUNE =
+  String(process.env.CHAT_ENABLE_HISTORY_PRUNE ?? "0").trim() === "1";
 const MAX_MESSAGES_PER_CHAT = Math.max(
   1,
-  Number(process.env.CHAT_MAX_MESSAGES_PER_CHAT ?? 20) || 20
+  Number(process.env.CHAT_MAX_MESSAGES_PER_CHAT ?? 2000) || 2000
 );
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const R2_REGION = "auto";
@@ -448,7 +450,9 @@ export const initNewChat = async (
 
   await incrementUnreadCountForChatUser(chatId, other, 1);
 
-  await pruneChatHistory(chatId, MAX_MESSAGES_PER_CHAT);
+  if (CHAT_ENABLE_HISTORY_PRUNE) {
+    await pruneChatHistory(chatId, MAX_MESSAGES_PER_CHAT);
+  }
 
   return {
     chatId,
