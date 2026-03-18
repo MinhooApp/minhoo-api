@@ -85,6 +85,41 @@ const parseOptionalString = (value: any): string | undefined => {
   return parsed ? parsed : undefined;
 };
 
+const normalizePreferredLanguage = (value: any): "es" | "en" | null | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (
+    normalized.startsWith("es") ||
+    normalized.includes("spanish") ||
+    normalized.includes("espanol") ||
+    normalized.includes("español")
+  ) {
+    return "es";
+  }
+
+  if (
+    normalized.startsWith("en") ||
+    normalized.includes("english") ||
+    normalized.includes("ingles") ||
+    normalized.includes("inglés")
+  ) {
+    return "en";
+  }
+
+  return null;
+};
+
+const extractLanguageRawFromBody = (body: any) =>
+  body?.language ??
+  body?.preferred_language ??
+  body?.preferredLanguage ??
+  body?.app_language ??
+  body?.appLanguage ??
+  body?.locale ??
+  body?.lang;
+
 const toPositiveInt = (value: any): number | null => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -241,6 +276,18 @@ export const update = async (req: Request, res: Response) => {
             : avatarUrl,
       };
 
+      const languageRaw = extractLanguageRawFromBody(req.body);
+      const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
+      if (languageRaw !== undefined && normalizedPreferredLanguage === null) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 400,
+          message: "language must be 'es' or 'en'",
+        });
+      }
+      if (normalizedPreferredLanguage) bodyUser.language = normalizedPreferredLanguage;
+
       if (hasSkills) {
         bodyUser.job_category_ids = skills;
         if ((skills ?? []).length > 0) {
@@ -339,7 +386,22 @@ export const visibleProfile = async (req: Request, res: Response) => {
     alert: alert,
   };
   try {
+    const languageRaw = extractLanguageRawFromBody(req.body);
+    const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
+    if (languageRaw !== undefined && normalizedPreferredLanguage === null) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 400,
+        message: "language must be 'es' or 'en'",
+      });
+    }
+
     var worker = await repository.visibleProfile(req.userId, body);
+
+    if (normalizedPreferredLanguage) {
+      await uRepository.update(req.userId, { language: normalizedPreferredLanguage });
+    }
 
     return formatResponse({ res: res, success: true, body: { worker } });
   } catch (error) {
@@ -499,6 +561,18 @@ export const updateProfile = async (req: Request, res: Response) => {
         phone: (req.body as any)?.phone,
         image_profil: avatarBody,
       };
+
+      const languageRaw = extractLanguageRawFromBody(req.body);
+      const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
+      if (languageRaw !== undefined && normalizedPreferredLanguage === null) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 400,
+          message: "language must be 'es' or 'en'",
+        });
+      }
+      if (normalizedPreferredLanguage) bodyUser.language = normalizedPreferredLanguage;
 
       const hasSkills =
         Object.prototype.hasOwnProperty.call(req.body, "skills") ||

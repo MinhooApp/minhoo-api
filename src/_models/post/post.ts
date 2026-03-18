@@ -36,12 +36,10 @@ Post.init(
         post: {
             type: DataTypes.TEXT,
             allowNull: false,
+            defaultValue: "",
             validate: {
                 notNull: {
                     msg: "The field 'post' can't be null",
-                },
-                notEmpty: {
-                    msg: "The field 'post' can't be empty",
                 },
             },
         },

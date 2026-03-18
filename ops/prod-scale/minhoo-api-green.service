@@ -1,0 +1,23 @@
+[Unit]
+Description=Minhoo API (Node.js) - Green
+After=network-online.target mysql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=appuser
+Group=appuser
+WorkingDirectory=/var/www/minhoo-api/minhoo_api
+EnvironmentFile=/var/www/minhoo-api/minhoo_api/.env.green
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/dist/app.js
+Restart=always
+RestartSec=3
+KillSignal=SIGINT
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

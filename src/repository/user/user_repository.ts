@@ -499,8 +499,19 @@ export const followers = async (id: any, meId: any = -1) => {
   return followers;
 };
 
-/* 🔹 Devuelve UUID push para usuarios activos con alertas */
-export const getUuid = async (id: number) => {
+type PushSettings = {
+  uuid: string;
+  language: string | null;
+  language_codes: string[];
+  language_names: string[];
+};
+
+const toStringArray = (value: any): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value.map((item: any) => String(item ?? "").trim()).filter(Boolean);
+};
+
+export const getPushSettings = async (id: number): Promise<PushSettings> => {
   const user = await User.findOne({
     where: {
       id,
@@ -510,10 +521,22 @@ export const getUuid = async (id: number) => {
       is_deleted: false,
       uuid: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] },
     },
-    attributes: ["uuid"],
+    attributes: ["uuid", "language", "language_codes", "language_names"],
     raw: true,
   });
-  return String((user as any)?.uuid ?? "").trim();
+
+  return {
+    uuid: String((user as any)?.uuid ?? "").trim(),
+    language: ((user as any)?.language ?? null) as string | null,
+    language_codes: toStringArray((user as any)?.language_codes),
+    language_names: toStringArray((user as any)?.language_names),
+  };
+};
+
+/* 🔹 Devuelve UUID push para usuarios activos con alertas */
+export const getUuid = async (id: number) => {
+  const pushSettings = await getPushSettings(id);
+  return pushSettings.uuid;
 };
 
 /* 🔹 Verifica duplicado por teléfono */

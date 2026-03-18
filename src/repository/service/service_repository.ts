@@ -6,6 +6,8 @@ import Service_Worker from "../../_models/service/service_worker";
 import Worker from "../../_models/worker/worker";
 import User from "../../_models/user/user";
 import ServiceReport from "../../_models/service/service_report";
+import Category from "../../_models/category/category";
+import StatusService from "../../_models/status/statusService";
 import { autoDisableUserByImpersonationReports } from "../user/user_repository";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
@@ -37,6 +39,24 @@ const pagination = (page: any = 0, size: any = 10) => {
   return { limit: safeLimit, offset: safePage * safeLimit };
 };
 
+const serviceSummaryInclude = [
+  {
+    model: User,
+    as: "client",
+    attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
+  },
+  {
+    model: StatusService,
+    as: "status",
+    attributes: ["id", "status", "description"],
+  },
+  {
+    model: Category,
+    as: "category",
+    attributes: ["id", "name", "es_name"],
+  },
+] as const;
+
 export const add = async (body: any) => {
   const service = await Service.create(body);
   return Service.findByPk(service.id, {
@@ -50,6 +70,27 @@ export const gets = async () => {
     where: { is_available: true },
     include: serviceInclude,
     order: [["service_date", "DESC"]],
+  });
+};
+
+export const getsSummary = async (size: any = 20) => {
+  const { limit } = pagination(0, Math.min(Math.max(Number(size) || 20, 1), 20));
+  return Service.findAll({
+    where: { is_available: true },
+    attributes: [
+      "id",
+      "userId",
+      "categoryId",
+      "description",
+      "rate",
+      "currencyCode",
+      "currencyPrefix",
+      "service_date",
+      "statusId",
+    ],
+    include: serviceSummaryInclude as any,
+    order: [["service_date", "DESC"]],
+    limit,
   });
 };
 
@@ -471,5 +512,37 @@ export const reportService = async ({
       serviceId,
       ownerId,
     };
+  });
+};
+
+export const getsOnGoingSummary = async (
+  page: any = 0,
+  size: any = 10,
+  meId: any = -1
+) => {
+  const { limit, offset } = pagination(page, Math.min(Math.max(Number(size) || 10, 1), 20));
+
+  return Service.findAndCountAll({
+    where: {
+      is_available: true,
+      statusId: 1,
+      [Op.and]: [notBlockedLiteral()],
+    },
+    replacements: { meId },
+    limit,
+    offset,
+    include: serviceSummaryInclude as any,
+    order: [["service_date", "DESC"]],
+    attributes: [
+      "id",
+      "userId",
+      "categoryId",
+      "description",
+      "rate",
+      "currencyCode",
+      "currencyPrefix",
+      "service_date",
+      "statusId",
+    ],
   });
 };

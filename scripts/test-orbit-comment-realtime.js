@@ -172,6 +172,7 @@ async function main() {
     console.log(`[test] created reelId=${reelId}`);
 
     try {
+      const beforeCommentEvents = received.length;
       const commentResponse = await apiCommenter.post(`/reel/${reelId}/comments`, {
         comment: `orbit-comment-realtime-${Date.now()}`,
       });
@@ -184,12 +185,22 @@ async function main() {
 
       const startedAt = Date.now();
       while (Date.now() - startedAt < TIMEOUT_MS) {
-        const matched = received.find((entry) => toReelId(entry.payload) === reelId);
-        if (matched) break;
+        const commentEvents = received
+          .slice(beforeCommentEvents)
+          .filter((entry) => toReelId(entry.payload) === reelId);
+        const channelsSeen = new Set(commentEvents.map((entry) => entry.channel));
+        if (
+          channelsSeen.has("reel/commented") &&
+          channelsSeen.has("orbit/commented")
+        ) {
+          break;
+        }
         await new Promise((resolve) => setTimeout(resolve, 80));
       }
 
-      const matchedEvents = received.filter((entry) => toReelId(entry.payload) === reelId);
+      const matchedEvents = received
+        .slice(beforeCommentEvents)
+        .filter((entry) => toReelId(entry.payload) === reelId);
       assert(matchedEvents.length > 0, "No realtime orbit comment event received");
 
       const matchedChannels = [...new Set(matchedEvents.map((entry) => entry.channel))];

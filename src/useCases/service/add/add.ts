@@ -12,6 +12,15 @@ import {
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
+type NewServicePushTarget = {
+  token: string;
+  language?: string | null;
+  language_codes?: string[];
+  language_names?: string[];
+};
+
+type PushLocale = "en" | "es";
+
 function toPlain<T>(data: T): T {
   return JSON.parse(JSON.stringify(data));
 }
@@ -42,9 +51,100 @@ function normalizeCurrency(body: any) {
   }
 }
 
+const normalizePushLocale = (raw: any): PushLocale | null => {
+  const normalized = String(raw ?? "").trim().toLowerCase();
+  if (!normalized) return null;
+
+  if (
+    normalized.startsWith("es") ||
+    normalized.includes("spanish") ||
+    normalized.includes("espanol") ||
+    normalized.includes("español")
+  ) {
+    return "es";
+  }
+
+  if (
+    normalized.startsWith("en") ||
+    normalized.includes("english") ||
+    normalized.includes("ingles") ||
+    normalized.includes("inglés")
+  ) {
+    return "en";
+  }
+
+  return null;
+};
+
+const firstDetectedLocale = (values: any[]): PushLocale | null => {
+  for (const value of values) {
+    const detected = normalizePushLocale(value);
+    if (detected) return detected;
+  }
+  return null;
+};
+
+const resolveTargetLocale = (target: NewServicePushTarget): PushLocale => {
+  const fromLanguage = normalizePushLocale(target?.language);
+  if (fromLanguage) return fromLanguage;
+
+  const fromCodes = firstDetectedLocale(Array.isArray(target?.language_codes) ? target.language_codes : []);
+  if (fromCodes) return fromCodes;
+
+  const fromNames = firstDetectedLocale(Array.isArray(target?.language_names) ? target.language_names : []);
+  if (fromNames) return fromNames;
+
+  return "en";
+};
+
+const localizeNewServiceTitle = (locale: PushLocale) =>
+  locale === "es" ? "Nuevo servicio publicado" : "New Service Posted";
+
+const sendNewServicePushByLocale = async (
+  targets: NewServicePushTarget[],
+  notificationId: number | string
+) => {
+  const grouped: Record<PushLocale, string[]> = { en: [], es: [] };
+
+  for (const target of targets) {
+    const token = String(target?.token ?? "").trim();
+    if (!token) continue;
+    const locale = resolveTargetLocale(target);
+    grouped[locale].push(token);
+  }
+
+  const jobs: Promise<any>[] = [];
+  if (grouped.es.length > 0) {
+    jobs.push(
+      sendPushToMultipleUsers(
+        localizeNewServiceTitle("es"),
+        "  ",
+        "newService",
+        notificationId,
+        grouped.es
+      )
+    );
+  }
+  if (grouped.en.length > 0) {
+    jobs.push(
+      sendPushToMultipleUsers(
+        localizeNewServiceTitle("en"),
+        "  ",
+        "newService",
+        notificationId,
+        grouped.en
+      )
+    );
+  }
+
+  if (jobs.length > 0) {
+    await Promise.all(jobs);
+  }
+};
+
 export const add = async (req: Request, res: Response) => {
   try {
-    const tokens: string[] = await sendNotificationByNewService(
+    const pushTargets: NewServicePushTarget[] = await sendNotificationByNewService(
       req.body.categoryId,
       req.userId
     );
@@ -62,13 +162,9 @@ export const add = async (req: Request, res: Response) => {
     const safeService = toPlain(service);
 
     socket.emit("services", safeService);
-    sendPushToMultipleUsers(
-      "New Service Posted",
-      "  ",
-      "newService",
-      safeService.id,
-      tokens
-    );
+    void sendNewServicePushByLocale(pushTargets, safeService.id).catch((pushError) => {
+      console.log("[service][newServicePush] skipped", pushError);
+    });
 
     return formatResponse({ res: res, success: true, body: { service: safeService } });
   } catch (error: any) {
@@ -170,11 +266,11 @@ export const searchAddress = async (req: Request, res: Response) => {
 };
 
 const sendNotificationByNewService = async (categoryId: number, userId: any) => {
-  const tokens: string[] = await workerRepository.tokensByNewService(
+  const targets = await workerRepository.pushTargetsByNewService(
     categoryId,
     userId
   );
-  return tokens;
+  return targets;
 };
 
 export const sendTestNotification = async (req: Request, res: Response) => {

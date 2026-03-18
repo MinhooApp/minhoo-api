@@ -605,11 +605,13 @@ async function validateSocketSession(socket: Socket): Promise<boolean> {
 
   const user = await User.findOne({
     where: { id: socketUserId },
-    attributes: ["id", "available", "disabled"],
+    attributes: ["id", "available", "disabled", "auth_token"],
     raw: true,
   });
   if (!user) return false;
   if (!(user as any).available || Boolean((user as any).disabled)) return false;
+  const storedAuthToken = normalizeToken((user as any).auth_token);
+  if (!storedAuthToken || storedAuthToken !== authToken) return false;
 
   (socket.data as any).sessionValidated = true;
   (socket.data as any).sessionValidatedAt = now;
@@ -1544,8 +1546,22 @@ export const socketController = (socket: Socket) => {
         return;
       }
 
-      const msg: any = await Message.findByPk(messageId);
+      const msg: any = await Message.findByPk(messageId, {
+        attributes: ["id", "chatId", "senderId", "text", "reactions"],
+      });
       if (!msg) return;
+      if (Number(msg.chatId) !== chatId) {
+        console.log(
+          `[socket] chat:reaction rejected message mismatch chatId=${chatId} messageId=${messageId} realChatId=${Number(msg.chatId)} socket=${socket.id} userId=${userId}`
+        );
+        socket.emit("auth:error", {
+          event: "chat:reaction",
+          code: "FORBIDDEN_MESSAGE",
+          chatId,
+          messageId,
+        });
+        return;
+      }
 
       const current = normalizeReactions(msg.reactions);
       let shouldNotify = false;

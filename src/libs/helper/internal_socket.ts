@@ -14,10 +14,14 @@ const resolveInternalSocketUrl = (): string => {
 const buildSocket = (url: string): Socket => {
   const socket = io(url, {
     transports: ["websocket", "polling"],
+    upgrade: true,
+    rememberUpgrade: true,
     reconnection: true,
     reconnectionAttempts: Infinity,
-    reconnectionDelay: 300,
-    timeout: 5000,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 10000,
+    randomizationFactor: 0.5,
+    timeout: 20000,
     autoConnect: true,
   });
 
@@ -46,4 +50,3 @@ export const getInternalSocket = (): Socket => {
 
   return internalSocket;
 };
-
