@@ -1573,6 +1573,8 @@ export const socketController = (socket: Socket) => {
           {
             where: {
               id: messageId,
+              chatId,
+              senderId,
               status: { [Op.in]: ["sent", "delivered"] },
             },
           }
