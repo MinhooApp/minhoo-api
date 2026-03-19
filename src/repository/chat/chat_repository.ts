@@ -1792,6 +1792,33 @@ export const decrementUnreadCountForChatUser = async (
   );
 };
 
+export const resetUnreadCountForChatUser = async (
+  chatIdRaw: number,
+  userIdRaw: number
+) => {
+  const chatId = Number(chatIdRaw);
+  const userId = Number(userIdRaw);
+  if (!Number.isFinite(chatId) || chatId <= 0) return;
+  if (!Number.isFinite(userId) || userId <= 0) return;
+  if (!(await hasChatUserUnreadCountColumn())) return;
+
+  await sequelize.query(
+    `
+      UPDATE chat_user
+      SET ${CHAT_USER_UNREAD_COUNT_COLUMN} = 0
+      WHERE chatId = :chatId
+        AND userId = :userId
+    `,
+    {
+      replacements: {
+        chatId,
+        userId,
+      },
+      type: QueryTypes.UPDATE,
+    }
+  );
+};
+
 export const markMessagesAsReadBulk = async (
   messageIds: Array<number | string | null | undefined>
 ) => {

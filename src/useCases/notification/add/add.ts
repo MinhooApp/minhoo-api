@@ -1,7 +1,7 @@
 import { TypeNotification } from "_models/notification/type_notification";
 import {
   repository,
-  sendPushToSingleUser,
+  sendPushToMultipleUsers,
   userRepository,
 } from "../_module/module";
 import { emitNotificationRealtime } from "../../../libs/helper/realtime_dispatch";
@@ -41,6 +41,10 @@ interface SendNotificationParams {
 const PUSH_EMPTY_TOKEN_LOG_WINDOW_MS = Math.max(
   10_000,
   Number(process.env.PUSH_EMPTY_TOKEN_LOG_WINDOW_MS ?? 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const MIN_PUSH_TOKEN_LENGTH = Math.max(
+  20,
+  Number(process.env.PUSH_MIN_TOKEN_LENGTH ?? 100) || 100
 );
 const PUSH_LOCALE_DEBUG = String(process.env.PUSH_LOCALE_DEBUG ?? "0").trim() === "1";
 const pushEmptyTokenLogMemory = new Map<string, number>();
@@ -324,6 +328,13 @@ export const sendNotification = async (
     const now = new Date(new Date().toUTCString());
     const pushSettings = await userRepository.getPushSettings(params.userId);
     const uuid = String(pushSettings?.uuid ?? "").trim();
+    const uuids = Array.from(
+      new Set(
+        [uuid, ...(pushSettings?.uuids ?? [])]
+          .map((token) => String(token ?? "").trim())
+          .filter((token) => token.length >= MIN_PUSH_TOKEN_LENGTH)
+      )
+    );
     const pushLocale = resolvePushLocale({
       preferredLanguage: params.preferredLanguage,
       language: pushSettings?.language,
@@ -461,7 +472,7 @@ export const sendNotification = async (
       );
     }
 
-    if (!uuid) {
+    if (!uuids.length) {
       if (shouldLogMissingToken(params.userId, params.type)) {
         console.log(
           `[push] skipped missing token userId=${params.userId} type=${params.type} interactorId=${params.interactorId ?? 0}`
@@ -470,16 +481,16 @@ export const sendNotification = async (
       return;
     }
 
-    const pushResult = await sendPushToSingleUser(
+    const pushResult = await sendPushToMultipleUsers(
       pushTitle,
       pushBody,
-      uuid,
       params.type,
       getFirstAvailableId(notificationData),
+      uuids,
       extraData
     );
 
-    if (pushResult?.reason === "EMPTY_TOKEN") {
+    if ((pushResult as any)?.reason === "EMPTY_TOKEN" || (pushResult as any)?.reason === "EMPTY_TOKENS") {
       if (shouldLogMissingToken(params.userId, params.type)) {
         console.log(
           `[push] empty token userId=${params.userId} type=${params.type} interactorId=${params.interactorId ?? 0}`
@@ -487,19 +498,21 @@ export const sendNotification = async (
       }
     }
 
-    if (
-      (pushResult?.reason === "TOKEN_NOT_REGISTERED" ||
-        pushResult?.reason === "TOKEN_INVALID") &&
-      uuid
-    ) {
-      const cleared = await userRepository.clearUuidIfMatch(params.userId, uuid);
-      if (cleared > 0) {
-        console.log(
-          `🧹 UUID inválido limpiado userId=${params.userId} reason=${pushResult?.reason}`
-        );
+    const invalidTokens = Array.isArray((pushResult as any)?.invalidTokens)
+      ? (pushResult as any).invalidTokens
+      : [];
+    for (const invalidTokenRaw of invalidTokens) {
+      const invalidToken = String(invalidTokenRaw ?? "").trim();
+      if (!invalidToken) continue;
+
+      const clearedLegacy = await userRepository.clearUuidIfMatch(params.userId, invalidToken);
+      await userRepository.clearPushSessionTokenIfMatch(params.userId, invalidToken);
+
+      if (clearedLegacy > 0) {
+        console.log(`🧹 UUID inválido limpiado userId=${params.userId} reason=MULTICAST_INVALID_TOKEN`);
       } else {
         console.log(
-          `🧹 UUID inválido detectado sin limpieza userId=${params.userId} reason=${pushResult?.reason}`
+          `🧹 UUID inválido detectado sin limpieza userId=${params.userId} reason=MULTICAST_INVALID_TOKEN`
         );
       }
     }

@@ -6,6 +6,10 @@ import Category from "../../_models/category/category";
 import generarJWT from "../../libs/helper/generate_jwt";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 import Verification from "../../_models/verification/verification";
+import {
+  registerUserAuthSession,
+  revokeAuthSessionsByDeviceUuid,
+} from "../../libs/auth/user_auth_session";
 interface JWTOptions {
   userId: number | null;
   uuid: String;
@@ -124,6 +128,14 @@ export const saveToken = async ({
   roles,
   workerId,
 }: JWTOptions) => {
+  const currentUser = await User.findOne({
+    where: { id: userId },
+    attributes: ["auth_token", "uuid"],
+    raw: true,
+  });
+  const previousAuthToken = String((currentUser as any)?.auth_token ?? "").trim();
+  const previousDeviceUuid = String((currentUser as any)?.uuid ?? "").trim();
+
   ///Genero el token
   const token = await generarJWT({
     userId: userId,
@@ -143,6 +155,9 @@ export const saveToken = async ({
         },
       }
     );
+    await revokeAuthSessionsByDeviceUuid(normalizedUuid, {
+      excludeUserId: Number(userId),
+    });
   }
 
   const body: any = { auth_token: token };
@@ -154,6 +169,24 @@ export const saveToken = async ({
       available: true,
     },
   });
+
+  await registerUserAuthSession(userId, token, {
+    deviceUuid: normalizedUuid || null,
+  });
+
+  const sameDeviceTokenRotation =
+    Boolean(normalizedUuid) &&
+    Boolean(previousDeviceUuid) &&
+    previousDeviceUuid === normalizedUuid;
+  if (previousAuthToken && previousAuthToken !== token && !sameDeviceTokenRotation) {
+    const previousSessionDeviceUuid =
+      previousDeviceUuid && previousDeviceUuid !== normalizedUuid
+        ? previousDeviceUuid
+        : null;
+    await registerUserAuthSession(userId, previousAuthToken, {
+      deviceUuid: previousSessionDeviceUuid,
+    });
+  }
 
   const user = await User.findOne({
     where: { id: userId, available: true },

@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import { Transaction } from "sequelize";
 import User from "../_models/user/user";
+import { revokeAllUserAuthSessions } from "../libs/auth/user_auth_session";
 
 export async function disableUser(id: number, t?: Transaction) {
   const rotated = crypto.randomUUID();
@@ -15,6 +16,7 @@ export async function disableUser(id: number, t?: Transaction) {
   );
 
   if (!updated) return null;
+  await revokeAllUserAuthSessions(id);
   return await User.findOne({
     where: { id },
     attributes: [
@@ -44,6 +46,7 @@ export async function enableUser(id: number, t?: Transaction) {
   );
 
   if (!updated) return null;
+  await revokeAllUserAuthSessions(id);
   return await User.findOne({
     where: { id },
     attributes: [

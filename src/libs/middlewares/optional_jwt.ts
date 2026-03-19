@@ -3,6 +3,7 @@ import { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import User from "../../_models/user/user";
 import { IPayload } from "./verify_jwt";
+import { isUserAuthSessionActive } from "../auth/user_auth_session";
 
 // Extiende el tipo Request para tus campos
 declare global {
@@ -97,7 +98,11 @@ export const TokenOptional = (allowedRoles?: number[]): RequestHandler => {
       }
 
       const storedAuthToken = String((user as any).auth_token ?? "").trim();
-      if (!storedAuthToken || storedAuthToken !== token) {
+      const tokenMatchesLegacy = Boolean(storedAuthToken && storedAuthToken === token);
+      const tokenMatchesSession = tokenMatchesLegacy
+        ? true
+        : await isUserAuthSessionActive(userId, token);
+      if (!tokenMatchesSession) {
         // Token válido pero usuario no existe / no disponible -> tratar como no autenticado
         if (allowedRoles && allowedRoles.length > 0) {
           return res.status(401).json({

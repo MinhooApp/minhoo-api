@@ -11,6 +11,11 @@ import {
 import { getSocketInstance } from "../../../_sockets/socket_instance";
 import User from "../../../_models/user/user";
 import * as followerRepo from "../../../repository/follower/follower_repository";
+import {
+  revokeAllUserAuthSessions,
+  revokeAuthSessionsByDeviceUuid,
+  revokeUserAuthSessionToken,
+} from "../../../libs/auth/user_auth_session";
 
 const normalizeDeviceToken = (raw: any): string => {
   const value = String(raw ?? "").trim();
@@ -99,6 +104,21 @@ const extractPreferredLanguage = (req: Request): "es" | "en" | undefined => {
   }
 
   return undefined;
+};
+
+const normalizeAuthToken = (raw: any): string => {
+  const value = String(raw ?? "").trim();
+  if (!value) return "";
+  if (value.toLowerCase().startsWith("bearer ")) {
+    return value.slice(7).trim();
+  }
+  return value;
+};
+
+const extractBearerToken = (req: Request): string => {
+  const header = req.header("Authorization");
+  if (!header) return "";
+  return normalizeAuthToken(header);
 };
 
 export const login = async (req: Request, res: Response) => {
@@ -333,7 +353,7 @@ export const validateSesion = async (req: Request, res: Response) => {
   } catch (error) {}
 };
 
-const disconnectUserSockets = async (userId: number) => {
+const disconnectUserSockets = async (userId: number, onlyAuthToken?: string) => {
   try {
     const io = getSocketInstance();
     if (!io || !userId) return;
@@ -343,6 +363,10 @@ const disconnectUserSockets = async (userId: number) => {
     for (const namespace of namespaces) {
       const sockets = await io.of(namespace).in(userRoom).fetchSockets();
       for (const s of sockets) {
+        if (onlyAuthToken) {
+          const socketToken = normalizeAuthToken((s.data as any)?.authToken);
+          if (!socketToken || socketToken !== onlyAuthToken) continue;
+        }
         s.disconnect(true);
       }
     }
@@ -362,12 +386,27 @@ export const logout = async (req: Request, res: Response) => {
       });
     }
 
-    await uRepository.update(userId, {
-      auth_token: null,
-      uuid: null,
-    });
-
-    await disconnectUserSockets(userId);
+    const bearerToken = extractBearerToken(req);
+    if (bearerToken) {
+      await revokeUserAuthSessionToken(userId, bearerToken);
+      await User.update(
+        { auth_token: null },
+        {
+          where: {
+            id: userId,
+            auth_token: bearerToken,
+          },
+        }
+      );
+      await disconnectUserSockets(userId, bearerToken);
+    } else {
+      await revokeAllUserAuthSessions(userId);
+      await uRepository.update(userId, {
+        auth_token: null,
+        uuid: null,
+      });
+      await disconnectUserSockets(userId);
+    }
 
     return formatResponse({ res, success: true });
   } catch (error) {
@@ -404,14 +443,17 @@ export const logoutDevice = async (req: Request, res: Response) => {
       .map((u) => Number(u.id))
       .filter((id) => Number.isFinite(id) && id > 0);
 
+    await revokeAuthSessionsByDeviceUuid(rawUuid, {
+      userId: Number.isFinite(userIdRaw) && userIdRaw > 0 ? userIdRaw : null,
+    });
+
     await User.update(
-      { uuid: null, auth_token: null },
+      { uuid: null },
       { where: { uuid: rawUuid, ...(where.id ? { id: where.id } : {}) } }
     );
 
-    for (const uid of affectedUserIds) {
-      await disconnectUserSockets(uid);
-    }
+    // Evita cortar sesiones de otros dispositivos: las sesiones del device quedan revocadas.
+    void affectedUserIds;
 
     return formatResponse({ res, success: true });
   } catch (error) {

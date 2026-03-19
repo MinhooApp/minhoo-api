@@ -2,6 +2,7 @@
 import { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import User from "../../_models/user/user";
+import { isUserAuthSessionActive } from "../auth/user_auth_session";
 
 export interface IPayload {
   userId: number;
@@ -98,7 +99,7 @@ export const TokenValidation = (
       try {
         const user = await User.findOne({
           where: { id: userId, available: true },
-          attributes: ["id", "disabled", "available", "auth_token", "role"],
+          attributes: ["id", "disabled", "available", "auth_token"],
         });
 
         if (!user) {
@@ -108,11 +109,12 @@ export const TokenValidation = (
           });
         }
 
-        // Token revocado o sesión cerrada:
-        // - si auth_token está vacío => sesión inválida
-        // - si auth_token no coincide => token revocado
         const storedAuthToken = String((user as any).auth_token ?? "").trim();
-        if (!storedAuthToken || storedAuthToken !== token) {
+        const tokenMatchesLegacy = Boolean(storedAuthToken && storedAuthToken === token);
+        const tokenMatchesSession = tokenMatchesLegacy
+          ? true
+          : await isUserAuthSessionActive(userId, token);
+        if (!tokenMatchesSession) {
           return res.status(401).json({
             header: { success: false, authenticated: false },
             messages: ["Access denied, token revoked"],
@@ -127,8 +129,8 @@ export const TokenValidation = (
           });
         }
 
-        // Exponer rol “legacy” si otros middlewares lo usan
-        (req as any).userRole = (user as any).role ?? undefined;
+        // Campo legacy opcional; el control principal usa req.roles desde JWT verificado.
+        (req as any).userRole = undefined;
       } catch (_dbErr) {
         // DB caída / intermitente → no romper sesión
         (req as any).authDegraded = true;

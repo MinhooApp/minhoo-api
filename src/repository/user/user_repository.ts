@@ -10,6 +10,14 @@ import { Op, QueryTypes, Sequelize } from "sequelize";
 import sequelize from "../../_db/connection";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
+const MIN_PUSH_TOKEN_LENGTH = Math.max(
+  20,
+  Number(process.env.PUSH_MIN_TOKEN_LENGTH ?? 100) || 100
+);
+const MAX_PUSH_TOKENS_PER_USER = Math.max(
+  1,
+  Number(process.env.PUSH_MAX_TOKENS_PER_USER ?? 10) || 10
+);
 const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
 const IMPERSONATION_REPORT_DISABLE_THRESHOLD = Math.max(
   1,
@@ -501,6 +509,7 @@ export const followers = async (id: any, meId: any = -1) => {
 
 type PushSettings = {
   uuid: string;
+  uuids: string[];
   language: string | null;
   language_codes: string[];
   language_names: string[];
@@ -509,6 +518,49 @@ type PushSettings = {
 const toStringArray = (value: any): string[] => {
   if (!Array.isArray(value)) return [];
   return value.map((item: any) => String(item ?? "").trim()).filter(Boolean);
+};
+
+const normalizeDistinctPushTokens = (tokens: any[]): string[] => {
+  const normalized = (tokens ?? [])
+    .map((token) => String(token ?? "").trim())
+    .filter((token) => token.length >= MIN_PUSH_TOKEN_LENGTH);
+
+  return Array.from(new Set(normalized)).slice(0, MAX_PUSH_TOKENS_PER_USER);
+};
+
+const getPushTokensFromActiveAuthSessions = async (id: number): Promise<string[]> => {
+  const userId = Number(id);
+  if (!Number.isFinite(userId) || userId <= 0) return [];
+
+  try {
+    const rows = (await sequelize.query(
+      `
+        SELECT device_uuid AS uuid
+        FROM user_auth_sessions
+        WHERE user_id = :userId
+          AND revoked_at IS NULL
+          AND (expires_at IS NULL OR expires_at > NOW())
+          AND device_uuid IS NOT NULL
+          AND device_uuid <> ''
+        ORDER BY id DESC
+        LIMIT :limit
+      `,
+      {
+        replacements: {
+          userId,
+          limit: Math.max(MAX_PUSH_TOKENS_PER_USER * 4, MAX_PUSH_TOKENS_PER_USER),
+        },
+        type: QueryTypes.SELECT,
+      }
+    )) as Array<{ uuid?: string | null }>;
+
+    return normalizeDistinctPushTokens((rows ?? []).map((row: any) => row?.uuid));
+  } catch (error: any) {
+    if (!isMissingTableError(error)) {
+      console.log("[push] getPushTokensFromActiveAuthSessions error", error);
+    }
+    return [];
+  }
 };
 
 export const getPushSettings = async (id: number): Promise<PushSettings> => {
@@ -525,8 +577,13 @@ export const getPushSettings = async (id: number): Promise<PushSettings> => {
     raw: true,
   });
 
+  const legacyUuid = String((user as any)?.uuid ?? "").trim();
+  const sessionUuids = await getPushTokensFromActiveAuthSessions(id);
+  const uuids = normalizeDistinctPushTokens([legacyUuid, ...sessionUuids]);
+
   return {
-    uuid: String((user as any)?.uuid ?? "").trim(),
+    uuid: legacyUuid,
+    uuids,
     language: ((user as any)?.language ?? null) as string | null,
     language_codes: toStringArray((user as any)?.language_codes),
     language_names: toStringArray((user as any)?.language_names),
@@ -537,6 +594,33 @@ export const getPushSettings = async (id: number): Promise<PushSettings> => {
 export const getUuid = async (id: number) => {
   const pushSettings = await getPushSettings(id);
   return pushSettings.uuid;
+};
+
+export const clearPushSessionTokenIfMatch = async (id: number, uuid: string) => {
+  const userId = Number(id);
+  const token = String(uuid ?? "").trim();
+  if (!Number.isFinite(userId) || userId <= 0 || !token) return 0;
+
+  try {
+    await sequelize.query(
+      `
+        UPDATE user_auth_sessions
+        SET device_uuid = NULL
+        WHERE user_id = :userId
+          AND device_uuid = :token
+      `,
+      {
+        replacements: { userId, token },
+        type: QueryTypes.UPDATE,
+      }
+    );
+    return 1;
+  } catch (error: any) {
+    if (!isMissingTableError(error)) {
+      console.log("[push] clearPushSessionTokenIfMatch error", error);
+    }
+    return 0;
+  }
 };
 
 /* 🔹 Verifica duplicado por teléfono */

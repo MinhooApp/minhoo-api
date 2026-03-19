@@ -10,6 +10,11 @@ import { Op } from "sequelize";
 import jwt from "jsonwebtoken";
 import { sendNotification } from "../useCases/notification/add/add";
 import { createInMemoryRateLimiter, RateLimitResult } from "../libs/security/inmemory_rate_limiter";
+import { isUserAuthSessionActive } from "../libs/auth/user_auth_session";
+import {
+  decrementUnreadCountForChatUser,
+  resetUnreadCountForChatUser,
+} from "../repository/chat/chat_repository";
 
 type ChatStatus = "sent" | "delivered" | "read";
 
@@ -665,7 +670,11 @@ async function validateSocketSession(socket: Socket): Promise<boolean> {
   if (!user) return false;
   if (!(user as any).available || Boolean((user as any).disabled)) return false;
   const storedAuthToken = normalizeToken((user as any).auth_token);
-  if (!storedAuthToken || storedAuthToken !== authToken) return false;
+  const tokenMatchesLegacy = Boolean(storedAuthToken && storedAuthToken === authToken);
+  const tokenMatchesSession = tokenMatchesLegacy
+    ? true
+    : await isUserAuthSessionActive(socketUserId, authToken);
+  if (!tokenMatchesSession) return false;
 
   (socket.data as any).sessionValidated = true;
   (socket.data as any).sessionValidatedAt = now;
@@ -1277,6 +1286,7 @@ export const socketController = (socket: Socket) => {
           },
           attributes: ["id", "senderId", "deliveredAt"],
         });
+        let markedAsReadCount = 0;
 
         for (const item of pending as any[]) {
           const patch: any = { status: "read", readAt: now };
@@ -1290,6 +1300,7 @@ export const socketController = (socket: Socket) => {
           });
 
           if (!updatedCount) continue;
+          markedAsReadCount += Number(updatedCount) || 0;
 
           emitChatHybrid(socket, chatId, `chat/status/${chatId}`, {
             ...buildStatusPayload({
@@ -1314,6 +1325,12 @@ export const socketController = (socket: Socket) => {
           emitChatStatusWithRetryToSender(socket, senderId, chatId, statusPayload);
           emitChatsRefresh(socket, senderId);
         }
+
+        if (markedAsReadCount > 0) {
+          await decrementUnreadCountForChatUser(chatId, actorUserId, markedAsReadCount);
+        }
+        // Asegura consistencia de badge incluso si había desfase previo en contador.
+        await resetUnreadCountForChatUser(chatId, actorUserId);
 
         emitChatsRefresh(socket, actorUserId);
       })().catch((err) => console.log("❌ chat:join mark-read error", err));
@@ -1562,6 +1579,11 @@ export const socketController = (socket: Socket) => {
         );
 
         if (!updatedCount) return;
+
+        const readerUserId = roomUserIds.find((uid) => uid !== senderId) ?? 0;
+        if (readerUserId > 0) {
+          await decrementUnreadCountForChatUser(chatId, readerUserId, Number(updatedCount) || 0);
+        }
 
         emitChatHybrid(socket, chatId, `chat/status/${chatId}`, {
           ...buildStatusPayload({
@@ -1887,6 +1909,7 @@ export const socketController = (socket: Socket) => {
       });
 
       if (!updatedCount) return;
+      await decrementUnreadCountForChatUser(chatId, actorUserId, Number(updatedCount) || 0);
 
       emitChatHybrid(socket, chatId, `chat/status/${chatId}`, {
         ...buildStatusPayload({

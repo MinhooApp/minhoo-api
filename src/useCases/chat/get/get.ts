@@ -381,6 +381,9 @@ export const messages = async (req: Request, res: Response) => {
         }
       }
 
+      // Limpia cualquier desfase previo del contador al abrir la conversación.
+      await repository.resetUnreadCountForChatUser(Number(chatId), Number(req.userId));
+
       if (Number.isFinite(otherUserId) && otherUserId > 0) {
         emitChatsRefreshRealtime(otherUserId);
       }

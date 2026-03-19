@@ -201,7 +201,15 @@ export async function sendPushToMultipleUsers(
     resp.responses.forEach((r, idx) => {
       if (!r.success) {
         const code = (r.error as any)?.errorInfo?.code ?? (r.error as any)?.code;
-        if (code === "messaging/registration-token-not-registered") {
+        const details = String(
+          (r.error as any)?.errorInfo?.message ?? (r.error as any)?.message ?? ""
+        ).toLowerCase();
+        if (
+          code === "messaging/registration-token-not-registered" ||
+          code === "messaging/invalid-registration-token" ||
+          (code === "messaging/invalid-argument" &&
+            details.includes("registration token"))
+        ) {
           invalidTokens.push(cleanTokens[idx]);
         }
       }
