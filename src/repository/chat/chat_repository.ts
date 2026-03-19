@@ -67,6 +67,17 @@ let groupChatIdsInFlight: Promise<number[]> | null = null;
 let hasChatUserUnreadCountColumnCache: boolean | null = null;
 let hasChatUserUnreadCountColumnCheckedAtMs = 0;
 
+const buildChatVisibleForUserWhere = (userIdRaw: any) => {
+  const userId = Number(userIdRaw);
+  return {
+    // Chat semantics:
+    // - deletedBy = 0  => visible for both participants
+    // - deletedBy = uid => hidden only for uid
+    // - deletedBy = -1 => hidden for both participants
+    deletedBy: { [Op.notIn]: [-1, userId] },
+  };
+};
+
 const isMissingClientMessageIdColumnError = (error: any): boolean => {
   const dbCode = String(error?.original?.code ?? error?.parent?.code ?? "").trim();
   if (dbCode === "ER_BAD_FIELD_ERROR" || dbCode === "42703") return true;
@@ -1121,7 +1132,7 @@ const getLatestMessagesByChatIds = async ({
  * - no mostrar usuarios bloqueados (en ambos sentidos)
  *
  * FIXES:
- * - usa deletedBy IN (0, currentUserId) en Chat (misma lÃ³gica del resto)
+ * - usa visibilidad por usuario en Chat (oculto solo para quien borra)
  * - filtra bloqueos con replacements (sin interpolar me en string)
  */
 export const getUserChats = async (
@@ -1179,7 +1190,7 @@ export const getUserChats = async (
     include: [
       {
         model: Chat,
-        // âœ… FIX: chat visible si deletedBy = 0 o = uid (NO -1)
+        // Visible if not hidden for current user (-1 = hidden for both, uid = hidden for uid)
         where: {
           ...(groupChatIds.length
             ? {
@@ -1188,7 +1199,7 @@ export const getUserChats = async (
                 },
               }
             : {}),
-          deletedBy: { [Op.in]: [0, uid] },
+          ...buildChatVisibleForUserWhere(uid),
         },
         include: [
           {
@@ -1365,7 +1376,7 @@ export const getUserChatsSummary = async (
                 },
               }
             : {}),
-          deletedBy: { [Op.in]: [0, uid] },
+          ...buildChatVisibleForUserWhere(uid),
         },
         include: [
           {
@@ -1539,7 +1550,7 @@ export const getUserStarredChats = async ({
                 },
               }
             : {}),
-          deletedBy: { [Op.in]: [0, uid] },
+          ...buildChatVisibleForUserWhere(uid),
         },
         include: [
           {
@@ -1682,27 +1693,16 @@ export const deleteChatByMessages = async (chatId: any, currentUserId: any) => {
 
 export const deleteChat = async (chatId: any, currentUserId: any) => {
   const uid = Number(currentUserId);
-
-  await Message.update(
-    {
-      deletedBy: sequelize.literal(`
-        CASE 
-          WHEN deletedBy = 0 THEN ${uid}
-          WHEN deletedBy <> ${uid} THEN -1
-          ELSE deletedBy
-        END
-      `),
-    },
-    { where: { chatId } }
-  );
+  if (!Number.isFinite(uid) || uid <= 0) return;
 
   await Chat.update(
     {
       deletedBy: sequelize.literal(`
         CASE 
           WHEN deletedBy = 0 THEN ${uid}
-          WHEN deletedBy <> ${uid} THEN -1
-          ELSE deletedBy
+          WHEN deletedBy = ${uid} THEN ${uid}
+          WHEN deletedBy = -1 THEN -1
+          ELSE -1
         END
       `),
     },
@@ -1941,7 +1941,7 @@ const findDirectChatIdByUsers = async (
       ${hasVisibilityFilter ? "INNER JOIN chats c ON c.id = cu1.chatId" : ""}
       WHERE cu1.userId = :currentUserId
         AND cg.chatId IS NULL
-      ${hasVisibilityFilter ? "AND c.deletedBy IN (0, :visibleForUserId)" : ""}
+      ${hasVisibilityFilter ? "AND c.deletedBy NOT IN (-1, :visibleForUserId)" : ""}
       ORDER BY cu1.chatId DESC
       LIMIT 1
     `,
