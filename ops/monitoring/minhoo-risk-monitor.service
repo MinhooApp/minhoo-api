@@ -1,0 +1,13 @@
+[Unit]
+Description=Minhoo Risk Monitor (Email + Telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=appuser
+Group=appuser
+WorkingDirectory=/var/www/minhoo-api/minhoo_api
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/scripts/postdeploy-risk-watch.js
+
