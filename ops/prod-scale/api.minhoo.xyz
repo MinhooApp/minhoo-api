@@ -58,8 +58,10 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
 
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 
     location /api/socket.io/ {
@@ -74,8 +76,10 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
 
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
     }
 
     location /socket.io/ {
@@ -90,8 +94,145 @@ server {
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
 
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Chat API gets its own limiter zone so feed traffic cannot starve chat refresh/send.
+    location = /api/v1/chat {
+        limit_req zone=chat_req_per_ip burst=120 nodelay;
+        limit_conn chat_conn_per_ip 80;
+
+        proxy_pass http://minhoo_api_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
+    }
+
+    location ^~ /api/v1/chat/ {
+        limit_req zone=chat_req_per_ip burst=120 nodelay;
+        limit_conn chat_conn_per_ip 80;
+
+        proxy_pass http://minhoo_api_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
+    }
+
+    # Feed-like routes use a dedicated zone to isolate burst traffic.
+    location = /api/v1/post {
+        limit_req zone=feed_req_per_ip burst=140 nodelay;
+        limit_conn api_conn_per_ip 60;
+
+        proxy_pass http://minhoo_api_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
+    }
+
+    location ^~ /api/v1/post/ {
+        limit_req zone=feed_req_per_ip burst=140 nodelay;
+        limit_conn api_conn_per_ip 60;
+
+        proxy_pass http://minhoo_api_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
+    }
+
+    location = /api/v1/reel {
+        limit_req zone=feed_req_per_ip burst=140 nodelay;
+        limit_conn api_conn_per_ip 60;
+
+        proxy_pass http://minhoo_api_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
+    }
+
+    location ^~ /api/v1/reel/ {
+        limit_req zone=feed_req_per_ip burst=140 nodelay;
+        limit_conn api_conn_per_ip 60;
+
+        proxy_pass http://minhoo_api_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
+    }
+
+    location = /api/v1/bootstrap/home {
+        limit_req zone=feed_req_per_ip burst=140 nodelay;
+        limit_conn api_conn_per_ip 60;
+
+        proxy_pass http://minhoo_api_http;
+        proxy_http_version 1.1;
+
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_read_timeout 75s;
+        proxy_send_timeout 75s;
     }
 
     # API-specific rate limiting and connection limiting
