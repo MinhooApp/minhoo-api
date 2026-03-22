@@ -4,6 +4,10 @@ import { isSummaryMode, toReelSummary } from "../../../libs/summary_response";
 import * as userRepository from "../../../repository/user/user_repository";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
 import { formatRelativeTime } from "../../../libs/localization/relative_time";
+import {
+  loadFindSessionState,
+  saveFindSessionState,
+} from "../../../libs/cache/find_session_store";
 
 const isTruthy = (value: any) => {
   const v = String(value ?? "").trim().toLowerCase();
@@ -98,16 +102,238 @@ const toSessionKey = (req: Request) => {
     .slice(0, 40);
 };
 
+type ProfileReelCursorState = {
+  reelId: number | null;
+  videoUid: string | null;
+  updatedAt: number;
+};
+
+type ProfileFeedLockState = {
+  targetUserId: number | null;
+  updatedAt: number;
+};
+
+const PROFILE_REEL_CURSOR_TTL_MS = Math.max(
+  60_000,
+  Number(process.env.PROFILE_REEL_CURSOR_TTL_MS ?? 20 * 60 * 1000) || 20 * 60 * 1000
+);
+const PROFILE_REEL_CURSOR_TTL_SECONDS = Math.max(
+  60,
+  Math.floor(PROFILE_REEL_CURSOR_TTL_MS / 1000)
+);
+const PROFILE_REEL_CURSOR_INITIAL_STATE: ProfileReelCursorState = {
+  reelId: null,
+  videoUid: null,
+  updatedAt: 0,
+};
+const PROFILE_FEED_LOCK_TTL_MS = Math.max(
+  30_000,
+  Number(process.env.PROFILE_FEED_LOCK_TTL_MS ?? 90_000) || 90_000
+);
+const PROFILE_FEED_LOCK_TTL_SECONDS = Math.max(
+  30,
+  Math.floor(PROFILE_FEED_LOCK_TTL_MS / 1000)
+);
+const PROFILE_FEED_LOCK_INITIAL_STATE: ProfileFeedLockState = {
+  targetUserId: null,
+  updatedAt: 0,
+};
+
+const buildProfileReelCursorKey = (req: Request, targetUserId: number | null) => {
+  if (!targetUserId) return "";
+  const viewerId = normalizeUserId((req as any)?.userId) ?? 0;
+  const sessionKey = toSessionKey(req) || "anonymous";
+  return `${viewerId}:${targetUserId}:${sessionKey}`;
+};
+
+const buildProfileReelSessionKey = (key: string) =>
+  key ? `profile_reel_cursor:${key}` : "";
+
+const buildProfileFeedLockSessionKey = (key: string) =>
+  key ? `profile_feed_lock:${key}` : "";
+
+const toExplicitSessionKey = (req: Request) => {
+  const queryKey = String(
+    (req.query as any)?.session_key ?? (req.query as any)?.sessionKey ?? ""
+  ).trim();
+  const headerKey = String(req.header("x-session-key") ?? "").trim();
+  const explicit = queryKey || headerKey;
+  return explicit ? explicit.slice(0, 128) : "";
+};
+
+const toClientFingerprint = (req: Request) => {
+  const ip = String(req.ip ?? "").trim();
+  const userAgent = String(req.header("user-agent") ?? "").trim();
+  if (!ip && !userAgent) return "";
+  return crypto
+    .createHash("sha1")
+    .update(`${ip}|${userAgent}`)
+    .digest("hex")
+    .slice(0, 40);
+};
+
+const buildProfileFeedLockKeys = (req: Request) => {
+  const viewerId = normalizeUserId((req as any)?.userId);
+  const explicitSession = toExplicitSessionKey(req);
+  const fingerprint = toClientFingerprint(req);
+  const keys: string[] = [];
+
+  if (viewerId) {
+    keys.push(`${viewerId}:${explicitSession || fingerprint || "anonymous"}`);
+  }
+  if (explicitSession) {
+    keys.push(`anon_explicit:${explicitSession}`);
+  }
+  if (fingerprint) {
+    keys.push(`anon_fp:${fingerprint}`);
+  }
+
+  return [...new Set(keys.filter((key) => key.length > 0))];
+};
+
+const readProfileReelCursor = async (
+  key: string
+): Promise<ProfileReelCursorState | null> => {
+  if (!key) return null;
+  const sessionKey = buildProfileReelSessionKey(key);
+  if (!sessionKey) return null;
+  const loaded = await loadFindSessionState<ProfileReelCursorState>({
+    scope: "orbit",
+    sessionKey,
+    ttlSeconds: PROFILE_REEL_CURSOR_TTL_SECONDS,
+    initialState: PROFILE_REEL_CURSOR_INITIAL_STATE,
+  });
+  const state = loaded?.state ?? PROFILE_REEL_CURSOR_INITIAL_STATE;
+  if (!state?.reelId && !state?.videoUid) {
+    return null;
+  }
+  return state;
+};
+
+const writeProfileReelCursor = async (key: string, reel: any) => {
+  if (!key || !reel) return;
+  const sessionKey = buildProfileReelSessionKey(key);
+  if (!sessionKey) return;
+  const reelId = normalizeUserId((reel as any)?.id);
+  const videoUid = String(
+    (reel as any)?.video_uid ?? (reel as any)?.videoUid ?? ""
+  ).trim();
+  await saveFindSessionState<ProfileReelCursorState>({
+    scope: "orbit",
+    sessionKey,
+    ttlSeconds: PROFILE_REEL_CURSOR_TTL_SECONDS,
+    state: {
+      reelId: reelId ?? null,
+      videoUid: videoUid || null,
+      updatedAt: Date.now(),
+    },
+  });
+};
+
+const clearProfileReelCursor = async (key: string) => {
+  if (!key) return;
+  const sessionKey = buildProfileReelSessionKey(key);
+  if (!sessionKey) return;
+  await saveFindSessionState<ProfileReelCursorState>({
+    scope: "orbit",
+    sessionKey,
+    ttlSeconds: PROFILE_REEL_CURSOR_TTL_SECONDS,
+    state: {
+      ...PROFILE_REEL_CURSOR_INITIAL_STATE,
+      updatedAt: Date.now(),
+    },
+  });
+};
+
+const readProfileFeedLock = async (
+  key: string
+): Promise<ProfileFeedLockState | null> => {
+  if (!key) return null;
+  const sessionKey = buildProfileFeedLockSessionKey(key);
+  if (!sessionKey) return null;
+  const loaded = await loadFindSessionState<ProfileFeedLockState>({
+    scope: "orbit",
+    sessionKey,
+    ttlSeconds: PROFILE_FEED_LOCK_TTL_SECONDS,
+    initialState: PROFILE_FEED_LOCK_INITIAL_STATE,
+  });
+  const state = loaded?.state ?? PROFILE_FEED_LOCK_INITIAL_STATE;
+  if (!state?.targetUserId) return null;
+  return state;
+};
+
+const writeProfileFeedLock = async (
+  key: string,
+  targetUserId: number | null
+) => {
+  if (!key || !targetUserId) return;
+  const sessionKey = buildProfileFeedLockSessionKey(key);
+  if (!sessionKey) return;
+  await saveFindSessionState<ProfileFeedLockState>({
+    scope: "orbit",
+    sessionKey,
+    ttlSeconds: PROFILE_FEED_LOCK_TTL_SECONDS,
+    state: {
+      targetUserId,
+      updatedAt: Date.now(),
+    },
+  });
+};
+
+const clearProfileFeedLock = async (key: string) => {
+  if (!key) return;
+  const sessionKey = buildProfileFeedLockSessionKey(key);
+  if (!sessionKey) return;
+  await saveFindSessionState<ProfileFeedLockState>({
+    scope: "orbit",
+    sessionKey,
+    ttlSeconds: PROFILE_FEED_LOCK_TTL_SECONDS,
+    state: {
+      ...PROFILE_FEED_LOCK_INITIAL_STATE,
+      updatedAt: Date.now(),
+    },
+  });
+};
+
+const readProfileFeedLockForRequest = async (req: Request) => {
+  const keys = buildProfileFeedLockKeys(req);
+  if (!keys.length) return null;
+
+  const states = await Promise.all(keys.map((key) => readProfileFeedLock(key)));
+  const validStates = states.filter((state): state is ProfileFeedLockState => Boolean(state));
+  if (!validStates.length) return null;
+
+  validStates.sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  return validStates[0] ?? null;
+};
+
+const writeProfileFeedLockForRequest = async (req: Request, targetUserId: number | null) => {
+  if (!targetUserId) return;
+  const keys = buildProfileFeedLockKeys(req);
+  if (!keys.length) return;
+  await Promise.all(keys.map((key) => writeProfileFeedLock(key, targetUserId)));
+};
+
+const clearProfileFeedLockForRequest = async (req: Request) => {
+  const keys = buildProfileFeedLockKeys(req);
+  if (!keys.length) return;
+  await Promise.all(keys.map((key) => clearProfileFeedLock(key)));
+};
+
 const shouldLoopFeed = (value: any) => {
   const normalized = String(value ?? "")
     .trim()
     .toLowerCase();
-  return (
-    normalized === "1" ||
-    normalized === "true" ||
-    normalized === "yes" ||
-    normalized === "on"
-  );
+  if (!normalized) return true;
+  if (
+    normalized === "0" ||
+    normalized === "false" ||
+    normalized === "no" ||
+    normalized === "off"
+  ) {
+    return false;
+  }
+  return true;
 };
 
 const fetchFeedWithLoopFallback = async ({
@@ -211,13 +437,45 @@ export const reels_feed = async (req: Request, res: Response) => {
 
 export const reels_suggested = async (req: Request, res: Response) => {
   try {
-    const startedAtMs = nowMs();
     const page = Math.max(0, Number((req.query as any)?.page ?? 0) || 0);
     const size = Math.min(Math.max(Number((req.query as any)?.size ?? 15) || 15, 1), 20);
     const summary = isSummaryMode((req.query as any)?.summary);
     const allowLoop = shouldLoopFeed(
       (req.query as any)?.loop ?? (req.query as any)?.repeat
     );
+    const profileFeedLock = await readProfileFeedLockForRequest(req);
+    if (profileFeedLock?.targetUserId) {
+      const lockedData = await repository.listByUser(
+        String(profileFeedLock.targetUserId),
+        0,
+        size,
+        (req as any).userId,
+        { loop: true }
+      );
+      const lockedRows = Array.isArray(lockedData?.rows) ? lockedData.rows : [];
+      const profileCursorKey = buildProfileReelCursorKey(req, profileFeedLock.targetUserId);
+      if (lockedRows.length > 0) {
+        await writeProfileReelCursor(profileCursorKey, lockedRows[0]);
+      }
+
+      return formatResponse({
+        res,
+        success: true,
+        body: {
+          page: 0,
+          requestedPage: page,
+          size: lockedData?.size ?? size,
+          count: Number(lockedData?.count ?? 0),
+          looped: allowLoop,
+          reels: summary ? lockedRows.map((row: any) => toReelSummary(row)) : lockedRows,
+          profileLocked: true,
+          profileUserId: profileFeedLock.targetUserId,
+          source: "profile_lock",
+        },
+      });
+    }
+
+    const startedAtMs = nowMs();
     const { data, requestedPage, looped } = await fetchFeedWithLoopFallback({
       page,
       size,
@@ -283,9 +541,57 @@ export const my_reels = async (req: Request, res: Response) => {
 export const user_reels = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const targetUserId = normalizeUserId(id);
     const page = Math.max(0, Number((req.query as any)?.page ?? 0) || 0);
     const size = Math.min(Math.max(Number((req.query as any)?.size ?? 15) || 15, 1), 20);
-    const data = await repository.listByUser(id, page, size, (req as any).userId);
+    let afterReelId =
+      (req.query as any)?.after_reel_id ??
+      (req.query as any)?.afterReelId ??
+      (req.query as any)?.current_reel_id ??
+      (req.query as any)?.currentReelId ??
+      null;
+    let afterVideoUid =
+      (req.query as any)?.after_video_uid ??
+      (req.query as any)?.afterVideoUid ??
+      (req.query as any)?.current_video_uid ??
+      (req.query as any)?.currentVideoUid ??
+      null;
+    const loop = shouldLoopFeed(
+      (req.query as any)?.loop ?? (req.query as any)?.repeat
+    );
+    if (loop) {
+      await writeProfileFeedLockForRequest(req, targetUserId);
+    } else {
+      await clearProfileFeedLockForRequest(req);
+    }
+    const clientProvidedCursor = Boolean(
+      String(afterReelId ?? "").trim() || String(afterVideoUid ?? "").trim()
+    );
+    const profileCursorKey = buildProfileReelCursorKey(req, targetUserId);
+    if (loop && !clientProvidedCursor) {
+      const cursor = await readProfileReelCursor(profileCursorKey);
+      if (cursor?.reelId) afterReelId = cursor.reelId;
+      else if (cursor?.videoUid) afterVideoUid = cursor.videoUid;
+    }
+    let data = await repository.listByUser(id, page, size, (req as any).userId, {
+      afterReelId,
+      afterVideoUid,
+      loop,
+    });
+
+    if (loop && clientProvidedCursor && data?.cursorSupplied && data?.cursorMatched === false) {
+      const cursor = await readProfileReelCursor(profileCursorKey);
+      if (cursor?.reelId || cursor?.videoUid) {
+        const recovered = await repository.listByUser(id, page, size, (req as any).userId, {
+          afterReelId: cursor?.reelId ?? null,
+          afterVideoUid: cursor?.videoUid ?? null,
+          loop,
+        });
+        if (!recovered?.notFound && Array.isArray(recovered?.rows) && recovered.rows.length > 0) {
+          data = recovered;
+        }
+      }
+    }
 
     if (data.notFound) {
       return formatResponse({
@@ -294,6 +600,12 @@ export const user_reels = async (req: Request, res: Response) => {
         code: 404,
         message: "user not found",
       });
+    }
+
+    if (loop && Array.isArray(data?.rows) && data.rows.length > 0) {
+      await writeProfileReelCursor(profileCursorKey, data.rows[0]);
+    } else if (!loop) {
+      await clearProfileReelCursor(profileCursorKey);
     }
 
     return formatResponse({
@@ -335,7 +647,61 @@ export const reels_saved = async (req: Request, res: Response) => {
 export const reel_by_id = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
+    const profileFeedLock = await readProfileFeedLockForRequest(req);
     const reel = await repository.getById(id, (req as any).userId);
+    if (profileFeedLock?.targetUserId) {
+      const reelOwnerId =
+        normalizeUserId((reel as any)?.userId) ??
+        normalizeUserId((reel as any)?.user?.id);
+      const belongsToLockedProfile =
+        Boolean(reel) && Boolean(reelOwnerId) && reelOwnerId === profileFeedLock.targetUserId;
+
+      if (belongsToLockedProfile && reel) {
+        const profileCursorKey = buildProfileReelCursorKey(req, profileFeedLock.targetUserId);
+        await writeProfileReelCursor(profileCursorKey, reel);
+        return formatResponse({
+          res,
+          success: true,
+          body: { reel },
+        });
+      }
+
+      const profileCursorKey = buildProfileReelCursorKey(req, profileFeedLock.targetUserId);
+      const cursor = await readProfileReelCursor(profileCursorKey);
+      const recovered = await repository.listByUser(
+        String(profileFeedLock.targetUserId),
+        0,
+        1,
+        (req as any).userId,
+        {
+          afterReelId: cursor?.reelId ?? null,
+          afterVideoUid: cursor?.videoUid ?? null,
+          loop: true,
+        }
+      );
+      const fallbackReel = Array.isArray(recovered?.rows) ? recovered.rows[0] : null;
+
+      if (fallbackReel) {
+        await writeProfileReelCursor(profileCursorKey, fallbackReel);
+        return formatResponse({
+          res,
+          success: true,
+          body: {
+            reel: fallbackReel,
+            profileLockedFallback: true,
+            requestedReelId: normalizeUserId(id) ?? null,
+            profileUserId: profileFeedLock.targetUserId,
+          },
+        });
+      }
+
+      return formatResponse({
+        res,
+        success: false,
+        code: 404,
+        message: "reel not found",
+      });
+    }
 
     if (!reel) {
       return formatResponse({
