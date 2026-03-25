@@ -199,6 +199,14 @@ function normalizeReelRealtimePayload(payload: any, fallbackAction: "created" | 
   );
   const actionRaw = String(source.action ?? fallbackAction).trim().toLowerCase();
   const action = actionRaw === "updated" ? "updated" : "created";
+  const actorUserId = normalizePositiveInt(
+    source.actorUserId ??
+      source.actor_user_id ??
+      source.requestUserId ??
+      source.request_user_id ??
+      source.interactorId ??
+      source.interactor_id
+  );
   const freshness = normalizeReelFreshnessState(reelSource ?? source);
 
   const normalizedReel = reelSource
@@ -221,6 +229,8 @@ function normalizeReelRealtimePayload(payload: any, fallbackAction: "created" | 
     reel_id: reelId,
     ownerId,
     owner_id: ownerId,
+    actorUserId,
+    actor_user_id: actorUserId,
     ring_active: freshness.ringActive,
     ringActive: freshness.ringActive,
     ring_until: freshness.ringUntil,
@@ -232,6 +242,29 @@ function normalizeReelRealtimePayload(payload: any, fallbackAction: "created" | 
     reel: normalizedReel,
   };
 }
+
+const stripReelViewerFlags = (sourceRaw: any) => {
+  const source = toPlainRecord(sourceRaw);
+  if (!source) return sourceRaw;
+  const clone = { ...source };
+  delete (clone as any).is_starred;
+  delete (clone as any).isStarred;
+  delete (clone as any).is_liked;
+  delete (clone as any).isLiked;
+  delete (clone as any).is_saved;
+  delete (clone as any).isSaved;
+  return clone;
+};
+
+const buildPublicReelRealtimePayload = (normalizedRaw: any) => {
+  const normalized = toPlainRecord(normalizedRaw);
+  if (!normalized) return normalizedRaw;
+  const clone = { ...normalized };
+  if (clone.reel) {
+    clone.reel = stripReelViewerFlags(clone.reel);
+  }
+  return clone;
+};
 
 function normalizeOrbitRingUpdatedPayload(payload: any) {
   const source = payload ?? {};
@@ -580,6 +613,34 @@ function normalizePostUpdatedPayload(payload: any) {
     post: normalizedPost,
   };
 }
+
+const stripPostViewerFlags = (sourceRaw: any) => {
+  const source = toPlainRecord(sourceRaw);
+  if (!source) return sourceRaw;
+  const clone = { ...source };
+  delete (clone as any).is_liked;
+  delete (clone as any).isLiked;
+  delete (clone as any).is_saved;
+  delete (clone as any).isSaved;
+  return clone;
+};
+
+const buildPublicPostUpdatedPayload = (normalizedRaw: any) => {
+  const normalized = toPlainRecord(normalizedRaw);
+  if (!normalized) return normalizedRaw;
+
+  const clone = { ...normalized };
+  delete (clone as any).is_liked;
+  delete (clone as any).isLiked;
+  delete (clone as any).is_saved;
+  delete (clone as any).isSaved;
+
+  if (clone.post) {
+    clone.post = stripPostViewerFlags(clone.post);
+  }
+
+  return clone;
+};
 
 function normalizePostCommentDeletedPayload(payload: any) {
   const source = payload ?? {};
@@ -1355,19 +1416,41 @@ export const socketController = (socket: Socket) => {
   socket.on("post/updated", (payload: any) => {
     const normalized = normalizePostUpdatedPayload(payload);
     if (!normalized.postId) return;
+    const publicPayload = buildPublicPostUpdatedPayload(normalized);
+    const actorUserId = normalizePositiveInt(
+      normalized.actorUserId ?? normalized.actor_user_id
+    );
 
-    socket.broadcast.emit("post/updated", normalized);
-    socket.broadcast.emit("find/post/updated", normalized);
-    if (EMIT_POSTS_EVENT_ON_POST_ACTIVITY) {
-      socket.broadcast.emit("posts", normalized);
+    const emitPostUpdatedEvents = (target: {
+      emit: (event: string, payload: any) => any;
+    }, eventPayload: any) => {
+      target.emit("post/updated", eventPayload);
+      target.emit("find/post/updated", eventPayload);
+      if (EMIT_POSTS_EVENT_ON_POST_ACTIVITY) {
+        target.emit("posts", eventPayload);
+      }
+      if (
+        eventPayload?.action === "liked" ||
+        eventPayload?.action === "unliked"
+      ) {
+        target.emit("post/liked", eventPayload);
+      }
+      if (
+        eventPayload?.action === "saved" ||
+        eventPayload?.action === "unsaved"
+      ) {
+        target.emit("post/saved", eventPayload);
+      }
+    };
+
+    if (actorUserId) {
+      const actorChannel = userRoom(actorUserId);
+      emitPostUpdatedEvents(socket.nsp.to(actorChannel), normalized);
+      emitPostUpdatedEvents(socket.broadcast.except(actorChannel), publicPayload);
+      return;
     }
 
-    if (normalized.action === "liked" || normalized.action === "unliked") {
-      socket.broadcast.emit("post/liked", normalized);
-    }
-    if (normalized.action === "saved" || normalized.action === "unsaved") {
-      socket.broadcast.emit("post/saved", normalized);
-    }
+    emitPostUpdatedEvents(socket.broadcast, publicPayload);
   });
 
   socket.on("post/commented", (payload: any) => {
@@ -1406,11 +1489,29 @@ export const socketController = (socket: Socket) => {
   socket.on("reel/updated", (payload: any) => {
     const normalized = normalizeReelRealtimePayload(payload, "updated");
     if (!normalized.reelId) return;
+    const publicPayload = buildPublicReelRealtimePayload(normalized);
+    const actorUserId = normalizePositiveInt(
+      normalized.actorUserId ?? normalized.actor_user_id
+    );
 
-    socket.broadcast.emit("reel/updated", normalized);
-    socket.broadcast.emit("orbit/updated", normalized);
-    socket.broadcast.emit("find/reel/updated", normalized);
-    socket.broadcast.emit("reels", normalized);
+    if (actorUserId) {
+      const actorChannel = userRoom(actorUserId);
+      socket.nsp.to(actorChannel).emit("reel/updated", normalized);
+      socket.nsp.to(actorChannel).emit("orbit/updated", normalized);
+      socket.nsp.to(actorChannel).emit("find/reel/updated", normalized);
+      socket.nsp.to(actorChannel).emit("reels", normalized);
+
+      socket.broadcast.except(actorChannel).emit("reel/updated", publicPayload);
+      socket.broadcast.except(actorChannel).emit("orbit/updated", publicPayload);
+      socket.broadcast.except(actorChannel).emit("find/reel/updated", publicPayload);
+      socket.broadcast.except(actorChannel).emit("reels", publicPayload);
+      return;
+    }
+
+    socket.broadcast.emit("reel/updated", publicPayload);
+    socket.broadcast.emit("orbit/updated", publicPayload);
+    socket.broadcast.emit("find/reel/updated", publicPayload);
+    socket.broadcast.emit("reels", publicPayload);
   });
 
   socket.on("orbit/ring-updated", (payload: any) => {

@@ -87,7 +87,11 @@ const normalizeReelFreshnessState = (rawReel: any) => {
   };
 };
 
-const buildReelUpdatedRealtimePayload = (rawReel: any, fallbackOwnerIdRaw: any) => {
+const buildReelUpdatedRealtimePayload = (
+  rawReel: any,
+  fallbackOwnerIdRaw: any,
+  actorUserIdRaw: any
+) => {
   const reel = toPlainObject(rawReel) ?? {};
   const reelId = Number(reel?.id ?? reel?.reelId ?? reel?.reel_id ?? 0);
   if (!Number.isFinite(reelId) || reelId <= 0) return null;
@@ -95,6 +99,7 @@ const buildReelUpdatedRealtimePayload = (rawReel: any, fallbackOwnerIdRaw: any) 
   const ownerId = Number(
     reel?.user?.id ?? reel?.userId ?? reel?.user_id ?? fallbackOwnerIdRaw ?? 0
   );
+  const actorUserId = Number(actorUserIdRaw ?? 0);
   const freshness = normalizeReelFreshnessState(reel);
   const normalizedReel = {
     ...reel,
@@ -114,6 +119,8 @@ const buildReelUpdatedRealtimePayload = (rawReel: any, fallbackOwnerIdRaw: any) 
     reel_id: reelId,
     ownerId: Number.isFinite(ownerId) && ownerId > 0 ? ownerId : 0,
     owner_id: Number.isFinite(ownerId) && ownerId > 0 ? ownerId : 0,
+    actorUserId: Number.isFinite(actorUserId) && actorUserId > 0 ? actorUserId : 0,
+    actor_user_id: Number.isFinite(actorUserId) && actorUserId > 0 ? actorUserId : 0,
     ring_active: freshness.ringActive,
     ringActive: freshness.ringActive,
     ring_until: freshness.ringUntil,
@@ -126,8 +133,16 @@ const buildReelUpdatedRealtimePayload = (rawReel: any, fallbackOwnerIdRaw: any) 
   };
 };
 
-const emitReelUpdatedRealtime = (rawReel: any, fallbackOwnerIdRaw: any) => {
-  const payload = buildReelUpdatedRealtimePayload(rawReel, fallbackOwnerIdRaw);
+const emitReelUpdatedRealtime = (
+  rawReel: any,
+  fallbackOwnerIdRaw: any,
+  actorUserIdRaw: any
+) => {
+  const payload = buildReelUpdatedRealtimePayload(
+    rawReel,
+    fallbackOwnerIdRaw,
+    actorUserIdRaw
+  );
   if (!payload) return;
   socket.emit("reel/updated", payload);
 };
@@ -173,7 +188,11 @@ export const toggle_reel_star = async (req: Request, res: Response) => {
         );
       }
     }
-    emitReelUpdatedRealtime((result as any)?.reel, ownerUserId || actorUserId);
+    emitReelUpdatedRealtime(
+      (result as any)?.reel,
+      ownerUserId || actorUserId,
+      actorUserId
+    );
 
     return formatResponse({
       res,
@@ -233,7 +252,11 @@ export const save_reel = async (req: Request, res: Response) => {
         );
       }
     }
-    emitReelUpdatedRealtime((result as any)?.reel, ownerUserId || actorUserId);
+    emitReelUpdatedRealtime(
+      (result as any)?.reel,
+      ownerUserId || actorUserId,
+      actorUserId
+    );
 
     return formatResponse({
       res,
@@ -265,7 +288,7 @@ export const unsave_reel = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
-    emitReelUpdatedRealtime((result as any)?.reel, req.userId);
+    emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId);
 
     return formatResponse({
       res,
@@ -299,7 +322,7 @@ export const record_reel_view = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
-    emitReelUpdatedRealtime((result as any)?.reel, req.userId);
+    emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId);
 
     return formatResponse({
       res,
@@ -330,7 +353,7 @@ export const share_reel = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
-    emitReelUpdatedRealtime((result as any)?.reel, req.userId);
+    emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId);
 
     return formatResponse({
       res,
