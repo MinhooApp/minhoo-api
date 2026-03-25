@@ -16,8 +16,16 @@ export const add = async (req: Request, res: Response) => {
     req.body.offer_date = now;
     const offer = await repository.add(body);
     const response = await repository.get(offer.id);
-
-    socket.emit("offers", offer);
+    socket.emit("offers", {
+      action: "created",
+      serviceId: Number(offer?.serviceId ?? body?.serviceId ?? 0),
+      ownerUserId: Number(response?.service?.userId ?? 0),
+      offerId: Number(offer?.id ?? 0),
+      workerId: Number(offer?.workerId ?? body?.workerId ?? 0),
+      offer: response ?? offer,
+      service: response?.service ?? null,
+      updatedAt: new Date().toISOString(),
+    });
     await sendNotification({
       userId: response!.service.userId,
       interactorId: req.userId,

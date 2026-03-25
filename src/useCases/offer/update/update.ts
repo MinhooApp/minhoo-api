@@ -115,8 +115,16 @@ export const acceptOffer = async (req: Request, res: Response) => {
     };
     sendEmail(emailParams);
 
-    // ✅ emitir para refresco rápido (mejor enviar serviceId)
-    socket.emit("offers", { serviceId: offer.serviceId });
+    // ✅ emitir para refresco en tiempo real (global + por serviceId)
+    socket.emit("offers", {
+      action: "accepted",
+      serviceId: Number(offer?.serviceId ?? 0),
+      ownerUserId: Number(tempService?.userId ?? service?.userId ?? 0),
+      offerId: Number(offer?.id ?? 0),
+      workerId: Number(offer?.workerId ?? 0),
+      service: service ?? null,
+      updatedAt: new Date().toISOString(),
+    });
 
     return formatResponse({ res, success: true, body: { service } });
   } catch (error) {
@@ -176,7 +184,15 @@ export const cancelOffer = async (req: Request, res: Response) => {
 
     const service = await serviceRepository.get(offer.serviceId);
 
-    socket.emit("offers", { serviceId: offer.serviceId });
+    socket.emit("offers", {
+      action: "canceled",
+      serviceId: Number(offer?.serviceId ?? 0),
+      ownerUserId: Number(tempService?.userId ?? service?.userId ?? 0),
+      offerId: Number(offer?.id ?? 0),
+      workerId: Number(offer?.workerId ?? req.workerId ?? 0),
+      service: service ?? null,
+      updatedAt: new Date().toISOString(),
+    });
 
     const emailParams = {
       subject: "Application canceled",

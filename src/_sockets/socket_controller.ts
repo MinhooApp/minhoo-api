@@ -1,6 +1,5 @@
 // src/_sockets/socket_controller.ts
 import { Socket } from "socket.io";
-import Offer from "../_models/offer/offer";
 import Service from "../_models/service/service";
 import Message from "../_models/chat/message";
 import Chat_User from "../_models/chat/chat_user";
@@ -636,6 +635,72 @@ function normalizeReelCommentDeletedPayload(payload: any) {
   };
 }
 
+function normalizeOfferRealtimePayload(payload: any) {
+  const source = payload ?? {};
+  const offerSource = toPlainRecord(source.offer ?? null);
+  const serviceSource = toPlainRecord(source.service ?? offerSource?.service ?? null);
+
+  const serviceId = normalizePositiveInt(
+    source.serviceId ??
+      source.service_id ??
+      source.id ??
+      offerSource?.serviceId ??
+      offerSource?.service_id ??
+      serviceSource?.id
+  );
+  const ownerUserId = normalizePositiveInt(
+    source.ownerUserId ??
+      source.owner_user_id ??
+      source.ownerId ??
+      source.owner_id ??
+      serviceSource?.userId ??
+      serviceSource?.user_id ??
+      offerSource?.service?.userId ??
+      offerSource?.service?.user_id
+  );
+  const offerId = normalizePositiveInt(
+    source.offerId ?? source.offer_id ?? offerSource?.id
+  );
+  const workerId = normalizePositiveInt(
+    source.workerId ?? source.worker_id ?? offerSource?.workerId ?? offerSource?.worker_id
+  );
+  const offersCount = normalizePositiveInt(
+    source.offersCount ?? source.offers_count
+  );
+  const actionRaw = String(source.action ?? "updated").trim().toLowerCase();
+  const action =
+    actionRaw === "created" ||
+    actionRaw === "accepted" ||
+    actionRaw === "canceled" ||
+    actionRaw === "removed" ||
+    actionRaw === "updated" ||
+    actionRaw === "finalized"
+      ? actionRaw
+      : "updated";
+  const updatedAt = normalizeDateIso(
+    source.updatedAt ?? source.updated_at ?? new Date().toISOString()
+  );
+
+  return {
+    action,
+    serviceId,
+    service_id: serviceId,
+    ownerUserId,
+    owner_user_id: ownerUserId,
+    offerId: offerId || null,
+    offer_id: offerId || null,
+    workerId: workerId || null,
+    worker_id: workerId || null,
+    offersCount: offersCount || null,
+    offers_count: offersCount || null,
+    updatedAt,
+    updated_at: updatedAt,
+    offer: offerSource ?? null,
+    service: serviceSource ?? null,
+    refreshLists: Array.isArray(source.refreshLists) ? source.refreshLists : undefined,
+  };
+}
+
 function leaveOtherChatRooms(socket: Socket, keepChatId: number) {
   const keepRoom = chatRoom(keepChatId);
   for (const room of socket.rooms) {
@@ -1260,8 +1325,24 @@ export const socketController = (socket: Socket) => {
   });
 
   ////////////////////// Offer ///////////////////////////
-  socket.on("offers", (offer: Offer) => {
-    socket.broadcast.emit(`offers/${offer.serviceId}`, offer);
+  socket.on("offers", (payload: any) => {
+    const normalized = normalizeOfferRealtimePayload(payload);
+    if (!normalized.serviceId) return;
+
+    const globalEvent = "offers";
+    const scopedEvent = `offers/${normalized.serviceId}`;
+
+    if (normalized.ownerUserId > 0) {
+      const ownerChannel = userRoom(normalized.ownerUserId);
+      socket.nsp.to(ownerChannel).emit(globalEvent, normalized);
+      socket.nsp.to(ownerChannel).emit(scopedEvent, normalized);
+      socket.broadcast.except(ownerChannel).emit(globalEvent, normalized);
+      socket.broadcast.except(ownerChannel).emit(scopedEvent, normalized);
+      return;
+    }
+
+    socket.broadcast.emit(globalEvent, normalized);
+    socket.broadcast.emit(scopedEvent, normalized);
   });
 
   ////////////////////// Post comments ///////////////////////////

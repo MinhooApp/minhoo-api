@@ -94,8 +94,16 @@ export const removeOffer = async (req: Request, res: Response) => {
 
     sendEmail(emailParams);
 
-    // ✅ emitir para refresco rápido
-    socket.emit("offers", { serviceId: offer.serviceId });
+    // ✅ emitir para refresco en tiempo real (global + por serviceId)
+    socket.emit("offers", {
+      action: "removed",
+      serviceId: Number(offer?.serviceId ?? 0),
+      ownerUserId: Number(tempService?.userId ?? service?.userId ?? 0),
+      offerId: Number(offer?.id ?? 0),
+      workerId: Number(offer?.workerId ?? 0),
+      service: service ?? null,
+      updatedAt: new Date().toISOString(),
+    });
 
     return formatResponse({
       res,
