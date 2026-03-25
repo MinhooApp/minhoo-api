@@ -1,4 +1,4 @@
-﻿import { Op, QueryTypes, Sequelize } from "sequelize";
+﻿import { Op, QueryTypes, Sequelize, UniqueConstraintError } from "sequelize";
 import { createHash, createHmac } from "crypto";
 import Chat from "../../_models/chat/chat";
 import User from "../../_models/user/user";
@@ -8,6 +8,7 @@ import Message from "../../_models/chat/message";
 import Chat_User from "../../_models/chat/chat_user";
 import Group from "../../_models/chat/group";
 import UserBlock from "../../_models/block/block";
+import ChatReport from "../../_models/chat/chat_report";
 import { attachActiveOrbitStateToUsers } from "../reel/orbit_ring_projection";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
@@ -76,6 +77,13 @@ const buildChatVisibleForUserWhere = (userIdRaw: any) => {
     // - deletedBy = -1 => hidden for both participants
     deletedBy: { [Op.notIn]: [-1, userId] },
   };
+};
+
+const isMissingTableError = (error: any): boolean => {
+  const dbCode = String(error?.original?.code ?? error?.parent?.code ?? "").trim();
+  if (dbCode === "ER_NO_SUCH_TABLE" || dbCode === "42P01") return true;
+  const message = String(error?.message ?? "").toLowerCase();
+  return message.includes("doesn't exist") || message.includes("no such table");
 };
 
 const isMissingClientMessageIdColumnError = (error: any): boolean => {
@@ -1908,6 +1916,140 @@ export const getChatParticipantUserIds = async (chatId: number): Promise<number[
     if (Number.isFinite(uid) && uid > 0) unique.add(uid);
   }
   return [...unique];
+};
+
+export const reportChat = async ({
+  chatIdRaw,
+  reporterIdRaw,
+  reason,
+  details,
+  messageIdRaw,
+}: {
+  chatIdRaw: any;
+  reporterIdRaw: any;
+  reason: string;
+  details?: string | null;
+  messageIdRaw?: any;
+}) => {
+  const chatId = Number(chatIdRaw);
+  const reporterId = Number(reporterIdRaw);
+  const messageIdNumber = Number(messageIdRaw);
+  const messageId =
+    Number.isFinite(messageIdNumber) && messageIdNumber > 0 ? Math.trunc(messageIdNumber) : null;
+
+  if (!Number.isFinite(chatId) || chatId <= 0) {
+    return { notFound: true };
+  }
+  if (!Number.isFinite(reporterId) || reporterId <= 0) {
+    return { invalidReporter: true };
+  }
+
+  const normalizedDetails = String(details ?? "").trim().slice(0, 4000) || null;
+
+  return sequelize
+    .transaction(async (transaction: any) => {
+      const chat = await Chat.findOne({
+        where: { id: chatId },
+        attributes: ["id"],
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (!chat) return { notFound: true };
+
+      const participant = await Chat_User.findOne({
+        where: { chatId, userId: reporterId },
+        attributes: ["id"],
+        transaction,
+      });
+      if (!participant) return { forbidden: true };
+
+      let messageOwnerId: number | null = null;
+      if (messageId) {
+        const message = await Message.findOne({
+          where: { id: messageId, chatId },
+          attributes: ["id", "senderId"],
+          transaction,
+          lock: transaction.LOCK.UPDATE,
+        });
+        if (!message) {
+          return { messageNotFound: true };
+        }
+
+        const senderId = Number((message as any)?.senderId ?? 0);
+        messageOwnerId = Number.isFinite(senderId) && senderId > 0 ? senderId : null;
+        if (messageOwnerId && messageOwnerId === reporterId) {
+          return { selfReport: true };
+        }
+      }
+
+      const whereMessageKey = messageId
+        ? { messageId }
+        : { messageId: { [Op.is]: null as any } };
+
+      const existing = await ChatReport.findOne({
+        where: {
+          chatId,
+          reporterId,
+          ...whereMessageKey,
+        },
+        attributes: ["id"],
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+
+      let alreadyReported = false;
+      if (!existing) {
+        try {
+          await ChatReport.create(
+            {
+              chatId,
+              messageId,
+              reporterId,
+              reason,
+              details: normalizedDetails,
+            },
+            { transaction }
+          );
+        } catch (error: any) {
+          if (error instanceof UniqueConstraintError) {
+            alreadyReported = true;
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        alreadyReported = true;
+      }
+
+      const reportsCount = await ChatReport.count({
+        where: {
+          chatId,
+          ...whereMessageKey,
+        },
+        distinct: true,
+        col: "reporterId",
+        transaction,
+      });
+
+      return {
+        notFound: false,
+        invalidReporter: false,
+        forbidden: false,
+        messageNotFound: false,
+        selfReport: false,
+        alreadyReported,
+        reportsCount: Number(reportsCount) || 0,
+        chatId,
+        messageId,
+        messageOwnerId,
+      };
+    })
+    .catch((error: any) => {
+      if (isMissingTableError(error)) {
+        return { storageMissing: true };
+      }
+      throw error;
+    });
 };
 
 // =======================================================

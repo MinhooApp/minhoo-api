@@ -6,6 +6,7 @@ import Like from "./like/like";
 import Chat from "./chat/chat";
 import Offer from "./offer/offer";
 import Message from "./chat/message";
+import ChatReport from "./chat/chat_report";
 import Group from "./chat/group";
 import GroupInvite from "./chat/group_invite";
 import GroupJoinRequest from "./chat/group_join_request";
@@ -169,6 +170,14 @@ Message.belongsTo(Chat, { as: "chat", foreignKey: "chatId" });
 //Association Message with User
 User.hasMany(Message, { as: "messages", foreignKey: "senderId" });
 Message.belongsTo(User, { as: "sender", foreignKey: "senderId" });
+
+//Association ChatReport with Chat/Message/User
+Chat.hasMany(ChatReport, { as: "chat_reports", foreignKey: "chatId" });
+ChatReport.belongsTo(Chat, { as: "chat", foreignKey: "chatId" });
+Message.hasMany(ChatReport, { as: "message_reports", foreignKey: "messageId" });
+ChatReport.belongsTo(Message, { as: "message", foreignKey: "messageId" });
+User.hasMany(ChatReport, { as: "chat_reports", foreignKey: "reporterId" });
+ChatReport.belongsTo(User, { as: "reporter_user", foreignKey: "reporterId" });
 
 //Association Group with User (owner)
 User.hasMany(Group, { as: "owned_groups", foreignKey: "ownerUserId" });

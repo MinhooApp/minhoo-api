@@ -39,8 +39,8 @@ const POST_MAX_TOPIC_STREAK = 2;
 const POST_MAX_FORMAT_STREAK = 2;
 const POST_TOPK_SHUFFLE_WINDOW = 50;
 const POST_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
-  1,
-  Number(process.env.POST_REPORT_AUTO_DELETE_THRESHOLD ?? 10) || 10
+  15,
+  Number(process.env.POST_REPORT_AUTO_DELETE_THRESHOLD ?? 15) || 15
 );
 const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
 

@@ -118,6 +118,25 @@ export const deleteComment = async (req: Request, res: Response) => {
             deletedAt,
             deleted_at: deletedAt,
         });
+        socket.emit("post/updated", {
+            action: "comment_deleted",
+            removed: true,
+            postId,
+            post_id: postId,
+            ownerId: Number(postPayload?.userId ?? 0),
+            owner_id: Number(postPayload?.userId ?? 0),
+            actorUserId,
+            actor_user_id: actorUserId,
+            commentsCount: Number(postPayload?.comments_count ?? 0),
+            comments_count: Number(postPayload?.comments_count ?? 0),
+            updatedAt: deletedAt,
+            updated_at: deletedAt,
+            post: postPayload,
+            commentId,
+            comment_id: commentId,
+            deletedAt,
+            deleted_at: deletedAt,
+        });
 
         const notifications = await notificationRepository.findActiveCommentNotifications({
             commentId,

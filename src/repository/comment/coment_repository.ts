@@ -1,7 +1,19 @@
 import Comment from "../../_models/comment/comment";
 import Post from "../../_models/post/post";
 import UserBLock from "../../_models/block/block";
-import { Op } from "sequelize";
+import CommentReport from "../../_models/comment/comment_report";
+import { Op, UniqueConstraintError } from "sequelize";
+
+const COMMENT_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
+  15,
+  Number(process.env.COMMENT_REPORT_AUTO_DELETE_THRESHOLD ?? 15) || 15
+);
+
+const isMissingTableError = (error: any) => {
+  const code = String(error?.original?.code ?? error?.code ?? "").toUpperCase();
+  const message = String(error?.original?.sqlMessage ?? error?.message ?? "").toLowerCase();
+  return code === "ER_NO_SUCH_TABLE" || message.includes("doesn't exist");
+};
 
 /**
  * Verifica si existe bloqueo entre A y B (en ambos sentidos).
@@ -75,4 +87,119 @@ export const update = async (id: any, body: any) => {
 
 export const deletecomment = async (id: any) => {
   return await Comment.update({ is_delete: true }, { where: { id } });
+};
+
+export const reportComment = async ({
+  commentIdRaw,
+  reporterIdRaw,
+  reason,
+  details,
+}: {
+  commentIdRaw: any;
+  reporterIdRaw: any;
+  reason: string;
+  details?: string | null;
+}) => {
+  const commentId = Number(commentIdRaw);
+  const reporterId = Number(reporterIdRaw);
+  if (!Number.isFinite(commentId) || commentId <= 0) {
+    return { notFound: true };
+  }
+  if (!Number.isFinite(reporterId) || reporterId <= 0) {
+    return { invalidReporter: true };
+  }
+
+  const sequelize = (Comment as any).sequelize;
+  const normalizedDetails = String(details ?? "").trim().slice(0, 4000) || null;
+
+  return sequelize
+    .transaction(async (transaction: any) => {
+      const comment = await Comment.findOne({
+        where: { id: commentId, is_delete: false },
+        attributes: ["id", "userId", "is_delete"],
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+
+      if (!comment) {
+        return { notFound: true };
+      }
+
+      const ownerId = Number((comment as any)?.userId ?? 0);
+      if (ownerId > 0 && ownerId === reporterId) {
+        return { selfReport: true };
+      }
+
+      const existing = await CommentReport.findOne({
+        where: { commentId, reporterId },
+        attributes: ["id"],
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+
+      let alreadyReported = false;
+      if (!existing) {
+        try {
+          await CommentReport.create(
+            {
+              commentId,
+              reporterId,
+              reason,
+              details: normalizedDetails,
+            },
+            { transaction }
+          );
+        } catch (error: any) {
+          if (error instanceof UniqueConstraintError) {
+            alreadyReported = true;
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        alreadyReported = true;
+      }
+
+      const reportsCount = await CommentReport.count({
+        where: { commentId },
+        distinct: true,
+        col: "reporterId",
+        transaction,
+      });
+
+      const shouldAutoDelete =
+        Number(reportsCount) >= COMMENT_REPORT_AUTO_DELETE_THRESHOLD &&
+        !Boolean((comment as any)?.is_delete);
+
+      let autoDeleted = false;
+      if (shouldAutoDelete) {
+        await Comment.update(
+          {
+            is_delete: true,
+            deleted_date: new Date(new Date().toUTCString()),
+          },
+          {
+            where: { id: commentId },
+            transaction,
+          }
+        );
+        autoDeleted = true;
+      }
+
+      return {
+        notFound: false,
+        invalidReporter: false,
+        selfReport: false,
+        alreadyReported,
+        reportsCount: Number(reportsCount) || 0,
+        threshold: COMMENT_REPORT_AUTO_DELETE_THRESHOLD,
+        autoDeleted,
+        commentId,
+        ownerId,
+      };
+    })
+    .catch((error: any) => {
+      if (isMissingTableError(error)) return { storageMissing: true };
+      throw error;
+    });
 };

@@ -11,6 +11,14 @@ export const normalizeLocale = (raw: any): AppLocale | null => {
   const normalized = String(raw ?? "").trim().toLowerCase();
   if (!normalized) return null;
 
+  // Compatibilidad con IDs de catálogo de idioma usados por algunos clientes.
+  // 1 = English, 4 = Spanish.
+  if (/^\d+$/.test(normalized)) {
+    const numeric = Number(normalized);
+    if (numeric === 4) return "es";
+    if (numeric === 1) return "en";
+  }
+
   if (
     normalized.startsWith("es") ||
     normalized.includes("spanish") ||

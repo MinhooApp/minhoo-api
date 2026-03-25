@@ -198,6 +198,31 @@ export const delete_reel_comment = async (req: Request, res: Response) => {
     };
 
     socket.emit("reel/comment-deleted", payload);
+    const updatedReel = reelId > 0 ? await repository.getById(reelId, req.userId) : null;
+    const updatedReelPayload =
+      updatedReel ??
+      {
+        id: reelId,
+        comments_count: Number((result as any)?.comments_count ?? 0),
+        commentsCount: Number((result as any)?.comments_count ?? 0),
+      };
+    socket.emit("reel/updated", {
+      action: "comment_deleted",
+      removed: Boolean((result as any)?.removed),
+      reelId,
+      reel_id: reelId,
+      actorUserId: Number(req.userId ?? 0) || null,
+      actor_user_id: Number(req.userId ?? 0) || null,
+      commentId: Number(commentId),
+      comment_id: Number(commentId),
+      comments_count: Number((result as any)?.comments_count ?? 0),
+      commentsCount: Number((result as any)?.comments_count ?? 0),
+      updatedAt: deletedAt,
+      updated_at: deletedAt,
+      deletedAt,
+      deleted_at: deletedAt,
+      reel: updatedReelPayload,
+    });
 
     const notifications = await notificationRepository.findActiveCommentNotifications({
       commentId: Number(commentId),

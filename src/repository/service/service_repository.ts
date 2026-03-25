@@ -12,8 +12,8 @@ import { autoDisableUserByImpersonationReports } from "../user/user_repository";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 const SERVICE_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
-  1,
-  Number(process.env.SERVICE_REPORT_AUTO_DELETE_THRESHOLD ?? 10) || 10
+  20,
+  Number(process.env.SERVICE_REPORT_AUTO_DELETE_THRESHOLD ?? 20) || 20
 );
 const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
 

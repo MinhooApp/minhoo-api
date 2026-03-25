@@ -6,20 +6,37 @@ const normalizeId = (v: any): number | null => {
   return n;
 };
 
+const buildOwnerActiveLiteral = (ownerExpr: string) =>
+  Sequelize.literal(`
+    EXISTS (
+      SELECT 1
+      FROM users u
+      WHERE u.id = ${ownerExpr}
+        AND u.disabled = 0
+        AND u.is_deleted = 0
+    )
+  `);
+
 /**
  * Devuelve un filtro NOT EXISTS para bloquear en ambos sentidos.
  * - ownerExpr: campo SQL con alias, ej: "`post`.`userId`" o "`user`.`id`"
- * - Si meId no es válido => {}
+ * - Siempre exige que el owner esté visible (disabled=0, is_deleted=0)
+ * - Si meId no es válido, aplica solo el filtro de owner activo
  *
  * IMPORTANTE: usa :meId (replacements) para NO romper producción.
  */
 export const whereNotBlockedExists = (meId: any, ownerExpr: string) => {
   const me = normalizeId(meId);
-  if (!me) return {};
+  const andClauses: any[] = [buildOwnerActiveLiteral(ownerExpr)];
 
-  return {
-    [Op.and]: [
-      Sequelize.literal(`
+  if (!me) {
+    return {
+      [Op.and]: andClauses,
+    };
+  }
+
+  andClauses.push(
+    Sequelize.literal(`
         NOT EXISTS (
           SELECT 1
           FROM user_blocks ub
@@ -28,23 +45,44 @@ export const whereNotBlockedExists = (meId: any, ownerExpr: string) => {
             OR
             (ub.blocker_id = ${ownerExpr} AND ub.blocked_id = :meId)
         )
-      `),
-    ],
+      `)
+  );
+
+  return {
+    [Op.and]: andClauses,
   };
 };
 
 /**
  * Para endpoints directos por targetId (perfil por id, etc).
- * Si meId no válido => {}
+ * - Siempre exige que el target esté visible (disabled=0, is_deleted=0)
+ * - Si meId no válido, aplica solo el filtro de target activo
  */
 export const whereNotBlockedProfileExists = (meId: any, targetId: any) => {
   const me = normalizeId(meId);
   const t = normalizeId(targetId);
-  if (!me || !t) return {};
+  if (!t) return {};
 
-  return {
-    [Op.and]: [
-      Sequelize.literal(`
+  const andClauses: any[] = [
+    Sequelize.literal(`
+      EXISTS (
+        SELECT 1
+        FROM users u
+        WHERE u.id = ${t}
+          AND u.disabled = 0
+          AND u.is_deleted = 0
+      )
+    `),
+  ];
+
+  if (!me) {
+    return {
+      [Op.and]: andClauses,
+    };
+  }
+
+  andClauses.push(
+    Sequelize.literal(`
         NOT EXISTS (
           SELECT 1
           FROM user_blocks ub
@@ -53,7 +91,10 @@ export const whereNotBlockedProfileExists = (meId: any, targetId: any) => {
             OR
             (ub.blocker_id = :targetId AND ub.blocked_id = :meId)
         )
-      `),
-    ],
+      `)
+  );
+
+  return {
+    [Op.and]: andClauses,
   };
 };

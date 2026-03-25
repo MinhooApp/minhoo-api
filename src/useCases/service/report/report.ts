@@ -94,7 +94,7 @@ export const report = async (req: Request, res: Response) => {
         reportsCount: Number(reportResult?.reportsCount ?? 0),
         auto_deleted: Boolean(reportResult?.autoDeleted),
         autoDeleted: Boolean(reportResult?.autoDeleted),
-        threshold: Number(reportResult?.threshold ?? 10),
+        threshold: Number(reportResult?.threshold ?? 20),
       },
       message: reportResult?.autoDeleted
         ? "Service removed automatically due to multiple reports."

@@ -456,23 +456,28 @@ export const reels_suggested = async (req: Request, res: Response) => {
       const profileCursorKey = buildProfileReelCursorKey(req, profileFeedLock.targetUserId);
       if (lockedRows.length > 0) {
         await writeProfileReelCursor(profileCursorKey, lockedRows[0]);
+
+        return formatResponse({
+          res,
+          success: true,
+          body: {
+            page: 0,
+            requestedPage: page,
+            size: lockedData?.size ?? size,
+            count: Number(lockedData?.count ?? 0),
+            looped: allowLoop,
+            reels: summary ? lockedRows.map((row: any) => toReelSummary(row)) : lockedRows,
+            profileLocked: true,
+            profileUserId: profileFeedLock.targetUserId,
+            source: "profile_lock",
+          },
+        });
       }
 
-      return formatResponse({
-        res,
-        success: true,
-        body: {
-          page: 0,
-          requestedPage: page,
-          size: lockedData?.size ?? size,
-          count: Number(lockedData?.count ?? 0),
-          looped: allowLoop,
-          reels: summary ? lockedRows.map((row: any) => toReelSummary(row)) : lockedRows,
-          profileLocked: true,
-          profileUserId: profileFeedLock.targetUserId,
-          source: "profile_lock",
-        },
-      });
+      await Promise.all([
+        clearProfileFeedLockForRequest(req),
+        clearProfileReelCursor(profileCursorKey),
+      ]);
     }
 
     const startedAtMs = nowMs();

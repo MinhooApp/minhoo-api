@@ -6,7 +6,8 @@ import MediaPost from "../../_models/post/media_post";
 import Worker from "../../_models/worker/worker";
 import Follower from "../../_models/follower/follower";
 import Category from "../../_models/category/category";
-import { Op, QueryTypes, Sequelize } from "sequelize";
+import UserReport from "../../_models/user/user_report";
+import { Op, QueryTypes, Sequelize, UniqueConstraintError } from "sequelize";
 import sequelize from "../../_db/connection";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
@@ -20,8 +21,12 @@ const MAX_PUSH_TOKENS_PER_USER = Math.max(
 );
 const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
 const IMPERSONATION_REPORT_DISABLE_THRESHOLD = Math.max(
-  1,
+  20,
   Number(process.env.IMPERSONATION_REPORT_DISABLE_THRESHOLD ?? 20) || 20
+);
+const PROFILE_REPORT_DISABLE_THRESHOLD = Math.max(
+  20,
+  Number(process.env.PROFILE_REPORT_DISABLE_THRESHOLD ?? 20) || 20
 );
 
 const isTrueLike = (value: any) => value === true || value === 1 || value === "1";
@@ -752,10 +757,193 @@ export const updateUsername = async (id: number, username: string) => {
   return User.findByPk(id);
 };
 
+export const reportUserProfile = async ({
+  reportedUserIdRaw,
+  reporterIdRaw,
+  reason,
+  details,
+}: {
+  reportedUserIdRaw: any;
+  reporterIdRaw: any;
+  reason: string;
+  details?: string | null;
+}) => {
+  const reportedUserId = Number(reportedUserIdRaw);
+  const reporterId = Number(reporterIdRaw);
+
+  if (!Number.isFinite(reportedUserId) || reportedUserId <= 0) {
+    return { notFound: true };
+  }
+  if (!Number.isFinite(reporterId) || reporterId <= 0) {
+    return { invalidReporter: true };
+  }
+
+  const normalizedDetails = String(details ?? "").trim().slice(0, 4000) || null;
+
+  return sequelize
+    .transaction(async (transaction: any) => {
+      const targetUser = await User.findOne({
+        where: { id: reportedUserId, available: true, is_deleted: false },
+        attributes: ["id"],
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+
+      if (!targetUser) {
+        return { notFound: true };
+      }
+
+      if (reportedUserId === reporterId) {
+        return { selfReport: true };
+      }
+
+      const existing = await UserReport.findOne({
+        where: { reportedUserId, reporterId },
+        attributes: ["id"],
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+
+      let alreadyReported = false;
+      if (!existing) {
+        try {
+          await UserReport.create(
+            {
+              reportedUserId,
+              reporterId,
+              reason,
+              details: normalizedDetails,
+            },
+            { transaction }
+          );
+        } catch (error: any) {
+          if (error instanceof UniqueConstraintError) {
+            alreadyReported = true;
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        alreadyReported = true;
+      }
+
+      const reportsCount = await UserReport.count({
+        where: { reportedUserId },
+        distinct: true,
+        col: "reporterId",
+        transaction,
+      });
+
+      const autoDisableByProfileReports = await autoDisableUserByProfileReports({
+        userIdRaw: reportedUserId,
+        transaction,
+      });
+      const autoDisabled = Boolean(autoDisableByProfileReports?.disabledNow);
+      const threshold = Number(
+        autoDisableByProfileReports?.threshold ?? PROFILE_REPORT_DISABLE_THRESHOLD
+      );
+
+      return {
+        notFound: false,
+        invalidReporter: false,
+        selfReport: false,
+        alreadyReported,
+        reportsCount: Number(reportsCount) || 0,
+        autoDisabled,
+        threshold,
+        reportedUserId,
+      };
+    })
+    .catch((error) => {
+      if (isMissingTableError(error)) {
+        return { storageMissing: true };
+      }
+      throw error;
+    });
+};
+
 /* 🔹 Bloqueo global a nivel empresa (solo admin) */
 export const admin_set_disabled = async (id: number, disabled: boolean) => {
-  const [affected] = await User.update({ disabled }, { where: { id } });
+  const [affected] = await User.update(
+    {
+      disabled,
+      available: !disabled,
+    },
+    { where: { id } }
+  );
   return affected ? { id, disabled } : { id, disabled, notFound: true };
+};
+
+export const autoDisableUserByProfileReports = async ({
+  userIdRaw,
+  transaction,
+}: {
+  userIdRaw: any;
+  transaction?: any;
+}) => {
+  const userId = Number(userIdRaw);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return {
+      invalidUser: true,
+      disabledNow: false,
+      alreadyDisabled: false,
+      reportersCount: 0,
+      threshold: PROFILE_REPORT_DISABLE_THRESHOLD,
+    };
+  }
+
+  const user = await User.findByPk(userId, {
+    attributes: ["id", "disabled", "available"],
+    transaction,
+    lock: transaction?.LOCK?.UPDATE,
+  });
+
+  if (!user) {
+    return {
+      invalidUser: false,
+      notFound: true,
+      disabledNow: false,
+      alreadyDisabled: false,
+      reportersCount: 0,
+      threshold: PROFILE_REPORT_DISABLE_THRESHOLD,
+    };
+  }
+
+  const reportersCount = await UserReport.count({
+    where: { reportedUserId: userId },
+    distinct: true,
+    col: "reporterId",
+    transaction,
+  });
+
+  const alreadyDisabled =
+    isTrueLike((user as any)?.disabled) || !isTrueLike((user as any)?.available);
+  const mustDisable = Number(reportersCount) >= PROFILE_REPORT_DISABLE_THRESHOLD;
+
+  let disabledNow = false;
+  if (!alreadyDisabled && mustDisable) {
+    const [affected] = await User.update(
+      { disabled: true, available: false },
+      { where: { id: userId }, transaction }
+    );
+    disabledNow = Number(affected) > 0;
+    if (disabledNow) {
+      console.warn(
+        `[moderation][auto-disable-profile] userId=${userId} uniqueProfileReporters=${Number(
+          reportersCount
+        )} threshold=${PROFILE_REPORT_DISABLE_THRESHOLD}`
+      );
+    }
+  }
+
+  return {
+    invalidUser: false,
+    notFound: false,
+    disabledNow,
+    alreadyDisabled,
+    reportersCount: Number(reportersCount) || 0,
+    threshold: PROFILE_REPORT_DISABLE_THRESHOLD,
+  };
 };
 
 export const autoDisableUserByImpersonationReports = async ({
@@ -777,7 +965,7 @@ export const autoDisableUserByImpersonationReports = async ({
   }
 
   const user = await User.findByPk(userId, {
-    attributes: ["id", "disabled"],
+    attributes: ["id", "disabled", "available"],
     transaction,
     lock: transaction?.LOCK?.UPDATE,
   });
@@ -833,18 +1021,40 @@ export const autoDisableUserByImpersonationReports = async ({
       throw error;
     });
 
+  const profileRows = await sequelize
+    .query(
+      `
+        SELECT DISTINCT ur.reporterId AS reporterId
+        FROM user_reports ur
+        WHERE ur.reportedUserId = :userId
+          AND ur.reason = :reason
+      `,
+      {
+        replacements: { userId, reason: IMPERSONATION_REPORT_REASON },
+        type: QueryTypes.SELECT,
+        transaction,
+      }
+    )
+    .catch((error) => {
+      if (isMissingTableError(error)) return [];
+      throw error;
+    });
+
   const reporters = toDistinctReporterIds(postRows as any[]);
   const serviceReporterIds = toDistinctReporterIds(serviceRows as any[]);
+  const profileReporterIds = toDistinctReporterIds(profileRows as any[]);
   serviceReporterIds.forEach((id) => reporters.add(id));
+  profileReporterIds.forEach((id) => reporters.add(id));
 
   const reportersCount = reporters.size;
-  const alreadyDisabled = isTrueLike((user as any)?.disabled);
-  const mustDisable = reportersCount > IMPERSONATION_REPORT_DISABLE_THRESHOLD;
+  const alreadyDisabled =
+    isTrueLike((user as any)?.disabled) || !isTrueLike((user as any)?.available);
+  const mustDisable = reportersCount >= IMPERSONATION_REPORT_DISABLE_THRESHOLD;
 
   let disabledNow = false;
   if (!alreadyDisabled && mustDisable) {
     const [affected] = await User.update(
-      { disabled: true },
+      { disabled: true, available: false },
       { where: { id: userId }, transaction }
     );
     disabledNow = Number(affected) > 0;

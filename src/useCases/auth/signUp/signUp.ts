@@ -13,6 +13,7 @@ import {
   normalizeRemoteHttpUrl,
   uploadImageBufferToCloudflare,
 } from "../../_utils/cloudflare_images";
+import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
 
 const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
 const uploadSignUpAvatar = multer({
@@ -25,6 +26,215 @@ const uploadSignUpAvatar = multer({
 
 // signUp.ts
 const now: any = new Date(new Date().toUTCString());
+
+const resetSignUpContactAndLocation = (body: any) => {
+  // Evita persistir placeholders enviados por el cliente al crear cuenta.
+  const fieldsToNull = [
+    "dialing_code",
+    "iso_code",
+    "phone",
+    "language",
+    "language_ids",
+    "language_codes",
+    "language_names",
+    "countryId",
+    "cityId",
+    "country_origin_id",
+    "country_origin_code",
+    "country_residence_id",
+    "state_residence_id",
+    "state_residence_code",
+    "city_residence_id",
+    "city_residence_name",
+    "last_longitude",
+    "last_latitude",
+  ];
+
+  for (const key of fieldsToNull) {
+    body[key] = null;
+  }
+};
+
+const pickFirstPresent = (...candidates: any[]) => {
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null) continue;
+    if (String(candidate).trim().length === 0) continue;
+    return candidate;
+  }
+  return undefined;
+};
+
+const resolveValidationEmailLocale = (
+  req: Request,
+  fallback: AppLocale = "en",
+  useAcceptLanguage = true
+): AppLocale => {
+  const body: any = req.body ?? {};
+  const query: any = req.query ?? {};
+
+  const preferredLanguage = pickFirstPresent(
+    // Prioridad 1: señales explícitas de app en headers.
+    req.header("x-app-language"),
+    req.header("x-app-lang"),
+    req.header("x-app-locale"),
+    req.header("x-app-language-id"),
+    req.header("x-preferred-language"),
+    req.header("x-language"),
+    req.header("x-locale"),
+    req.header("x-lang"),
+    req.header("x-ui-language"),
+    req.header("x-ui-locale"),
+    req.header("content-language"),
+    // Prioridad 2: campos explícitos de app/locale en body y query.
+    body?.app_language,
+    body?.appLanguage,
+    body?.app_language_id,
+    body?.appLanguageId,
+    body?.app_language_code,
+    body?.appLanguageCode,
+    body?.app_lang,
+    body?.appLang,
+    body?.app_locale,
+    body?.appLocale,
+    body?.app_locale_code,
+    body?.appLocaleCode,
+    body?.ui_language,
+    body?.uiLanguage,
+    body?.ui_locale,
+    body?.uiLocale,
+    body?.locale,
+    body?.locale_code,
+    body?.localeCode,
+    body?.lang,
+    body?.lang_code,
+    body?.langCode,
+    body?.language_id,
+    body?.languageId,
+    body?.preferred_language_id,
+    body?.preferredLanguageId,
+    body?.preferred_language,
+    body?.preferredLanguage,
+    query?.app_language,
+    query?.appLanguage,
+    query?.app_language_id,
+    query?.appLanguageId,
+    query?.app_language_code,
+    query?.appLanguageCode,
+    query?.app_lang,
+    query?.appLang,
+    query?.app_locale,
+    query?.appLocale,
+    query?.app_locale_code,
+    query?.appLocaleCode,
+    query?.ui_language,
+    query?.uiLanguage,
+    query?.ui_locale,
+    query?.uiLocale,
+    query?.locale,
+    query?.locale_code,
+    query?.localeCode,
+    query?.lang,
+    query?.lang_code,
+    query?.langCode,
+    query?.language_id,
+    query?.languageId,
+    query?.preferred_language_id,
+    query?.preferredLanguageId,
+    query?.preferred_language,
+    query?.preferredLanguage,
+    // Prioridad 3: campos genéricos (posibles defaults viejos del cliente).
+    body?.language,
+    body?.idioma,
+    body?.lenguaje,
+    query?.language,
+    query?.idioma,
+    query?.lenguaje,
+    body?.device_language,
+    body?.deviceLanguage,
+    body?.device_language_id,
+    body?.deviceLanguageId,
+    body?.device_lang,
+    body?.deviceLang,
+    body?.device_locale,
+    body?.deviceLocale,
+    body?.device_locale_code,
+    body?.deviceLocaleCode,
+    body?.system_language,
+    body?.systemLanguage,
+    body?.system_lang,
+    body?.systemLang,
+    query?.device_language,
+    query?.deviceLanguage,
+    query?.device_lang,
+    query?.deviceLang,
+    query?.device_locale,
+    query?.deviceLocale,
+    query?.device_locale_code,
+    query?.deviceLocaleCode,
+    query?.system_language,
+    query?.systemLanguage,
+    query?.system_lang,
+    query?.systemLang,
+    body?.accept_language,
+    body?.acceptLanguage,
+    query?.accept_language,
+    query?.acceptLanguage
+  );
+
+  return resolveLocale({
+    preferredLanguage,
+    acceptLanguage: useAcceptLanguage ? req.header("accept-language") : undefined,
+    fallback,
+  });
+};
+
+const isDeletedAccount = (user: any): boolean =>
+  user?.is_deleted === true || user?.is_deleted === 1;
+
+const isDisabledAccount = (user: any): boolean =>
+  user?.disabled === true || user?.disabled === 1;
+
+const isUnavailableAccount = (user: any): boolean =>
+  user?.available === false || user?.available === 0;
+
+const getLoginStyleAccountBlock = (
+  user: any
+): { blocked: boolean; code?: number; message?: string } => {
+  if (isDeletedAccount(user)) {
+    return {
+      blocked: true,
+      code: 403,
+      message:
+        "Your account has been deleted. Please contact info@minhoo.app to reactivate your account.",
+    };
+  }
+  if (isDisabledAccount(user)) {
+    return {
+      blocked: true,
+      code: 403,
+      message: "This account has been disabled by an administrator.",
+    };
+  }
+  if (isUnavailableAccount(user)) {
+    return {
+      blocked: true,
+      message: "User and/or Password not valid.",
+    };
+  }
+  return { blocked: false };
+};
+
+const buildExistingEmailMessage = (
+  isSpanish: boolean,
+  deletedAccount: boolean
+): string => {
+  if (deletedAccount) {
+    return isSpanish
+      ? "Este correo pertenece a una cuenta eliminada. Solo un administrador puede reactivarla."
+      : "This email belongs to a deleted account. Only an administrator can reactivate it.";
+  }
+  return isSpanish ? "El correo ya existe" : "The email already exists";
+};
 
 export const signUp = async (req: Request, res: Response) => {
   try {
@@ -113,6 +323,11 @@ export const signUp = async (req: Request, res: Response) => {
 // Función para procesar el registro de usuario
 const processSignUp = async (req: Request, res: Response) => {
   const { email, password, confirm_password, uuid } = req.body;
+  const locale = resolveValidationEmailLocale(req);
+  const isSpanish = locale === "es";
+
+  // En signup no guardamos teléfono/ubicación hasta que el usuario lo edite.
+  resetSignUpContactAndLocation(req.body);
 
   const rawAvatarUrl =
     (req.body as any)?.image_profil ?? (req.body as any)?.image_profile;
@@ -153,7 +368,10 @@ const processSignUp = async (req: Request, res: Response) => {
       res,
       success: false,
       code: 401,
-      message: "The user already exists",
+      message: buildExistingEmailMessage(
+        isSpanish,
+        isDeletedAccount(validateEmail)
+      ),
       islogin: true,
     });
   }
@@ -190,6 +408,9 @@ const processSignUp = async (req: Request, res: Response) => {
 
 export const validateEmail = async (req: Request, res: Response) => {
   const { email } = req.body;
+  // En validación de correo para alta, si no llega idioma, priorizamos español por defecto.
+  const locale = resolveValidationEmailLocale(req, "es", false);
+  const isSpanish = locale === "es";
 
   try {
     const validateEmail = await repository.findByEmail(email);
@@ -199,7 +420,10 @@ export const validateEmail = async (req: Request, res: Response) => {
         res: res,
         success: false,
         code: 401,
-        message: "The email already exists",
+        message: buildExistingEmailMessage(
+          isSpanish,
+          isDeletedAccount(validateEmail)
+        ),
       });
     } else {
       const send = true; //: any =
@@ -209,13 +433,16 @@ export const validateEmail = async (req: Request, res: Response) => {
           code: cod,
           email: email,
           created: now,
+          locale_used: locale,
         };
         await repository.registerCode(body); //register code
 
         const emailParams = {
-          subject: "Email verification",
+          subject: isSpanish ? "Verificacion de correo" : "Email verification",
           email: email,
-          htmlPath: "./src/public/html/email/emailCode.html",
+          htmlPath: isSpanish
+            ? "./src/public/html/email/emailCode_es.html"
+            : "./src/public/html/email/emailCode.html",
           replacements: [{ code: cod }],
           from: "Minhoo App",
         };
@@ -271,11 +498,6 @@ export const verifyEmailCode = async (req: Request, res: Response) => {
 export const requestRestorePassword = async (req: Request, res: Response) => {
   const { email } = req.body;
   const now = new Date(new Date().toUTCString());
-  const code = generateTempPassword();
-  const body = {
-    temp_code: code,
-    created_temp_code: now,
-  };
 
   try {
     const user = await repository.findByEmail(email);
@@ -287,6 +509,23 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
         message: "user not found",
       });
     }
+
+    const accountBlock = getLoginStyleAccountBlock(user);
+    if (accountBlock.blocked) {
+      return formatResponse({
+        res,
+        success: false,
+        islogin: true,
+        ...(accountBlock.code ? { code: accountBlock.code } : {}),
+        message: accountBlock.message,
+      });
+    }
+
+    const code = generateTempPassword();
+    const body = {
+      temp_code: code,
+      created_temp_code: now,
+    };
 
     await uRepository.update(user.id, body);
 
@@ -321,9 +560,29 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
 
 export const validateRestorePassword = async (req: Request, res: Response) => {
   const { email, code } = req.body;
-  const now = new Date(new Date().toUTCString());
 
   try {
+    const userByEmail = await repository.findByEmail(email);
+    if (!userByEmail) {
+      return formatResponse({
+        res: res,
+        success: false,
+        islogin: true,
+        message: "code not validated",
+      });
+    }
+
+    const accountBlock = getLoginStyleAccountBlock(userByEmail);
+    if (accountBlock.blocked) {
+      return formatResponse({
+        res,
+        success: false,
+        islogin: true,
+        ...(accountBlock.code ? { code: accountBlock.code } : {}),
+        message: accountBlock.message,
+      });
+    }
+
     const user = await repository.findByEmailAndCode(email, code);
     if (user) {
       return formatResponse({
@@ -357,6 +616,17 @@ export const restorePassword = async (req: Request, res: Response) => {
   }
   try {
     const userTemp = await repository.findByEmail(email);
+    const accountBlock = getLoginStyleAccountBlock(userTemp);
+    if (accountBlock.blocked) {
+      return formatResponse({
+        res,
+        success: false,
+        islogin: true,
+        ...(accountBlock.code ? { code: accountBlock.code } : {}),
+        message: accountBlock.message,
+      });
+    }
+
     const user = await uRepository.update(userTemp?.id, req.body);
 
     const emailParams = {

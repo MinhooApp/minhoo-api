@@ -1,4 +1,5 @@
 import { follow, follow_by_id } from "../add/add";
+import { report } from "../report/report";
 import {
   block_user,
   unblock_user,
@@ -38,6 +39,7 @@ export {
   myData,
   follow,
   follow_by_id,
+  report,
   follows,
   followers,
   followers_v2,

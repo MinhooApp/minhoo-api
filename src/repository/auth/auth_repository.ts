@@ -69,12 +69,43 @@ const loginIncludes = [
     attributes: ["id"],
   },
 ];
+
+const sanitizeSignUpDraft = (input: any) => {
+  const body = { ...(input ?? {}) };
+  const fieldsToNull = [
+    "dialing_code",
+    "iso_code",
+    "phone",
+    "language",
+    "language_ids",
+    "language_codes",
+    "language_names",
+    "countryId",
+    "cityId",
+    "country_origin_id",
+    "country_origin_code",
+    "country_residence_id",
+    "state_residence_id",
+    "state_residence_code",
+    "city_residence_id",
+    "city_residence_name",
+    "last_longitude",
+    "last_latitude",
+  ];
+
+  for (const key of fieldsToNull) {
+    body[key] = null;
+  }
+
+  return body;
+};
 export const add = async (body: any) => {
-  const user = await User.create(body);
-  await user.addRole(body.roles);
-  await user.addCategory(body.categories);
+  const sanitizedBody = sanitizeSignUpDraft(body);
+  const user = await User.create(sanitizedBody);
+  await user.addRole(sanitizedBody.roles);
+  await user.addCategory(sanitizedBody.categories);
   const result = await User.findOne({
-    where: { email: body.email },
+    where: { email: sanitizedBody.email },
     include: userIncludes,
   });
   return result;

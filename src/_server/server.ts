@@ -3,6 +3,8 @@ import sequelize from "../_db/connection";
 import { Server as HttpServer } from "http";
 import * as t from "../_models/association";
 import { Server as SocketIOServer } from "socket.io";
+import { createAdapter } from "@socket.io/redis-adapter";
+import { createClient } from "redis";
 import express, { Router, Application } from "express";
 import { socketController } from "../_sockets/socket_controller";
 import { setSocketInstance } from "../_sockets/socket_instance";
@@ -42,6 +44,10 @@ const isProduction = () =>
 
 const shouldTrustProxy = () => isTruthy(process.env.TRUST_PROXY);
 const shouldEnableHttpCompression = () => !isTruthy(process.env.HTTP_COMPRESSION_DISABLED);
+const shouldEnableSocketRedisAdapter = () =>
+  !isTruthy(process.env.SOCKET_REDIS_ADAPTER_DISABLED ?? "0");
+const resolveSocketRedisUrl = () =>
+  String(process.env.SOCKET_REDIS_URL ?? process.env.REDIS_URL ?? "").trim();
 const resolveHttpCompressionLevel = () => {
   const parsed = Number(process.env.HTTP_COMPRESSION_LEVEL ?? 6);
   if (!Number.isFinite(parsed)) return 6;
@@ -59,6 +65,8 @@ class Server {
   private io: SocketIOServer;
   private readonly port: number;
   private readonly publicPath: string;
+  private redisPubClient: ReturnType<typeof createClient> | null = null;
+  private redisSubClient: ReturnType<typeof createClient> | null = null;
 
   //private host: string;
 
@@ -109,6 +117,7 @@ class Server {
     this.server.keepAliveTimeout = 30_000;
     this.server.headersTimeout = 35_000;
     this.server.requestTimeout = 30_000;
+    void this.configureSocketAdapter();
     setSocketInstance(this.io);
     this.middlewares();
     this.dbConnection();
@@ -215,6 +224,42 @@ class Server {
 
   sockets() {
     this.io.on("connection", socketController);
+  }
+
+  private async configureSocketAdapter() {
+    if (!shouldEnableSocketRedisAdapter()) {
+      console.log("[socket-adapter] redis adapter disabled by env");
+      return;
+    }
+
+    const redisUrl = resolveSocketRedisUrl();
+    if (!redisUrl) {
+      console.log("[socket-adapter] redis url not configured, using local adapter");
+      return;
+    }
+
+    try {
+      const pubClient = createClient({ url: redisUrl });
+      const subClient = pubClient.duplicate();
+
+      pubClient.on("error", (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error ?? "unknown");
+        console.warn(`[socket-adapter] redis pub error: ${message}`);
+      });
+      subClient.on("error", (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error ?? "unknown");
+        console.warn(`[socket-adapter] redis sub error: ${message}`);
+      });
+
+      await Promise.all([pubClient.connect(), subClient.connect()]);
+      this.io.adapter(createAdapter(pubClient, subClient));
+      this.redisPubClient = pubClient;
+      this.redisSubClient = subClient;
+      console.log("[socket-adapter] redis adapter enabled");
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error ?? "unknown");
+      console.warn(`[socket-adapter] redis adapter unavailable, fallback local: ${message}`);
+    }
   }
   /////////////////////////////////
   listen() {

@@ -9,6 +9,7 @@ import {
   myData,
   follow,
   follow_by_id,
+  report,
   follows,
   followers,
   followers_v2,
@@ -89,6 +90,12 @@ router.get("/search", TokenOptional(), search_profiles);
 router.post("/follow", TokenValidation(), follow);
 router.post("/:id/follow", TokenValidation(), follow_by_id);
 router.delete("/:id/follow", TokenValidation(), unfollow_by_id);
+router.post("/:id/report", TokenValidation(), report);
+router.put("/:id/report", TokenValidation(), report);
+router.patch("/:id/report", TokenValidation(), report);
+router.post("/report/:id", TokenValidation(), report);
+router.put("/report/:id", TokenValidation(), report);
+router.patch("/report/:id", TokenValidation(), report);
 router.get("/follows/:id?", TokenOptional(), follows);
 router.get("/followers/:id?", TokenOptional(), followers);
 router.get("/:id/followers", TokenOptional(), followers_v2);

@@ -78,6 +78,12 @@ const ALLOW_SOCKET_USERID_FALLBACK = (() => {
 const SESSION_VALIDATION_TTL_MS = 15 * 1000;
 const EMIT_REELS_EVENT_ON_REEL_DELETE =
   String(process.env.EMIT_REELS_EVENT_ON_REEL_DELETE ?? "1").trim() === "1";
+const EMIT_POSTS_EVENT_ON_POST_ACTIVITY =
+  String(
+    process.env.EMIT_POSTS_EVENT_ON_POST_ACTIVITY ??
+      process.env.EMIT_POSTS_EVENT_ON_POST_COMMENT ??
+      "1"
+  ).trim() === "1";
 const SOCKET_CHAT_SEND_RATE_WINDOW_MS = parsePositiveIntEnv(
   process.env.SOCKET_CHAT_SEND_RATE_WINDOW_MS,
   10_000,
@@ -469,6 +475,110 @@ function normalizePostCommentedPayload(payload: any) {
     comment: normalizedComment,
     commentCreatedAt,
     comment_created_at: commentCreatedAt,
+  };
+}
+
+function normalizePostUpdatedPayload(payload: any) {
+  const source = payload ?? {};
+  const postSource = toPlainRecord(source.post ?? null);
+  const postId = normalizePositiveInt(
+    source.postId ?? source.post_id ?? source.id ?? source.post?.id
+  );
+  const ownerId = normalizePositiveInt(
+    source.ownerId ??
+      source.owner_id ??
+      source.userId ??
+      source.user_id ??
+      source.post?.userId ??
+      source.post?.user_id ??
+      source.post?.user?.id
+  );
+  const actorUserId = normalizePositiveInt(
+    source.actorUserId ??
+      source.actor_user_id ??
+      source.interactorId ??
+      source.interactor_id ??
+      source.user?.id
+  );
+  const likesCount = normalizePositiveInt(
+    source.likesCount ?? source.likes_count ?? postSource?.likes_count ?? postSource?.likesCount
+  );
+  const savesCount = normalizePositiveInt(
+    source.savesCount ?? source.saves_count ?? postSource?.saves_count ?? postSource?.savesCount
+  );
+  const sharesCount = normalizePositiveInt(
+    source.sharesCount ?? source.shares_count ?? postSource?.shares_count ?? postSource?.sharesCount
+  );
+  const commentsCount = normalizePositiveInt(
+    source.commentsCount ??
+      source.comments_count ??
+      postSource?.comments_count ??
+      postSource?.commentsCount
+  );
+  const actionRaw = String(source.action ?? "updated").trim().toLowerCase();
+  const action =
+    actionRaw === "liked" ||
+    actionRaw === "unliked" ||
+    actionRaw === "saved" ||
+    actionRaw === "unsaved" ||
+    actionRaw === "shared" ||
+    actionRaw === "commented" ||
+    actionRaw === "comment_deleted"
+      ? actionRaw
+      : "updated";
+  const isLiked = normalizeBoolOrNull(
+    source.isLiked ?? source.is_liked ?? postSource?.is_liked ?? postSource?.isLiked
+  );
+  const isSaved = normalizeBoolOrNull(
+    source.isSaved ?? source.is_saved ?? postSource?.is_saved ?? postSource?.isSaved
+  );
+  const updatedAt = normalizeDateIso(source.updatedAt ?? source.updated_at ?? new Date().toISOString());
+
+  const normalizedPost = postSource
+    ? {
+        ...postSource,
+        id: postId || postSource.id || null,
+        userId: ownerId || postSource.userId || postSource.user_id || null,
+        user_id: ownerId || postSource.user_id || postSource.userId || null,
+        likes_count: likesCount,
+        likesCount,
+        saves_count: savesCount,
+        savesCount,
+        shares_count: sharesCount,
+        sharesCount,
+        comments_count: commentsCount,
+        commentsCount,
+        is_liked: isLiked,
+        isLiked: isLiked,
+        is_saved: isSaved,
+        isSaved: isSaved,
+      }
+    : null;
+
+  return {
+    action,
+    postId,
+    post_id: postId,
+    ownerId,
+    owner_id: ownerId,
+    actorUserId,
+    actor_user_id: actorUserId,
+    likesCount,
+    likes_count: likesCount,
+    savesCount,
+    saves_count: savesCount,
+    sharesCount,
+    shares_count: sharesCount,
+    commentsCount,
+    comments_count: commentsCount,
+    isLiked,
+    is_liked: isLiked,
+    isSaved,
+    is_saved: isSaved,
+    updatedAt,
+    updated_at: updatedAt,
+    removed: source.removed === true,
+    post: normalizedPost,
   };
 }
 
@@ -1155,11 +1265,33 @@ export const socketController = (socket: Socket) => {
   });
 
   ////////////////////// Post comments ///////////////////////////
+  socket.on("post/updated", (payload: any) => {
+    const normalized = normalizePostUpdatedPayload(payload);
+    if (!normalized.postId) return;
+
+    socket.broadcast.emit("post/updated", normalized);
+    socket.broadcast.emit("find/post/updated", normalized);
+    if (EMIT_POSTS_EVENT_ON_POST_ACTIVITY) {
+      socket.broadcast.emit("posts", normalized);
+    }
+
+    if (normalized.action === "liked" || normalized.action === "unliked") {
+      socket.broadcast.emit("post/liked", normalized);
+    }
+    if (normalized.action === "saved" || normalized.action === "unsaved") {
+      socket.broadcast.emit("post/saved", normalized);
+    }
+  });
+
   socket.on("post/commented", (payload: any) => {
     const normalized = normalizePostCommentedPayload(payload);
     if (!normalized.postId) return;
 
     socket.broadcast.emit("post/commented", normalized);
+    socket.broadcast.emit("find/post/commented", normalized);
+    if (EMIT_POSTS_EVENT_ON_POST_ACTIVITY) {
+      socket.broadcast.emit("posts", normalized);
+    }
   });
 
   socket.on("post/comment-deleted", (payload: any) => {
@@ -1167,6 +1299,10 @@ export const socketController = (socket: Socket) => {
     if (!normalized.postId) return;
 
     socket.broadcast.emit("post/comment-deleted", normalized);
+    socket.broadcast.emit("find/post/comment-deleted", normalized);
+    if (EMIT_POSTS_EVENT_ON_POST_ACTIVITY) {
+      socket.broadcast.emit("posts", normalized);
+    }
   });
 
   ////////////////////// Reel / Orbit ///////////////////////////

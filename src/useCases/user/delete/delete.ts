@@ -8,6 +8,7 @@ import {
 import { emitProfileUpdatedRealtime } from "../_shared/profile_realtime";
 import bcryptjs from "bcryptjs";
 import sequelize from "../../../_db/connection";
+import { Op } from "sequelize";
 import User from "../../../_models/user/user";
 import Worker from "../../../_models/worker/worker";
 import MediaWorker from "../../../_models/worker/media_worker";
@@ -22,8 +23,13 @@ import Follower from "../../../_models/follower/follower";
 import Notification from "../../../_models/notification/notification";
 import UserBlock from "../../../_models/block/block";
 import Message from "../../../_models/chat/message";
-import Chat from "../../../_models/chat/chat";
 import Chat_User from "../../../_models/chat/chat_user";
+import Reel from "../../../_models/reel/reel";
+import ReelComment from "../../../_models/reel/reel_comment";
+import ReelLike from "../../../_models/reel/reel_like";
+import ReelSave from "../../../_models/reel/reel_save";
+import ReelView from "../../../_models/reel/reel_view";
+import ReelReport from "../../../_models/reel/reel_report";
 
 const parseBlockedId = (req: Request): number | null => {
   const raw = (req.params as any)?.blocked_id;
@@ -261,6 +267,7 @@ export const delete_account = async (req: Request, res: Response) => {
       const userId = req.userId;
       const reason = (req.body as any)?.reason ?? null;
       const ip = (req.headers["x-forwarded-for"] as string) || req.ip || null;
+      const now = new Date();
 
       await sequelize.query(
         "INSERT INTO deleted_accounts (user_id, email, name, deleted_at, reason, ip) VALUES (:user_id, :email, :name, NOW(), :reason, :ip)",
@@ -276,10 +283,50 @@ export const delete_account = async (req: Request, res: Response) => {
         }
       );
 
+      const [workers, services, posts, reels] = await Promise.all([
+        Worker.findAll({
+          where: { userId },
+          attributes: ["id"],
+          transaction: t,
+          raw: true,
+        }),
+        Service.findAll({
+          where: { userId },
+          attributes: ["id"],
+          transaction: t,
+          raw: true,
+        }),
+        Post.findAll({
+          where: { userId },
+          attributes: ["id"],
+          transaction: t,
+          raw: true,
+        }),
+        Reel.findAll({
+          where: { userId },
+          attributes: ["id"],
+          transaction: t,
+          raw: true,
+        }),
+      ]);
+
+      const workerIds = workers
+        .map((row: any) => Number(row?.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      const serviceIds = services
+        .map((row: any) => Number(row?.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      const postIds = posts
+        .map((row: any) => Number(row?.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+      const reelIds = reels
+        .map((row: any) => Number(row?.id))
+        .filter((id) => Number.isFinite(id) && id > 0);
+
       await User.update(
         {
           is_deleted: true,
-          deleted_at: new Date(),
+          deleted_at: now,
           available: false,
           disabled: true,
           auth_token: null,
@@ -288,12 +335,12 @@ export const delete_account = async (req: Request, res: Response) => {
       );
 
       await Worker.update(
-        { available: false, visible: false },
+        { available: false, visible: false, alert: false },
         { where: { userId }, transaction: t }
       );
 
       await Post.update(
-        { is_delete: true, deleted_date: new Date() },
+        { is_delete: true, deleted_date: now },
         { where: { userId }, transaction: t }
       );
 
@@ -302,6 +349,146 @@ export const delete_account = async (req: Request, res: Response) => {
         { where: { userId }, transaction: t }
       );
 
+      await Reel.update(
+        {
+          is_delete: true,
+          deleted_date: now,
+          status: "failed",
+        },
+        { where: { userId }, transaction: t }
+      );
+
+      await Promise.all([
+        Comment.update(
+          { is_delete: true, deleted_date: now },
+          { where: { userId }, transaction: t }
+        ),
+        ReelComment.update(
+          { is_delete: true, deleted_date: now },
+          { where: { userId }, transaction: t }
+        ),
+        Like.destroy({ where: { userId }, transaction: t }),
+        ReelLike.destroy({ where: { userId }, transaction: t }),
+        ReelSave.destroy({ where: { userId }, transaction: t }),
+        ReelView.destroy({ where: { userId }, transaction: t }),
+        ReelReport.destroy({ where: { reporterId: userId }, transaction: t }),
+        Follower.destroy({
+          where: { [Op.or]: [{ userId }, { followerId: userId }] },
+          transaction: t,
+        }),
+        UserBlock.destroy({
+          where: { [Op.or]: [{ blocker_id: userId }, { blocked_id: userId }] },
+          transaction: t,
+        }),
+        Chat_User.destroy({ where: { userId }, transaction: t }),
+        Message.update(
+          {
+            text: null,
+            mediaUrl: null,
+            mediaMime: null,
+            mediaDurationMs: null,
+            mediaSizeBytes: null,
+            waveform: null,
+            metadata: null,
+            deletedBy: userId,
+          },
+          { where: { senderId: userId }, transaction: t }
+        ),
+      ]);
+
+      if (workerIds.length > 0) {
+        await Promise.all([
+          MediaWorker.destroy({
+            where: { workerId: { [Op.in]: workerIds } },
+            transaction: t,
+          }),
+          Offer.update(
+            { canceled: true, removed: true },
+            { where: { workerId: { [Op.in]: workerIds } }, transaction: t }
+          ),
+          Service_Worker.update(
+            { canceled: true, removed: true },
+            { where: { workerId: { [Op.in]: workerIds } }, transaction: t }
+          ),
+        ]);
+      }
+
+      if (serviceIds.length > 0) {
+        await Promise.all([
+          Offer.update(
+            { canceled: true, removed: true },
+            { where: { serviceId: { [Op.in]: serviceIds } }, transaction: t }
+          ),
+          Service_Worker.update(
+            { canceled: true, removed: true },
+            { where: { serviceId: { [Op.in]: serviceIds } }, transaction: t }
+          ),
+          Notification.update(
+            { deleted: true },
+            { where: { serviceId: { [Op.in]: serviceIds } }, transaction: t }
+          ),
+        ]);
+      }
+
+      if (postIds.length > 0) {
+        await Promise.all([
+          Comment.update(
+            { is_delete: true, deleted_date: now },
+            { where: { postId: { [Op.in]: postIds } }, transaction: t }
+          ),
+          Like.destroy({
+            where: { postId: { [Op.in]: postIds } },
+            transaction: t,
+          }),
+          MediaPost.destroy({
+            where: { postId: { [Op.in]: postIds } },
+            transaction: t,
+          }),
+          Notification.update(
+            { deleted: true },
+            { where: { postId: { [Op.in]: postIds } }, transaction: t }
+          ),
+        ]);
+      }
+
+      if (reelIds.length > 0) {
+        await Promise.all([
+          ReelComment.update(
+            { is_delete: true, deleted_date: now },
+            { where: { reelId: { [Op.in]: reelIds } }, transaction: t }
+          ),
+          ReelLike.destroy({
+            where: { reelId: { [Op.in]: reelIds } },
+            transaction: t,
+          }),
+          ReelSave.destroy({
+            where: { reelId: { [Op.in]: reelIds } },
+            transaction: t,
+          }),
+          ReelView.destroy({
+            where: { reelId: { [Op.in]: reelIds } },
+            transaction: t,
+          }),
+          ReelReport.destroy({
+            where: { reelId: { [Op.in]: reelIds } },
+            transaction: t,
+          }),
+          Notification.update(
+            { deleted: true },
+            { where: { reelId: { [Op.in]: reelIds } }, transaction: t }
+          ),
+        ]);
+      }
+
+      await Notification.update(
+        { deleted: true },
+        {
+          where: {
+            [Op.or]: [{ userId }, { interactorId: userId }],
+          },
+          transaction: t,
+        }
+      );
     });
 
     return formatResponse({

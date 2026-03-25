@@ -4,7 +4,6 @@ import {
   formatResponse,
   repository,
 } from "../_module/module";
-import * as savedRepository from "../../../repository/saved/saved_repository";
 
 const ALLOWED_REPORT_REASONS = new Set([
   "impersonation_or_identity_fraud",
@@ -26,13 +25,13 @@ const normalizeReportReason = (value: any): string => {
 
 export const report = async (req: Request, res: Response) => {
   try {
-    const postId = Number(req.params?.id);
-    if (!Number.isFinite(postId) || postId <= 0) {
+    const reportedUserId = Number(req.params?.id);
+    if (!Number.isFinite(reportedUserId) || reportedUserId <= 0) {
       return formatResponse({
         res,
         success: false,
         code: 400,
-        message: "invalid post id",
+        message: "invalid user id",
       });
     }
 
@@ -49,8 +48,8 @@ export const report = async (req: Request, res: Response) => {
     const reason = normalizeReportReason((req.body as any)?.reason);
     const details = String((req.body as any)?.details ?? "").trim().slice(0, 4000);
 
-    const reportResult = await repository.reportPost({
-      postIdRaw: postId,
+    const reportResult: any = await repository.reportUserProfile({
+      reportedUserIdRaw: reportedUserId,
       reporterIdRaw: reporterId,
       reason,
       details: details || null,
@@ -61,7 +60,7 @@ export const report = async (req: Request, res: Response) => {
         res,
         success: false,
         code: 404,
-        message: "post not found",
+        message: "user not found",
       });
     }
 
@@ -79,30 +78,35 @@ export const report = async (req: Request, res: Response) => {
         res,
         success: false,
         code: 400,
-        message: "you cannot report your own post",
+        message: "you cannot report your own profile",
       });
     }
 
-    if (reportResult?.autoDeleted) {
-      await savedRepository.removeByPostId(postId);
+    if (reportResult?.storageMissing) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 503,
+        message: "reports storage is not ready yet. run migrations first",
+      });
     }
 
     return formatResponse({
       res,
       success: true,
       body: {
-        postId,
+        userId: reportedUserId,
         reason,
         already_reported: Boolean(reportResult?.alreadyReported),
         alreadyReported: Boolean(reportResult?.alreadyReported),
         reports_count: Number(reportResult?.reportsCount ?? 0),
         reportsCount: Number(reportResult?.reportsCount ?? 0),
-        auto_deleted: Boolean(reportResult?.autoDeleted),
-        autoDeleted: Boolean(reportResult?.autoDeleted),
-        threshold: Number(reportResult?.threshold ?? 15),
+        auto_disabled: Boolean(reportResult?.autoDisabled),
+        autoDisabled: Boolean(reportResult?.autoDisabled),
+        threshold: Number(reportResult?.threshold ?? 20),
       },
-      message: reportResult?.autoDeleted
-        ? "Post removed automatically due to multiple reports."
+      message: reportResult?.autoDisabled
+        ? "Profile blocked automatically due to multiple reports."
         : reportResult?.alreadyReported
         ? "Report already submitted by this user."
         : "Report submitted successfully.",

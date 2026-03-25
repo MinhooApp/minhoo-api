@@ -435,6 +435,30 @@ export const add_reel_comment = async (req: Request, res: Response) => {
       comment_created_at: commentPayload?.created_at ?? null,
     };
     socket.emit("reel/commented", realtimePayload);
+    const updatedReel = await repository.getById(reelId, req.userId);
+    const updatedAt = new Date().toISOString();
+    const updatedReelPayload =
+      updatedReel ??
+      {
+        id: reelId,
+        comments_count: Number((result as any)?.comments_count ?? 0),
+        commentsCount: Number((result as any)?.comments_count ?? 0),
+      };
+    socket.emit("reel/updated", {
+      action: "commented",
+      reelId,
+      reel_id: reelId,
+      ownerId: ownerUserId,
+      owner_id: ownerUserId,
+      actorUserId,
+      actor_user_id: actorUserId,
+      comments_count: Number((result as any)?.comments_count ?? 0),
+      commentsCount: Number((result as any)?.comments_count ?? 0),
+      updatedAt,
+      updated_at: updatedAt,
+      reel: updatedReelPayload,
+      comment: commentPayload,
+    });
 
     return formatResponse({
       res,

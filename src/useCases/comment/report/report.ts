@@ -4,7 +4,6 @@ import {
   formatResponse,
   repository,
 } from "../_module/module";
-import * as savedRepository from "../../../repository/saved/saved_repository";
 
 const ALLOWED_REPORT_REASONS = new Set([
   "impersonation_or_identity_fraud",
@@ -26,13 +25,13 @@ const normalizeReportReason = (value: any): string => {
 
 export const report = async (req: Request, res: Response) => {
   try {
-    const postId = Number(req.params?.id);
-    if (!Number.isFinite(postId) || postId <= 0) {
+    const commentId = Number(req.params?.id);
+    if (!Number.isFinite(commentId) || commentId <= 0) {
       return formatResponse({
         res,
         success: false,
         code: 400,
-        message: "invalid post id",
+        message: "invalid comment id",
       });
     }
 
@@ -49,8 +48,8 @@ export const report = async (req: Request, res: Response) => {
     const reason = normalizeReportReason((req.body as any)?.reason);
     const details = String((req.body as any)?.details ?? "").trim().slice(0, 4000);
 
-    const reportResult = await repository.reportPost({
-      postIdRaw: postId,
+    const reportResult: any = await repository.reportComment({
+      commentIdRaw: commentId,
       reporterIdRaw: reporterId,
       reason,
       details: details || null,
@@ -61,7 +60,7 @@ export const report = async (req: Request, res: Response) => {
         res,
         success: false,
         code: 404,
-        message: "post not found",
+        message: "comment not found",
       });
     }
 
@@ -79,19 +78,24 @@ export const report = async (req: Request, res: Response) => {
         res,
         success: false,
         code: 400,
-        message: "you cannot report your own post",
+        message: "you cannot report your own comment",
       });
     }
 
-    if (reportResult?.autoDeleted) {
-      await savedRepository.removeByPostId(postId);
+    if (reportResult?.storageMissing) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 503,
+        message: "reports storage is not ready yet. run migrations first",
+      });
     }
 
     return formatResponse({
       res,
       success: true,
       body: {
-        postId,
+        commentId,
         reason,
         already_reported: Boolean(reportResult?.alreadyReported),
         alreadyReported: Boolean(reportResult?.alreadyReported),
@@ -102,7 +106,7 @@ export const report = async (req: Request, res: Response) => {
         threshold: Number(reportResult?.threshold ?? 15),
       },
       message: reportResult?.autoDeleted
-        ? "Post removed automatically due to multiple reports."
+        ? "Comment removed automatically due to multiple reports."
         : reportResult?.alreadyReported
         ? "Report already submitted by this user."
         : "Report submitted successfully.",

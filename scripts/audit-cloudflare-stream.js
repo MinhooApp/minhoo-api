@@ -18,6 +18,7 @@ const args = new Set(process.argv.slice(2));
 const shouldDelete = args.has("--delete");
 const asJson = args.has("--json");
 const includeOrphanReady = args.has("--include-orphan-ready");
+const deleteOrphanReady = args.has("--delete-orphan-ready");
 
 const loadEnvFile = (filePath) => {
   const env = {};
@@ -47,11 +48,15 @@ if (!mediaToken) {
 }
 
 const mysqlConfig = {
-  host: process.env.MYSQL_HOST || "127.0.0.1",
-  user: process.env.MYSQL_USER || "minhoo_user",
-  password: process.env.MYSQL_PASSWORD || "Minhoo@2026!",
-  database: process.env.MYSQL_DATABASE || "mnh_db",
+  host: process.env.MYSQL_HOST || envFile.DB_HOST || "127.0.0.1",
+  user: process.env.MYSQL_USER || envFile.USER_DB || "minhoo_user",
+  password: process.env.MYSQL_PASSWORD || envFile.DB_PASSWORD || "Minhoo@2026!",
+  database: process.env.MYSQL_DATABASE || envFile.DB || "mnh_db",
 };
+
+if (deleteOrphanReady) {
+  SAFE_DELETE_STATES.add("ready");
+}
 
 const cloudflareHeaders = {
   Authorization: `Bearer ${mediaToken}`,

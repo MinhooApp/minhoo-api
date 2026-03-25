@@ -75,7 +75,7 @@ const LOAD_CRITICAL_FACTOR = toPositiveNumber(process.env.RISK_LOAD_CRITICAL_FAC
 const SCALE_HINT =
   String(process.env.RISK_SCALE_ACTION_HINT || "")
     .trim() ||
-  "Scale now: increase VM size (4vCPU/8GB) or add a second host behind load balancer.";
+  "Escalar ahora: aumentar tamano de VM (4vCPU/8GB) o agregar un segundo host detras del balanceador.";
 
 const nowIso = () => new Date().toISOString();
 const round2 = (v) => Math.round(Number(v) * 100) / 100;
@@ -105,7 +105,7 @@ const escapeHtml = (value) => {
 const clampTelegramText = (value, maxLen = 3900) => {
   const text = String(value ?? "");
   if (text.length <= maxLen) return text;
-  return `${text.slice(0, maxLen - 32)}\n... (truncated by monitor)`;
+  return `${text.slice(0, maxLen - 32)}\n... (recortado por monitor)`;
 };
 const parseLoadFromUptime = (raw) => {
   const match = String(raw ?? "").match(/load average:\s*([0-9.]+),\s*([0-9.]+),\s*([0-9.]+)/i);
@@ -296,7 +296,7 @@ const createTransporter = () => {
 
 const sendEmail = async ({ to, subject, html }) => {
   if (!smtpReady()) {
-    throw new Error("SMTP env is incomplete (EMAIL_HOST/PORT/USER/PASS)");
+    throw new Error("Configuracion SMTP incompleta (EMAIL_HOST/PORT/USER/PASS)");
   }
   const transporter = createTransporter();
   const from = String(process.env.EMAIL_FROM || process.env.EMAIL_USER || "Minhoo <noreply@minhoo.app>");
@@ -310,7 +310,7 @@ const sendEmail = async ({ to, subject, html }) => {
 
 const sendTelegram = async ({ text }) => {
   if (!telegramReady) {
-    throw new Error("Telegram is not configured (set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)");
+    throw new Error("Telegram no esta configurado (definir TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID)");
   }
   const payload = {
     chat_id: TELEGRAM_CHAT_ID,
@@ -330,7 +330,7 @@ const sendTelegram = async ({ text }) => {
       response.data?.description ||
       response.data?.error_code ||
       `http_status=${response.status}`;
-    throw new Error(`Telegram sendMessage failed (${reason})`);
+    throw new Error(`Fallo sendMessage de Telegram (${reason})`);
   }
   return Number(response.data?.result?.message_id || 0) || null;
 };
@@ -397,7 +397,7 @@ const probeServiceActive = (service) => {
 };
 
 const formatRiskRows = (risks) => {
-  if (!risks.length) return "<li>No risks detected.</li>";
+  if (!risks.length) return "<li>No se detectaron riesgos.</li>";
   return risks.map((risk) => `<li>${risk}</li>`).join("");
 };
 
@@ -405,15 +405,15 @@ const formatCheckRows = (checks) => {
   return checks
     .map((check) => {
       if (check.type === "service") {
-        return `<tr><td>${check.name}</td><td>${check.ok ? "OK" : "FAIL"}</td><td>${check.state}</td><td>-</td><td>-</td></tr>`;
+        return `<tr><td>${check.name}</td><td>${check.ok ? "OK" : "FALLA"}</td><td>${check.state}</td><td>-</td><td>-</td></tr>`;
       }
       if (check.type === "infra" && check.name === "nginx_stub_status") {
         const state = check.ok
           ? `active=${check.active_connections} reading=${check.reading} writing=${check.writing} waiting=${check.waiting}`
           : `status=${check.status}`;
-        return `<tr><td>${check.name}</td><td>${check.ok ? "OK" : "FAIL"}</td><td>${state}</td><td>${check.duration_ms} ms</td><td>-</td></tr>`;
+        return `<tr><td>${check.name}</td><td>${check.ok ? "OK" : "FALLA"}</td><td>${state}</td><td>${check.duration_ms} ms</td><td>-</td></tr>`;
       }
-      return `<tr><td>${check.name}</td><td>${check.ok ? "OK" : "FAIL"}</td><td>${check.status}</td><td>${check.duration_ms} ms</td><td>${check.bytes}</td></tr>`;
+      return `<tr><td>${check.name}</td><td>${check.ok ? "OK" : "FALLA"}</td><td>${check.status}</td><td>${check.duration_ms} ms</td><td>${check.bytes}</td></tr>`;
     })
     .join("");
 };
@@ -423,22 +423,22 @@ const formatTelegramRiskMessage = ({ summary, checks, risks }) => {
   const actions = Array.isArray(summary?.recommended_actions) ? summary.recommended_actions : [];
   const capacity = summary?.capacity || {};
   const lines = [];
-  lines.push("<b>Minhoo Production Risk Alert</b>");
-  lines.push(`Time: <code>${escapeHtml(summary.at)}</code>`);
-  lines.push(`Risk count: <b>${risks.length}</b>`);
-  lines.push(`Failed checks: <b>${failedChecks.length}</b>`);
-  lines.push(`Slow checks: <b>${slowChecks.length}</b>`);
+  lines.push("<b>Alerta de Riesgo en Produccion - Minhoo</b>");
+  lines.push(`Hora: <code>${escapeHtml(summary.at)}</code>`);
+  lines.push(`Cantidad de riesgos: <b>${risks.length}</b>`);
+  lines.push(`Checks fallidos: <b>${failedChecks.length}</b>`);
+  lines.push(`Checks lentos: <b>${slowChecks.length}</b>`);
   if (Number.isFinite(capacity?.utilization_percent)) {
     lines.push(
-      `Capacity: <b>${escapeHtml(capacity.utilization_percent)}%</b> (${escapeHtml(
+      `Capacidad: <b>${escapeHtml(capacity.utilization_percent)}%</b> (${escapeHtml(
         capacity.observed_rps
-      )} rps / baseline ${escapeHtml(capacity.baseline_safe_rps)} rps)`
+      )} rps / base segura ${escapeHtml(capacity.baseline_safe_rps)} rps)`
     );
   }
   lines.push("");
-  lines.push("<b>Top Risks</b>");
+  lines.push("<b>Riesgos Principales</b>");
   if (!risks.length) {
-    lines.push("• No risks detected.");
+    lines.push("• No se detectaron riesgos.");
   } else {
     for (const risk of risks.slice(0, 12)) {
       lines.push(`• ${escapeHtml(risk)}`);
@@ -446,21 +446,21 @@ const formatTelegramRiskMessage = ({ summary, checks, risks }) => {
   }
   if (actions.length) {
     lines.push("");
-    lines.push("<b>Actions</b>");
+    lines.push("<b>Acciones Recomendadas</b>");
     for (const action of actions.slice(0, 6)) {
       lines.push(`• ${escapeHtml(action)}`);
     }
   }
   lines.push("");
-  lines.push(`Base URL: <code>${escapeHtml(PUBLIC_BASE_URL)}</code>`);
+  lines.push(`URL base: <code>${escapeHtml(PUBLIC_BASE_URL)}</code>`);
   return lines.join("\n");
 };
 const formatTelegramTestMessage = ({ summary, risks }) => {
   return [
-    "<b>Minhoo Monitor Test</b>",
-    `Time: <code>${escapeHtml(summary.at)}</code>`,
-    `Risk count at test time: <b>${risks.length}</b>`,
-    "If you received this message, Telegram delivery is working.",
+    "<b>Prueba de Monitor Minhoo</b>",
+    `Hora: <code>${escapeHtml(summary.at)}</code>`,
+    `Cantidad de riesgos al momento de la prueba: <b>${risks.length}</b>`,
+    "Si recibiste este mensaje, la entrega por Telegram funciona.",
   ].join("\n");
 };
 
@@ -596,76 +596,76 @@ const main = async () => {
   for (const check of checks) {
     if (!check.ok) {
       if (check.type === "service") {
-        risks.push(`[HIGH] Service down or unknown: ${check.service} (state=${check.state})`);
-        addAction(`Restart and validate ${check.service} immediately.`);
+        risks.push(`[ALTA] Servicio caido o desconocido: ${check.service} (estado=${check.state})`);
+        addAction(`Reiniciar y validar ${check.service} inmediatamente.`);
       } else {
         risks.push(
-          `[HIGH] HTTP check failed: ${check.name} status=${check.status} duration_ms=${check.duration_ms} url=${check.url}`
+          `[ALTA] Check HTTP fallido: ${check.name} status=${check.status} duration_ms=${check.duration_ms} url=${check.url}`
         );
-        addAction("Validate upstream health and rollback recent changes if needed.");
+        addAction("Validar salud de upstream y revertir cambios recientes si aplica.");
       }
       continue;
     }
     if (check.type === "http" && check.slow) {
       risks.push(
-        `[MEDIUM] Slow endpoint: ${check.name} duration_ms=${check.duration_ms} threshold_ms=${check.warn_ms}`
+        `[MEDIA] Endpoint lento: ${check.name} duration_ms=${check.duration_ms} umbral_ms=${check.warn_ms}`
       );
-      addAction("Freeze deploys and watch latency trend for 15 minutes.");
+      addAction("Pausar deploys y vigilar tendencia de latencia por 15 minutos.");
     }
   }
   if (!nginxStubStatus.ok) {
     risks.push(
-      `[MEDIUM] Nginx stub_status unavailable: status=${nginxStubStatus.status} error=${nginxStubStatus.error || "n/a"}`
+      `[MEDIA] Nginx stub_status no disponible: status=${nginxStubStatus.status} error=${nginxStubStatus.error || "n/a"}`
     );
-    addAction("Check Nginx health endpoint and local firewall rules.");
+    addAction("Revisar endpoint de salud de Nginx y reglas de firewall local.");
   }
 
   if (Number.isFinite(systemSnapshot.load_5m)) {
     if (systemSnapshot.load_5m >= systemSnapshot.load_critical_threshold_5m) {
       risks.push(
-        `[HIGH] Host load pressure: load_5m=${systemSnapshot.load_5m} threshold=${systemSnapshot.load_critical_threshold_5m} (cpu=${CPU_COUNT})`
+        `[ALTA] Presion de carga del host: load_5m=${systemSnapshot.load_5m} umbral=${systemSnapshot.load_critical_threshold_5m} (cpu=${CPU_COUNT})`
       );
-      addAction("Scale server now and postpone heavy jobs.");
+      addAction("Escalar servidor ahora y posponer procesos pesados.");
     } else if (systemSnapshot.load_5m >= systemSnapshot.load_warn_threshold_5m) {
       risks.push(
-        `[MEDIUM] Host load elevated: load_5m=${systemSnapshot.load_5m} threshold=${systemSnapshot.load_warn_threshold_5m} (cpu=${CPU_COUNT})`
+        `[MEDIA] Carga del host elevada: load_5m=${systemSnapshot.load_5m} umbral=${systemSnapshot.load_warn_threshold_5m} (cpu=${CPU_COUNT})`
       );
-      addAction("Prepare scaling and reduce non-critical workloads.");
+      addAction("Preparar escalado y reducir cargas no criticas.");
     }
   }
 
   if (Number.isFinite(systemSnapshot.mem_available_mb) && systemSnapshot.mem_available_mb <= MIN_MEM_AVAILABLE_MB) {
     risks.push(
-      `[HIGH] Low memory headroom: available_mb=${systemSnapshot.mem_available_mb} threshold_mb=${MIN_MEM_AVAILABLE_MB}`
+      `[ALTA] Margen de memoria bajo: available_mb=${systemSnapshot.mem_available_mb} umbral_mb=${MIN_MEM_AVAILABLE_MB}`
     );
-    addAction("Scale memory immediately and verify memory-heavy endpoints.");
+    addAction("Escalar memoria de inmediato y revisar endpoints intensivos en memoria.");
   }
 
   const capacityTelemetry = computeCapacityTelemetry(nginxStubStatus);
   if (Number.isFinite(capacityTelemetry.utilization_percent)) {
     if (capacityTelemetry.utilization_percent >= CAPACITY_CRITICAL_PCT) {
       risks.push(
-        `[HIGH] Capacity critical: utilization=${capacityTelemetry.utilization_percent}% observed_rps=${capacityTelemetry.observed_rps} baseline_safe_rps=${BASELINE_SAFE_RPS}`
+        `[ALTA] Capacidad critica: utilizacion=${capacityTelemetry.utilization_percent}% observed_rps=${capacityTelemetry.observed_rps} baseline_safe_rps=${BASELINE_SAFE_RPS}`
       );
       addAction(SCALE_HINT);
-      addAction("Enable temporary containment limits until utilization returns below 80%.");
+      addAction("Aplicar limites temporales hasta que la utilizacion baje de 80%.");
     } else if (capacityTelemetry.utilization_percent >= CAPACITY_SCALE_PCT) {
       risks.push(
-        `[MEDIUM] Capacity at scale threshold: utilization=${capacityTelemetry.utilization_percent}% observed_rps=${capacityTelemetry.observed_rps} baseline_safe_rps=${BASELINE_SAFE_RPS}`
+        `[MEDIA] Capacidad en umbral de escalado: utilizacion=${capacityTelemetry.utilization_percent}% observed_rps=${capacityTelemetry.observed_rps} baseline_safe_rps=${BASELINE_SAFE_RPS}`
       );
       addAction(SCALE_HINT);
-      addAction("Scale now to avoid saturation and keep p95 latency stable.");
+      addAction("Escalar ahora para evitar saturacion y mantener estable la latencia p95.");
     } else if (capacityTelemetry.utilization_percent >= CAPACITY_WARN_PCT) {
       risks.push(
-        `[LOW] Capacity warning: utilization=${capacityTelemetry.utilization_percent}% observed_rps=${capacityTelemetry.observed_rps} baseline_safe_rps=${BASELINE_SAFE_RPS}`
+        `[BAJA] Advertencia de capacidad: utilizacion=${capacityTelemetry.utilization_percent}% observed_rps=${capacityTelemetry.observed_rps} baseline_safe_rps=${BASELINE_SAFE_RPS}`
       );
-      addAction("Prepare scaling; trigger proactive scale at 80% utilization.");
+      addAction("Preparar escalado; activar escalado proactivo al 80% de utilizacion.");
     }
   }
 
   if (!INTERNAL_DEBUG_TOKEN) {
     risks.push(
-      "[LOW] INTERNAL_DEBUG_TOKEN is empty in current environment; internal debug checks may fail."
+      "[BAJA] INTERNAL_DEBUG_TOKEN esta vacio en el entorno actual; checks internos pueden fallar."
     );
   }
 
@@ -697,25 +697,25 @@ const main = async () => {
   const notifierErrors = [];
 
   if (risks.length > 0) {
-    const subject = `[RISK] Minhoo production monitor detected ${risks.length} issue(s)`;
+    const subject = `[RIESGO] Monitor de produccion Minhoo detecto ${risks.length} incidencia(s)`;
     const systemSnapshot = summary.system_snapshot || {};
     const capacity = summary.capacity || {};
     const actions = Array.isArray(summary.recommended_actions) ? summary.recommended_actions : [];
     const html = `
-      <h2>Minhoo Production Risk Alert</h2>
-      <p><strong>Timestamp:</strong> ${summary.at}</p>
-      <p><strong>Risk count:</strong> ${risks.length}</p>
-      <p><strong>System:</strong> cpu=${systemSnapshot.cpu_count || "n/a"} load_5m=${
+      <h2>Alerta de Riesgo en Produccion - Minhoo</h2>
+      <p><strong>Fecha/Hora:</strong> ${summary.at}</p>
+      <p><strong>Cantidad de riesgos:</strong> ${risks.length}</p>
+      <p><strong>Sistema:</strong> cpu=${systemSnapshot.cpu_count || "n/a"} load_5m=${
       systemSnapshot.load_5m ?? "n/a"
     } mem_available_mb=${systemSnapshot.mem_available_mb ?? "n/a"}</p>
-      <p><strong>Capacity:</strong> utilization=${capacity.utilization_percent ?? "n/a"}% observed_rps=${
+      <p><strong>Capacidad:</strong> utilizacion=${capacity.utilization_percent ?? "n/a"}% observed_rps=${
       capacity.observed_rps ?? "n/a"
     } baseline_safe_rps=${capacity.baseline_safe_rps ?? "n/a"}</p>
       <ul>${formatRiskRows(risks)}</ul>
-      ${actions.length ? `<h3>Recommended Actions</h3><ol>${actions.map((item) => `<li>${item}</li>`).join("")}</ol>` : ""}
+      ${actions.length ? `<h3>Acciones Recomendadas</h3><ol>${actions.map((item) => `<li>${item}</li>`).join("")}</ol>` : ""}
       <h3>Checks</h3>
       <table border="1" cellpadding="6" cellspacing="0">
-        <thead><tr><th>Check</th><th>Result</th><th>Status/State</th><th>Duration</th><th>Bytes</th></tr></thead>
+        <thead><tr><th>Check</th><th>Resultado</th><th>Status/Estado</th><th>Duracion</th><th>Bytes</th></tr></thead>
         <tbody>${formatCheckRows(checks)}</tbody>
       </table>
     `;
@@ -723,7 +723,7 @@ const main = async () => {
       await sendEmail({ to: ALERT_EMAIL, subject, html });
       emailedRisk = true;
     } catch (error) {
-      notifierErrors.push(`email_risk_failed: ${String(error?.message || error)}`);
+      notifierErrors.push(`email_risk_fallido: ${String(error?.message || error)}`);
     }
   }
 
@@ -733,31 +733,31 @@ const main = async () => {
       await sendTelegram({ text });
       telegramRisk = true;
     } catch (error) {
-      notifierErrors.push(`telegram_risk_failed: ${String(error?.message || error)}`);
+      notifierErrors.push(`telegram_risk_fallido: ${String(error?.message || error)}`);
     }
   }
 
   if (SEND_TEST_EMAIL) {
-    const subject = "[TEST] Minhoo monitor email delivery test";
+    const subject = "[PRUEBA] Test de entrega de email del monitor Minhoo";
     const html = `
-      <h2>Minhoo Monitor Test Email</h2>
-      <p>This is a test email requested after running production checks.</p>
-      <p><strong>Timestamp:</strong> ${summary.at}</p>
-      <p><strong>Risk count at test time:</strong> ${risks.length}</p>
-      <p>If you received this email, SMTP delivery is working.</p>
+      <h2>Email de Prueba - Monitor Minhoo</h2>
+      <p>Este es un email de prueba solicitado luego de correr los checks de produccion.</p>
+      <p><strong>Fecha/Hora:</strong> ${summary.at}</p>
+      <p><strong>Cantidad de riesgos al momento de la prueba:</strong> ${risks.length}</p>
+      <p>Si recibiste este email, la entrega SMTP funciona.</p>
     `;
     try {
       await sendEmail({ to: ALERT_EMAIL, subject, html });
       emailedTest = true;
     } catch (error) {
-      notifierErrors.push(`email_test_failed: ${String(error?.message || error)}`);
+      notifierErrors.push(`email_test_fallido: ${String(error?.message || error)}`);
     }
   }
 
   if (SEND_TEST_TELEGRAM) {
     if (!telegramReady) {
       notifierErrors.push(
-        "telegram_test_failed: Telegram disabled or missing TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID"
+        "telegram_test_fallido: Telegram deshabilitado o faltan TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID"
       );
     } else {
       try {
@@ -765,7 +765,7 @@ const main = async () => {
         await sendTelegram({ text });
         telegramTest = true;
       } catch (error) {
-        notifierErrors.push(`telegram_test_failed: ${String(error?.message || error)}`);
+        notifierErrors.push(`telegram_test_fallido: ${String(error?.message || error)}`);
       }
     }
   }

@@ -134,6 +134,22 @@ const createComment = async (req: Request, res: Response) => {
     commentCreatedAt: toIsoOrNull(createdComment?.createdAt ?? createdComment?.created_at ?? createdComment?.created_date),
     comment_created_at: toIsoOrNull(createdComment?.createdAt ?? createdComment?.created_at ?? createdComment?.created_date),
   });
+  const updatedAt = new Date().toISOString();
+  socket.emit("post/updated", {
+    action: "commented",
+    postId: Number(post?.id ?? postId),
+    post_id: Number(post?.id ?? postId),
+    ownerId: Number(post?.userId ?? 0),
+    owner_id: Number(post?.userId ?? 0),
+    actorUserId: Number(req.userId ?? 0),
+    actor_user_id: Number(req.userId ?? 0),
+    commentsCount: Number(postPayload.comments_count ?? 0),
+    comments_count: Number(postPayload.comments_count ?? 0),
+    updatedAt,
+    updated_at: updatedAt,
+    post: postPayload,
+    comment: normalizePostCommentPayload(createdComment),
+  });
 
   return formatResponse({ res, success: true, body: { post } });
 };

@@ -84,6 +84,11 @@ const normalizeUserId = (value: any): number | null => {
   return n;
 };
 
+const normalizeVideoUid = (value: any): string | null => {
+  const token = String(value ?? "").trim().slice(0, 128);
+  return token.length > 0 ? token : null;
+};
+
 const clamp01 = (value: number) => {
   if (!Number.isFinite(value)) return 0;
   if (value <= 0) return 0;
@@ -162,9 +167,11 @@ const ORBIT_CREATOR_COOLDOWN = 5;
 const ORBIT_MAX_TOPIC_STREAK = 2;
 const ORBIT_NEW_CREATOR_EVERY = 6;
 const ORBIT_TOPK_SHUFFLE_WINDOW = 40;
+const ORBIT_PERSISTENT_FEED =
+  String(process.env.ORBIT_PERSISTENT_FEED ?? "1").trim() !== "0";
 const REEL_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
-  1,
-  Number(process.env.REEL_REPORT_AUTO_DELETE_THRESHOLD ?? 10) || 10
+  15,
+  Number(process.env.REEL_REPORT_AUTO_DELETE_THRESHOLD ?? 15) || 15
 );
 
 type OrbitBucket = "affinity" | "trending" | "social" | "exploration";
@@ -428,11 +435,22 @@ const setDataValue = (row: any, key: string, value: any) => {
 const toPlain = (row: any) =>
   row && typeof row.toJSON === "function" ? row.toJSON() : row;
 
+const toNonNegativeInt = (value: any): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed);
+};
+
 const withFlagAliases = (row: any) => {
   if (!row) return row;
   const reel = toPlain(row);
   const isStarred = Boolean(reel?.isStarred ?? reel?.is_starred ?? reel?.is_liked);
   const isSaved = Boolean(reel?.isSaved ?? reel?.is_saved);
+  const likesCount = toNonNegativeInt(reel?.likes_count ?? reel?.likesCount);
+  const commentsCount = toNonNegativeInt(reel?.comments_count ?? reel?.commentsCount);
+  const savesCount = toNonNegativeInt(reel?.saves_count ?? reel?.savesCount);
+  const sharesCount = toNonNegativeInt(reel?.shares_count ?? reel?.sharesCount);
+  const viewsCount = toNonNegativeInt(reel?.views_count ?? reel?.viewsCount);
   const freshness = buildReelFreshness(reel);
   const playback = buildPlaybackState(reel);
 
@@ -524,6 +542,16 @@ const withFlagAliases = (row: any) => {
           },
         }
       : {}),
+    likes_count: likesCount,
+    likesCount,
+    comments_count: commentsCount,
+    commentsCount,
+    saves_count: savesCount,
+    savesCount,
+    shares_count: sharesCount,
+    sharesCount,
+    views_count: viewsCount,
+    viewsCount,
     is_starred: isStarred,
     is_liked: isStarred,
     is_saved: isSaved,
@@ -766,6 +794,12 @@ const getOrbitSessionState = async (
 
   const state = loaded.state ?? buildEmptyOrbitSessionState();
   state.updatedAt = Date.now();
+  if (ORBIT_PERSISTENT_FEED) {
+    state.seenReelIds = [];
+    state.recentCreatorIds = [];
+    state.recentPrimaryTopics = [];
+    state.creatorImpressions = {};
+  }
 
   return {
     state,
@@ -791,7 +825,7 @@ const updateOrbitSessionState = async (
   if (!sessionMemoryKey) return "memory" as const;
   const state = sessionState;
 
-  if (Array.isArray(selectedRows) && selectedRows.length) {
+  if (!ORBIT_PERSISTENT_FEED && Array.isArray(selectedRows) && selectedRows.length) {
     selectedRows.forEach((row) => {
       const reelId = Number(row?.id);
       const creatorId = Number(row?.user?.id ?? row?.userId);
@@ -1127,10 +1161,20 @@ const buildOrbitCandidate = ({
   const explorationScore =
     socialScore > 0 ? 0 : clamp01(noveltyScore * 0.7 + (ageHours <= 72 ? 0.3 : 0.1));
 
-  const seenInSession = sessionState.seenReelIds.includes(id);
-  const recentlyViewed = recentlyViewedSet.has(id);
-  const recentCreatorPenalty = sessionState.recentCreatorIds.includes(creatorId) ? 0.22 : 0;
-  const recentTopicPenalty = sessionState.recentPrimaryTopics.includes(primaryTopic) ? 0.08 : 0;
+  const seenInSession = ORBIT_PERSISTENT_FEED
+    ? false
+    : sessionState.seenReelIds.includes(id);
+  const recentlyViewed = ORBIT_PERSISTENT_FEED ? false : recentlyViewedSet.has(id);
+  const recentCreatorPenalty = ORBIT_PERSISTENT_FEED
+    ? 0
+    : sessionState.recentCreatorIds.includes(creatorId)
+    ? 0.22
+    : 0;
+  const recentTopicPenalty = ORBIT_PERSISTENT_FEED
+    ? 0
+    : sessionState.recentPrimaryTopics.includes(primaryTopic)
+    ? 0.08
+    : 0;
   const fatiguePenalty = seenInSession ? 0.6 : recentlyViewed ? 0.35 : 0;
   const lowQualityPenalty =
     ageHours > 72 && engagementVolume < 6 && watchProxyScore < 0.2 ? 0.18 : 0;
@@ -1711,7 +1755,9 @@ export const listFeed = async (
       } as any)
     ),
     loadOrbitViewerContext(viewerId, profiler),
-    loadRecentlyViewedOrbitIds(viewerId, sessionToken, profiler),
+    ORBIT_PERSISTENT_FEED
+      ? Promise.resolve(new Set<number>())
+      : loadRecentlyViewedOrbitIds(viewerId, sessionToken, profiler),
   ]);
 
   const candidateRows = await fetchOrbitCandidatePool({
@@ -1856,11 +1902,28 @@ export const listByUser = async (
   targetUserIdRaw: any,
   pageRaw: any,
   sizeRaw: any,
-  viewerIdRaw: any
+  viewerIdRaw: any,
+  options: {
+    afterReelId?: any;
+    afterVideoUid?: any;
+    loop?: any;
+  } = {}
 ) => {
   const targetUserId = normalizeUserId(targetUserIdRaw);
+  const afterReelId = normalizeUserId(options?.afterReelId);
+  const afterVideoUid = normalizeVideoUid(options?.afterVideoUid);
+  const cursorSupplied = Boolean(afterReelId || afterVideoUid);
+
   if (!targetUserId) {
-    return { page: 0, size: 0, count: 0, rows: [], notFound: true };
+    return {
+      page: 0,
+      size: 0,
+      count: 0,
+      rows: [],
+      notFound: true,
+      cursorSupplied,
+      cursorMatched: null,
+    };
   }
 
   const viewerId = normalizeUserId(viewerIdRaw);
@@ -1876,7 +1939,15 @@ export const listByUser = async (
     attributes: ["id"],
   });
   if (!owner) {
-    return { page, size, count: 0, rows: [], notFound: true };
+    return {
+      page,
+      size,
+      count: 0,
+      rows: [],
+      notFound: true,
+      cursorSupplied,
+      cursorMatched: null,
+    };
   }
 
   let canSeeFollowersOnly = false;
@@ -1906,6 +1977,48 @@ export const listByUser = async (
     baseWhere[Op.and] = blockedAnd;
   }
 
+  let cursorMatched: boolean | null = null;
+  let cursorAnchorId: number | null = null;
+  let cursorAnchorCreatedAt: Date | null = null;
+  if (cursorSupplied) {
+    const cursorWhere: any = {
+      ...baseWhere,
+      ...(afterReelId ? { id: afterReelId } : { video_uid: afterVideoUid }),
+    };
+
+    const cursorRow = await Reel.findOne({
+      where: cursorWhere,
+      attributes: ["id", "createdAt"],
+      replacements: { meId: viewerId ?? -1, targetId: targetUserId },
+    });
+    cursorMatched = Boolean(cursorRow);
+    if (cursorRow) {
+      cursorAnchorId = normalizeUserId((cursorRow as any)?.id);
+      const rawCreatedAt = (cursorRow as any)?.createdAt;
+      cursorAnchorCreatedAt = rawCreatedAt ? new Date(rawCreatedAt) : null;
+    }
+  }
+
+  if (cursorMatched && cursorAnchorId) {
+    const existingAnd = Array.isArray(baseWhere[Op.and]) ? [...baseWhere[Op.and]] : [];
+    if (cursorAnchorCreatedAt) {
+      existingAnd.push({
+        [Op.or]: [
+          { createdAt: { [Op.lt]: cursorAnchorCreatedAt } },
+          {
+            [Op.and]: [
+              { createdAt: cursorAnchorCreatedAt },
+              { id: { [Op.lt]: cursorAnchorId } },
+            ],
+          },
+        ],
+      });
+    } else {
+      existingAnd.push({ id: { [Op.lt]: cursorAnchorId } });
+    }
+    baseWhere[Op.and] = existingAnd;
+  }
+
   const reels = await Reel.findAndCountAll({
     where: baseWhere,
     include: [
@@ -1920,7 +2033,10 @@ export const listByUser = async (
       },
     ],
     replacements: { meId: viewerId ?? -1, targetId: targetUserId },
-    order: [["createdAt", "DESC"]],
+    order: [
+      ["createdAt", "DESC"],
+      ["id", "DESC"],
+    ],
     distinct: true,
     limit: size,
     offset: page * size,
@@ -1935,6 +2051,8 @@ export const listByUser = async (
     count: Number(reels.count || 0),
     rows: mapWithFlagAliases(reels.rows),
     notFound: false,
+    cursorSupplied,
+    cursorMatched,
   };
 };
 
