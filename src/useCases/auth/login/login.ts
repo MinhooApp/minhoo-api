@@ -8,10 +8,13 @@ import {
   uRepository,
   sendEmail,
 } from "../_module/module";
+import jwt from "jsonwebtoken";
+import { getRefreshJwtSecrets } from "../../../libs/helper/generate_jwt";
 import { getSocketInstance } from "../../../_sockets/socket_instance";
 import User from "../../../_models/user/user";
 import * as followerRepo from "../../../repository/follower/follower_repository";
 import {
+  isUserAuthSessionActive,
   revokeAllUserAuthSessions,
   revokeAuthSessionsByDeviceUuid,
   revokeUserAuthSessionToken,
@@ -119,6 +122,48 @@ const extractBearerToken = (req: Request): string => {
   const header = req.header("Authorization");
   if (!header) return "";
   return normalizeAuthToken(header);
+};
+
+const extractRefreshToken = (req: Request): string => {
+  const body: any = req.body ?? {};
+  const headers: any = req.headers ?? {};
+  const candidates = [
+    body?.refresh_token,
+    body?.refreshToken,
+    body?.token,
+    body?.auth_token,
+    headers?.["x-refresh-token"],
+    headers?.["x-auth-refresh-token"],
+    req.header("Authorization"),
+  ];
+
+  for (const candidate of candidates) {
+    const token = normalizeAuthToken(candidate);
+    if (token) return token;
+  }
+  return "";
+};
+
+const allowRefreshFromAccessToken = () =>
+  !String(process.env.AUTH_ALLOW_ACCESS_TOKEN_REFRESH ?? "1")
+    .trim()
+    .match(/^(0|false|no|off)$/i);
+
+const verifyJwtWithSecrets = (token: string, secrets: string[]): any | null => {
+  for (const secret of secrets) {
+    try {
+      return jwt.verify(token, secret) as any;
+    } catch (_error) {
+      // continue with next configured secret
+    }
+  }
+  return null;
+};
+
+const resolveTokenType = (payload: any): string => {
+  return String(payload?.tokenType ?? payload?.token_type ?? "")
+    .trim()
+    .toLowerCase();
 };
 
 export const login = async (req: Request, res: Response) => {
@@ -299,6 +344,131 @@ export const login = async (req: Request, res: Response) => {
   }
 };
 
+export const refreshToken = async (req: Request, res: Response) => {
+  try {
+    const rawRefreshToken = extractRefreshToken(req);
+    if (!rawRefreshToken) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 401,
+        message: "Refresh token missing.",
+      });
+    }
+
+    const payload = verifyJwtWithSecrets(rawRefreshToken, getRefreshJwtSecrets());
+    if (!payload) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 401,
+        message: "Invalid refresh token.",
+      });
+    }
+
+    const tokenType = resolveTokenType(payload);
+    if (tokenType && tokenType !== "refresh") {
+      if (!(allowRefreshFromAccessToken() && tokenType === "access")) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 401,
+          message: "Invalid refresh token type.",
+        });
+      }
+    }
+
+    const userId = Number(payload?.userId ?? 0);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 401,
+        message: "Invalid refresh token payload.",
+      });
+    }
+
+    const userStatus = await User.findOne({
+      where: { id: userId },
+      attributes: ["id", "available", "disabled", "auth_token"],
+    });
+    if (!userStatus || !(userStatus as any).available) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 401,
+        message: "Access denied, user not found.",
+      });
+    }
+    if (Boolean((userStatus as any).disabled)) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 403,
+        message: "This account has been disabled by an administrator.",
+      });
+    }
+
+    const storedAuthToken = normalizeAuthToken((userStatus as any)?.auth_token);
+    const tokenMatchesLegacy = Boolean(storedAuthToken && storedAuthToken === rawRefreshToken);
+    const tokenMatchesSession = tokenMatchesLegacy
+      ? true
+      : await isUserAuthSessionActive(userId, rawRefreshToken);
+
+    if (!tokenMatchesSession) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 401,
+        message: "Refresh token revoked.",
+      });
+    }
+
+    const userTemp = await repository.findById(userId);
+    if (!userTemp) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 401,
+        message: "Access denied, user not found.",
+      });
+    }
+
+    const roles: number[] = [];
+    const userRoles = (userTemp as any)?.roles;
+    if (Array.isArray(userRoles)) {
+      userRoles.forEach((role: any) => {
+        const roleId = Number(role?.id);
+        if (Number.isFinite(roleId) && roleId > 0) {
+          roles.push(roleId);
+        }
+      });
+    }
+
+    const uuid = extractDeviceToken(req);
+    const user = await repository.saveToken({
+      userId,
+      uuid,
+      roles,
+      workerId:
+        (userTemp as any)?.worker != null
+          ? Number((userTemp as any)?.worker?.id ?? 0) || null
+          : null,
+    });
+
+    await revokeUserAuthSessionToken(userId, rawRefreshToken);
+
+    return formatResponse({
+      res,
+      success: true,
+      body: { user, refreshed: true },
+    });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res, success: false, message: error });
+  }
+};
+
 export const changePass = async (req: Request, res: Response) => {
   try {
     const { current_password, password, confirm_password } = req.body;
@@ -417,9 +587,16 @@ export const logout = async (req: Request, res: Response) => {
 
 export const logoutDevice = async (req: Request, res: Response) => {
   try {
-    const rawUuid = extractDeviceToken(req);
-    const userIdRaw = Number(req.body?.userId ?? 0);
+    const userId = Number((req as any).userId ?? 0);
+    if (!Number.isFinite(userId) || userId <= 0) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Invalid session user.",
+      });
+    }
 
+    const rawUuid = extractDeviceToken(req);
     if (!rawUuid || rawUuid.length < 20) {
       return formatResponse({
         res,
@@ -428,32 +605,14 @@ export const logoutDevice = async (req: Request, res: Response) => {
       });
     }
 
-    const where: any = { uuid: rawUuid };
-    if (Number.isFinite(userIdRaw) && userIdRaw > 0) {
-      where.id = userIdRaw;
-    }
-
-    const users = await User.findAll({
-      where,
-      attributes: ["id"],
-      raw: true,
-    });
-
-    const affectedUserIds = (users as unknown as Array<{ id: number }>)
-      .map((u) => Number(u.id))
-      .filter((id) => Number.isFinite(id) && id > 0);
-
     await revokeAuthSessionsByDeviceUuid(rawUuid, {
-      userId: Number.isFinite(userIdRaw) && userIdRaw > 0 ? userIdRaw : null,
+      userId,
     });
 
     await User.update(
       { uuid: null },
-      { where: { uuid: rawUuid, ...(where.id ? { id: where.id } : {}) } }
+      { where: { id: userId, uuid: rawUuid } }
     );
-
-    // Evita cortar sesiones de otros dispositivos: las sesiones del device quedan revocadas.
-    void affectedUserIds;
 
     return formatResponse({ res, success: true });
   } catch (error) {

@@ -78,6 +78,14 @@ export const TokenOptional = (allowedRoles?: number[]): RequestHandler => {
       if (!verified) {
         throw new Error("invalid token signature");
       }
+      const tokenType = String(
+        (verified as any)?.tokenType ?? (verified as any)?.token_type ?? ""
+      )
+        .trim()
+        .toLowerCase();
+      if (tokenType && tokenType !== "access") {
+        throw new Error("invalid token type");
+      }
       const { userId, roles, workerId } = verified;
       const normalizedRoles = Array.isArray(roles) ? roles : [];
 

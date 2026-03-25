@@ -3,12 +3,11 @@ import Role from "../../_models/role/role";
 import Plan from "../../_models/plan/plan";
 import Worker from "../../_models/worker/worker";
 import Category from "../../_models/category/category";
-import generarJWT from "../../libs/helper/generate_jwt";
+import generarJWT, { generarRefreshJWT } from "../../libs/helper/generate_jwt";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 import Verification from "../../_models/verification/verification";
 import {
   registerUserAuthSession,
-  revokeAuthSessionsByDeviceUuid,
 } from "../../libs/auth/user_auth_session";
 interface JWTOptions {
   userId: number | null;
@@ -18,6 +17,10 @@ interface JWTOptions {
   username?: string;
   roles?: number[];
 } //
+const shouldIssueRefreshToken = (): boolean => {
+  return !String(process.env.AUTH_REFRESH_TOKENS_ENABLED ?? "1").trim().match(/^(0|false|no|off)$/i);
+};
+
 const userIncludes = [
   {
     model: Role,
@@ -173,23 +176,15 @@ export const saveToken = async ({
     roles: roles,
     workerId: workerId,
   });
+  const refreshToken = shouldIssueRefreshToken()
+    ? await generarRefreshJWT({
+      userId: userId,
+      roles: roles,
+      workerId: workerId,
+    })
+    : "";
 
   const normalizedUuid = String(uuid ?? "").trim();
-  if (normalizedUuid) {
-    // Un mismo token de dispositivo solo debe pertenecer a una cuenta activa.
-    await User.update(
-      { uuid: null },
-      {
-        where: {
-          uuid: normalizedUuid,
-          id: { [Op.ne]: userId },
-        },
-      }
-    );
-    await revokeAuthSessionsByDeviceUuid(normalizedUuid, {
-      excludeUserId: Number(userId),
-    });
-  }
 
   const body: any = { auth_token: token };
   if (normalizedUuid) body.uuid = normalizedUuid;
@@ -204,6 +199,11 @@ export const saveToken = async ({
   await registerUserAuthSession(userId, token, {
     deviceUuid: normalizedUuid || null,
   });
+  if (refreshToken) {
+    await registerUserAuthSession(userId, refreshToken, {
+      deviceUuid: normalizedUuid || null,
+    });
+  }
 
   const sameDeviceTokenRotation =
     Boolean(normalizedUuid) &&
@@ -226,6 +226,16 @@ export const saveToken = async ({
       exclude: excludeKeys,
     },
   });
+
+  if (user) {
+    if (typeof (user as any).setDataValue === "function") {
+      (user as any).setDataValue("access_token", token);
+      (user as any).setDataValue("refresh_token", refreshToken || null);
+    } else {
+      (user as any).access_token = token;
+      (user as any).refresh_token = refreshToken || null;
+    }
+  }
 
   return user;
 };

@@ -10,6 +10,10 @@ import { isSummaryMode, toPostSummary } from "../../../libs/summary_response";
 import * as userRepository from "../../../repository/user/user_repository";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
 import { formatRelativeTime } from "../../../libs/localization/relative_time";
+import {
+  loadFindSessionState,
+  saveFindSessionState,
+} from "../../../libs/cache/find_session_store";
 
 const isTruthy = (value: any) => {
   const v = String(value ?? "").trim().toLowerCase();
@@ -19,6 +23,16 @@ const isTruthy = (value: any) => {
 const shouldLogFindProfile = () => isTruthy(process.env.FIND_RANKING_PROFILE);
 const nowMs = () => Number(process.hrtime.bigint()) / 1_000_000;
 const round3 = (value: number) => Math.round(Number(value) * 1000) / 1000;
+const postSummaryCacheEnabled = !isTruthy(process.env.POST_SUMMARY_CACHE_DISABLED ?? "0");
+const postSummaryCacheTtlSeconds = Math.max(
+  60,
+  Number(process.env.POST_SUMMARY_CACHE_TTL_SECONDS ?? 60) || 60
+);
+
+type PostSummaryCacheEntry = {
+  cachedAtMs: number;
+  body: any | null;
+};
 
 const toSessionKey = (req: Request) => {
   const queryKey = String(
@@ -41,6 +55,47 @@ const toSessionKey = (req: Request) => {
     .update(`${ip}|${userAgent}`)
     .digest("hex")
     .slice(0, 40);
+};
+
+const buildPostSummaryCacheKey = (params: {
+  variant: "feed" | "suggested";
+  page: number;
+  size: number;
+  viewerId: number;
+  sessionKey: string;
+}) => {
+  const sessionSuffix = params.sessionKey || "anonymous";
+  return `summary:${params.variant}:v:${params.viewerId}:p:${params.page}:s:${params.size}:sk:${sessionSuffix}`;
+};
+
+const readPostSummaryCache = async (cacheKey: string): Promise<any | null> => {
+  if (!postSummaryCacheEnabled || !cacheKey) return null;
+  const loaded = await loadFindSessionState<PostSummaryCacheEntry>({
+    scope: "post",
+    sessionKey: cacheKey,
+    ttlSeconds: postSummaryCacheTtlSeconds,
+    initialState: {
+      cachedAtMs: 0,
+      body: null,
+    },
+  });
+  const entry = loaded?.state;
+  if (!entry?.body || !entry?.cachedAtMs) return null;
+  if (Date.now() - Number(entry.cachedAtMs) > postSummaryCacheTtlSeconds * 1000) return null;
+  return entry.body;
+};
+
+const writePostSummaryCache = async (cacheKey: string, body: any) => {
+  if (!postSummaryCacheEnabled || !cacheKey) return;
+  await saveFindSessionState<PostSummaryCacheEntry>({
+    scope: "post",
+    sessionKey: cacheKey,
+    ttlSeconds: postSummaryCacheTtlSeconds,
+    state: {
+      cachedAtMs: Date.now(),
+      body,
+    },
+  });
 };
 
 const normalizeUserId = (value: any): number | null => {
@@ -176,8 +231,25 @@ export const gets = async (req: Request, res: Response) => {
     const page = Math.max(0, Number(req.query.page ?? 0) || 0);
     const size = Math.min(Math.max(Number(req.query.size ?? 10) || 10, 1), 20);
     const summary = isSummaryMode((req.query as any)?.summary);
+    const sessionKey = toSessionKey(req);
+    const viewerId = Number(req.userId ?? 0) || 0;
+    if (summary) {
+      const cacheKey = buildPostSummaryCacheKey({
+        variant: "feed",
+        page,
+        size,
+        viewerId,
+        sessionKey,
+      });
+      const cachedBody = await readPostSummaryCache(cacheKey);
+      if (cachedBody) {
+        res.set("X-Summary-Cache", "hit");
+        return formatResponse({ res, success: true, body: cachedBody });
+      }
+      res.set("X-Summary-Cache", "miss");
+    }
     const posts = await (summary ? repository.getsSummary : repository.gets)(page, size, req.userId, {
-      sessionKey: toSessionKey(req),
+      sessionKey,
     });
     await attachSavedFlags(req.userId, posts.rows);
     const locale = await resolveRequestLocale(req);
@@ -198,17 +270,30 @@ export const gets = async (req: Request, res: Response) => {
       );
     }
 
+    const responseBody = {
+      page,
+      size,
+      count: posts.count,
+      posts: summary
+        ? (posts.rows ?? []).map((post: any) => toPostSummary(post, req.userId))
+        : posts.rows,
+    };
+
+    if (summary) {
+      const cacheKey = buildPostSummaryCacheKey({
+        variant: "feed",
+        page,
+        size,
+        viewerId,
+        sessionKey,
+      });
+      await writePostSummaryCache(cacheKey, responseBody);
+    }
+
     return formatResponse({
       res: res,
       success: true,
-      body: {
-        page,
-        size,
-        count: posts.count,
-        posts: summary
-          ? (posts.rows ?? []).map((post: any) => toPostSummary(post, req.userId))
-          : posts.rows,
-      },
+      body: responseBody,
     });
   } catch (error) {
     return formatResponse({ res: res, success: false, message: error });
@@ -221,12 +306,29 @@ export const getsSuggested = async (req: Request, res: Response) => {
     const page = Math.max(0, Number(req.query.page ?? 0) || 0);
     const size = Math.min(Math.max(Number(req.query.size ?? 10) || 10, 1), 20);
     const summary = isSummaryMode((req.query as any)?.summary);
+    const sessionKey = toSessionKey(req);
+    const viewerId = Number(req.userId ?? 0) || 0;
+    if (summary) {
+      const cacheKey = buildPostSummaryCacheKey({
+        variant: "suggested",
+        page,
+        size,
+        viewerId,
+        sessionKey,
+      });
+      const cachedBody = await readPostSummaryCache(cacheKey);
+      if (cachedBody) {
+        res.set("X-Summary-Cache", "hit");
+        return formatResponse({ res, success: true, body: cachedBody });
+      }
+      res.set("X-Summary-Cache", "miss");
+    }
     const posts = await (summary ? repository.getsSuggestedSummary : repository.getsSuggested)(
       page,
       size,
       req.userId,
       {
-      sessionKey: toSessionKey(req),
+      sessionKey,
       }
     );
     await attachSavedFlags(req.userId, posts.rows);
@@ -248,17 +350,30 @@ export const getsSuggested = async (req: Request, res: Response) => {
       );
     }
 
+    const responseBody = {
+      page,
+      size,
+      count: posts.count,
+      posts: summary
+        ? (posts.rows ?? []).map((post: any) => toPostSummary(post, req.userId))
+        : posts.rows,
+    };
+
+    if (summary) {
+      const cacheKey = buildPostSummaryCacheKey({
+        variant: "suggested",
+        page,
+        size,
+        viewerId,
+        sessionKey,
+      });
+      await writePostSummaryCache(cacheKey, responseBody);
+    }
+
     return formatResponse({
       res: res,
       success: true,
-      body: {
-        page,
-        size,
-        count: posts.count,
-        posts: summary
-          ? (posts.rows ?? []).map((post: any) => toPostSummary(post, req.userId))
-          : posts.rows,
-      },
+      body: responseBody,
     });
   } catch (error) {
     return formatResponse({ res: res, success: false, message: error });

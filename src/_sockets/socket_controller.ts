@@ -1007,6 +1007,12 @@ function resolveUserIdFromToken(tokenRaw: any): number {
   for (const secret of secrets) {
     try {
       const payload = jwt.verify(token, secret) as any;
+      const tokenType = String(payload?.tokenType ?? payload?.token_type ?? "")
+        .trim()
+        .toLowerCase();
+      if (tokenType && tokenType !== "access") {
+        continue;
+      }
       const userId =
         parseUserId(payload) ||
         parseUserId({ userId: payload?.sub }) ||

@@ -1,5 +1,6 @@
 import {
   login,
+  refreshToken,
   logout,
   logoutDevice,
   saveDeviceToken,
@@ -21,6 +22,7 @@ export {
   verifyEmailCode,
   signUp,
   login,
+  refreshToken,
   logout,
   logoutDevice,
   saveDeviceToken,

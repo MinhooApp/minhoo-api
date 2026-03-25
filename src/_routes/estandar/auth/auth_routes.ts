@@ -5,6 +5,7 @@ import {
   verifyEmailCode,
   signUp,
   login,
+  refreshToken,
   logout,
   logoutDevice,
   saveDeviceToken,
@@ -74,8 +75,9 @@ router.post("/", signUp);
 router.post("/image", signUp);
 
 router.post("/login", login);
+router.post("/refresh", refreshToken);
 router.post("/logout", TokenValidation(), logout);
-router.post("/logout/device", logoutDevice);
+router.post("/logout/device", TokenValidation(), logoutDevice);
 router.post("/device-token", TokenValidation(), saveDeviceToken);
 router.post("/session/logout", TokenValidation(), logout);
 router.post("/signout", TokenValidation(), logout);

@@ -17,6 +17,16 @@ const isTruthy = (value: any) => {
 const shouldLogFindProfile = () => isTruthy(process.env.FIND_RANKING_PROFILE);
 const nowMs = () => Number(process.hrtime.bigint()) / 1_000_000;
 const round3 = (value: number) => Math.round(Number(value) * 1000) / 1000;
+const reelSummaryCacheEnabled = !isTruthy(process.env.REEL_SUMMARY_CACHE_DISABLED ?? "0");
+const reelSummaryCacheTtlSeconds = Math.max(
+  60,
+  Number(process.env.REEL_SUMMARY_CACHE_TTL_SECONDS ?? 60) || 60
+);
+
+type ReelSummaryCacheEntry = {
+  cachedAtMs: number;
+  body: any | null;
+};
 
 const normalizeUserId = (value: any): number | null => {
   const parsed = Number(value);
@@ -88,8 +98,38 @@ const toSessionKey = (req: Request) => {
   const explicit = queryKey || headerKey;
   if (explicit) return explicit.slice(0, 128);
 
+  const authorization = String(req.header("authorization") ?? "").trim();
+  let tokenFingerprint = "";
+  if (/^bearer\s+/i.test(authorization)) {
+    const token = authorization.replace(/^bearer\s+/i, "").trim();
+    if (token) {
+      tokenFingerprint = crypto
+        .createHash("sha1")
+        .update(token)
+        .digest("hex")
+        .slice(0, 20);
+    }
+  }
+
   const viewerId = Number((req as any)?.userId ?? 0);
-  if (Number.isFinite(viewerId) && viewerId > 0) return `u:${viewerId}`;
+  if (Number.isFinite(viewerId) && viewerId > 0) {
+    if (tokenFingerprint) return `u:${viewerId}:t:${tokenFingerprint}`;
+
+    const ip = String(req.ip ?? "").trim();
+    const userAgent = String(req.header("user-agent") ?? "").trim();
+    if (ip || userAgent) {
+      const deviceFingerprint = crypto
+        .createHash("sha1")
+        .update(`${ip}|${userAgent}`)
+        .digest("hex")
+        .slice(0, 20);
+      return `u:${viewerId}:fp:${deviceFingerprint}`;
+    }
+
+    return `u:${viewerId}`;
+  }
+
+  if (tokenFingerprint) return `a:t:${tokenFingerprint}`;
 
   const ip = String(req.ip ?? "").trim();
   const userAgent = String(req.header("user-agent") ?? "").trim();
@@ -100,6 +140,49 @@ const toSessionKey = (req: Request) => {
     .update(`${ip}|${userAgent}`)
     .digest("hex")
     .slice(0, 40);
+};
+
+const buildReelSummaryCacheKey = (params: {
+  variant: "feed" | "suggested";
+  page: number;
+  size: number;
+  viewerId: number;
+  sessionKey: string;
+  allowLoop: boolean;
+}) => {
+  const sessionSuffix = params.sessionKey || "anonymous";
+  const loopFlag = params.allowLoop ? 1 : 0;
+  return `summary:${params.variant}:v:${params.viewerId}:p:${params.page}:s:${params.size}:l:${loopFlag}:sk:${sessionSuffix}`;
+};
+
+const readReelSummaryCache = async (cacheKey: string): Promise<any | null> => {
+  if (!reelSummaryCacheEnabled || !cacheKey) return null;
+  const loaded = await loadFindSessionState<ReelSummaryCacheEntry>({
+    scope: "orbit",
+    sessionKey: cacheKey,
+    ttlSeconds: reelSummaryCacheTtlSeconds,
+    initialState: {
+      cachedAtMs: 0,
+      body: null,
+    },
+  });
+  const entry = loaded?.state;
+  if (!entry?.body || !entry?.cachedAtMs) return null;
+  if (Date.now() - Number(entry.cachedAtMs) > reelSummaryCacheTtlSeconds * 1000) return null;
+  return entry.body;
+};
+
+const writeReelSummaryCache = async (cacheKey: string, body: any) => {
+  if (!reelSummaryCacheEnabled || !cacheKey) return;
+  await saveFindSessionState<ReelSummaryCacheEntry>({
+    scope: "orbit",
+    sessionKey: cacheKey,
+    ttlSeconds: reelSummaryCacheTtlSeconds,
+    state: {
+      cachedAtMs: Date.now(),
+      body,
+    },
+  });
 };
 
 type ProfileReelCursorState = {
@@ -394,13 +477,31 @@ export const reels_feed = async (req: Request, res: Response) => {
     const allowLoop = shouldLoopFeed(
       (req.query as any)?.loop ?? (req.query as any)?.repeat
     );
+    const sessionKey = toSessionKey(req);
+    const viewerId = Number((req as any).userId ?? 0) || 0;
+    if (summary) {
+      const cacheKey = buildReelSummaryCacheKey({
+        variant: "feed",
+        page,
+        size,
+        viewerId,
+        sessionKey,
+        allowLoop,
+      });
+      const cachedBody = await readReelSummaryCache(cacheKey);
+      if (cachedBody) {
+        res.set("X-Summary-Cache", "hit");
+        return formatResponse({ res, success: true, body: cachedBody });
+      }
+      res.set("X-Summary-Cache", "miss");
+    }
     const { data, requestedPage, looped } = await fetchFeedWithLoopFallback({
       page,
       size,
       viewerId: (req as any).userId,
       suggested: false,
       summary,
-      sessionKey: toSessionKey(req),
+      sessionKey,
       allowLoop,
     });
     if (shouldLogFindProfile()) {
@@ -418,17 +519,30 @@ export const reels_feed = async (req: Request, res: Response) => {
       );
     }
 
+    const responseBody = {
+      page: data.page,
+      requestedPage,
+      size: data.size,
+      count: data.count,
+      looped,
+      reels: summary ? (data.rows ?? []).map((row: any) => toReelSummary(row)) : data.rows,
+    };
+    if (summary) {
+      const cacheKey = buildReelSummaryCacheKey({
+        variant: "feed",
+        page,
+        size,
+        viewerId,
+        sessionKey,
+        allowLoop,
+      });
+      await writeReelSummaryCache(cacheKey, responseBody);
+    }
+
     return formatResponse({
       res,
       success: true,
-      body: {
-        page: data.page,
-        requestedPage,
-        size: data.size,
-        count: data.count,
-        looped,
-        reels: summary ? (data.rows ?? []).map((row: any) => toReelSummary(row)) : data.rows,
-      },
+      body: responseBody,
     });
   } catch (error) {
     return formatResponse({ res, success: false, message: error });
@@ -443,6 +557,8 @@ export const reels_suggested = async (req: Request, res: Response) => {
     const allowLoop = shouldLoopFeed(
       (req.query as any)?.loop ?? (req.query as any)?.repeat
     );
+    const sessionKey = toSessionKey(req);
+    const viewerId = Number((req as any).userId ?? 0) || 0;
     const profileFeedLock = await readProfileFeedLockForRequest(req);
     if (profileFeedLock?.targetUserId) {
       const lockedData = await repository.listByUser(
@@ -481,13 +597,30 @@ export const reels_suggested = async (req: Request, res: Response) => {
     }
 
     const startedAtMs = nowMs();
+    if (summary) {
+      const cacheKey = buildReelSummaryCacheKey({
+        variant: "suggested",
+        page,
+        size,
+        viewerId,
+        sessionKey,
+        allowLoop,
+      });
+      const cachedBody = await readReelSummaryCache(cacheKey);
+      if (cachedBody) {
+        res.set("X-Summary-Cache", "hit");
+        return formatResponse({ res, success: true, body: cachedBody });
+      }
+      res.set("X-Summary-Cache", "miss");
+    }
+
     const { data, requestedPage, looped } = await fetchFeedWithLoopFallback({
       page,
       size,
       viewerId: (req as any).userId,
       suggested: true,
       summary,
-      sessionKey: toSessionKey(req),
+      sessionKey,
       allowLoop,
     });
     if (shouldLogFindProfile()) {
@@ -505,17 +638,30 @@ export const reels_suggested = async (req: Request, res: Response) => {
       );
     }
 
+    const responseBody = {
+      page: data.page,
+      requestedPage,
+      size: data.size,
+      count: data.count,
+      looped,
+      reels: summary ? (data.rows ?? []).map((row: any) => toReelSummary(row)) : data.rows,
+    };
+    if (summary) {
+      const cacheKey = buildReelSummaryCacheKey({
+        variant: "suggested",
+        page,
+        size,
+        viewerId,
+        sessionKey,
+        allowLoop,
+      });
+      await writeReelSummaryCache(cacheKey, responseBody);
+    }
+
     return formatResponse({
       res,
       success: true,
-      body: {
-        page: data.page,
-        requestedPage,
-        size: data.size,
-        count: data.count,
-        looped,
-        reels: summary ? (data.rows ?? []).map((row: any) => toReelSummary(row)) : data.rows,
-      },
+      body: responseBody,
     });
   } catch (error) {
     return formatResponse({ res, success: false, message: error });

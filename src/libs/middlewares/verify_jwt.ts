@@ -12,6 +12,8 @@ export interface IPayload {
   username: string;
   roles: number[];     // array de roles
   token: string;
+  tokenType?: string;
+  token_type?: string;
   exp?: number;
   iat?: number;
 }
@@ -48,7 +50,10 @@ const verifyTokenWithKnownSecrets = (
  */
 export const TokenValidation = (
   allowedRoles?: number[],
-  graceDays = 7
+  graceDays = Math.max(
+    0,
+    Number(process.env.JWT_EXPIRATION_GRACE_DAYS ?? 7) || 7
+  )
 ): RequestHandler => {
   const GRACE_MS = graceDays * 24 * 60 * 60 * 1000;
 
@@ -91,6 +96,18 @@ export const TokenValidation = (
             messages: ["Access denied, token expired"],
           });
         }
+      }
+
+      const tokenType = String(
+        (payload as any)?.tokenType ?? (payload as any)?.token_type ?? ""
+      )
+        .trim()
+        .toLowerCase();
+      if (tokenType && tokenType !== "access") {
+        return res.status(401).json({
+          header: { success: false, authenticated: false },
+          messages: ["Access denied, invalid token type"],
+        });
       }
 
       const { userId, roles, workerId } = payload!;
