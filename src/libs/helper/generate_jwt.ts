@@ -33,7 +33,7 @@ export const getAccessJwtSecrets = (): string[] => {
 
 export const getRefreshJwtSecrets = (): string[] => {
     const allowFallbackToAccessSecret = parseTruthy(
-        process.env.JWT_REFRESH_ALLOW_ACCESS_SECRET ?? "1"
+        process.env.JWT_REFRESH_ALLOW_ACCESS_SECRET ?? "0"
     );
     const refreshSecrets = getUniqueSecrets([
         process.env.JWT_REFRESH_SECRET,
@@ -46,9 +46,9 @@ const resolveAccessExpiresIn = (): string | number => {
     const configured = String(
         process.env.JWT_ACCESS_EXPIRES_IN ??
         process.env.JWT_EXPIRES_IN ??
-        "365d"
+        "20m"
     ).trim();
-    return configured || "365d";
+    return configured || "20m";
 };
 
 const resolveRefreshExpiresIn = (): string | number => {

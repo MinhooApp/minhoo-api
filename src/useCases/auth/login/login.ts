@@ -145,7 +145,7 @@ const extractRefreshToken = (req: Request): string => {
 };
 
 const allowRefreshFromAccessToken = () =>
-  !String(process.env.AUTH_ALLOW_ACCESS_TOKEN_REFRESH ?? "1")
+  !String(process.env.AUTH_ALLOW_ACCESS_TOKEN_REFRESH ?? "0")
     .trim()
     .match(/^(0|false|no|off)$/i);
 

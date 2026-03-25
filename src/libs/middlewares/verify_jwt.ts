@@ -44,7 +44,7 @@ const verifyTokenWithKnownSecrets = (
 /**
  * Validación “tolerante” + bloqueo por cuenta deshabilitada:
  * - 401 solo si la firma del token es inválida, no existe, o está revocado.
- * - Gracia de expiración (7 días por defecto).
+ * - Gracia de expiración (0 por defecto; solo aplica si se configura por env).
  * - Si la DB falla, no forzamos logout (modo degradado).
  * - Si el usuario está deshabilitado -> 403 siempre.
  */
@@ -52,7 +52,7 @@ export const TokenValidation = (
   allowedRoles?: number[],
   graceDays = Math.max(
     0,
-    Number(process.env.JWT_EXPIRATION_GRACE_DAYS ?? 7) || 7
+    Number(process.env.JWT_EXPIRATION_GRACE_DAYS ?? 0) || 0
   )
 ): RequestHandler => {
   const GRACE_MS = graceDays * 24 * 60 * 60 * 1000;
