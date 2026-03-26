@@ -31,6 +31,20 @@ const notBlockedLiteral = () =>
     )
   `);
 
+const notBlockedLiteralWithMeId = (meIdRaw: any) => {
+  const meId = Number.isFinite(Number(meIdRaw)) ? Math.trunc(Number(meIdRaw)) : -1;
+  return Sequelize.literal(`
+    NOT EXISTS (
+      SELECT 1
+      FROM user_blocks ub
+      WHERE
+        (ub.blocker_id = ${meId} AND ub.blocked_id = \`service\`.\`userId\`)
+        OR
+        (ub.blocker_id = \`service\`.\`userId\` AND ub.blocked_id = ${meId})
+    )
+  `);
+};
+
 const pagination = (page: any = 0, size: any = 10) => {
   const limit = Number(size);
   const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 10;
@@ -96,6 +110,94 @@ const orderByNewestStable: any[] = [
   ["service_date", "DESC"],
   ["id", "DESC"],
 ];
+
+const buildServiceIncludeForWorkerOffer = (offerWhere: Record<string, any>) => {
+  return (serviceInclude as any[]).map((include: any) => {
+    if (include?.as !== "offers") return include;
+    return {
+      ...include,
+      required: true,
+      where: {
+        ...offerWhere,
+        [Op.and]: [notBlockedLiteral()],
+      },
+    };
+  });
+};
+
+const buildWorkerOfferFilterInclude = (
+  offerWhere: Record<string, any>,
+  meId: any
+) => ({
+  model: Offer,
+  as: "offers",
+  attributes: [],
+  required: true,
+  where: {
+    ...offerWhere,
+    [Op.and]: [notBlockedLiteralWithMeId(meId)],
+  },
+});
+
+const countServicesForWorkerScope = async (
+  where: Record<string, any>,
+  workerScopeWhere: Record<string, any>,
+  meId: any
+) => {
+  return Service.count({
+    where,
+    include: [buildWorkerOfferFilterInclude(workerScopeWhere, meId)] as any,
+    distinct: true,
+  });
+};
+
+const toPositiveInt = (value: any): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.trunc(parsed);
+};
+
+const resolveWorkerIdsForUser = async (
+  workerIdRaw: any,
+  userIdRaw: any
+): Promise<number[]> => {
+  const ids = new Set<number>();
+
+  const directWorkerId = toPositiveInt(workerIdRaw);
+  if (directWorkerId) {
+    ids.add(directWorkerId);
+  }
+
+  const userId = toPositiveInt(userIdRaw);
+  if (userId) {
+    const rows = await Worker.findAll({
+      where: { userId },
+      attributes: ["id"],
+      raw: true,
+    });
+
+    for (const row of rows as any[]) {
+      const workerId = toPositiveInt((row as any)?.id);
+      if (workerId) ids.add(workerId);
+    }
+  }
+
+  return [...ids];
+};
+
+const buildWorkerScopeWhere = async (
+  workerIdRaw: any,
+  userIdRaw: any,
+  extraWhere: Record<string, any> = {}
+) => {
+  const workerIds = await resolveWorkerIdsForUser(workerIdRaw, userIdRaw);
+  if (!workerIds.length) return null;
+
+  return {
+    ...extraWhere,
+    workerId: workerIds.length === 1 ? workerIds[0] : { [Op.in]: workerIds },
+  };
+};
 
 export const add = async (body: any) => {
   const service = await Service.create(body);
@@ -234,8 +336,9 @@ export const getsOnGoing = async (
     limit,
     offset,
     include: serviceInclude,
-    order: [["service_date", "DESC"]],
+    order: orderByNewestStable,
     attributes: { exclude: excludeKeys },
+    distinct: true,
   });
 };
 
@@ -244,22 +347,15 @@ export const getsOnGoing = async (
  * no cancelado/removed (para que no aparezca “pegado”).
  */
 export const onGoingWorkers = async (workerId: number, meId: any) => {
+  const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId, {
+    canceled: false,
+    removed: false,
+  });
+  if (!workerScopeWhere) return [];
+
   return Service.findAll({
     where: { is_available: true, statusId: 1 },
-    include: [
-      ...serviceInclude,
-      {
-        model: Offer,
-        as: "offers",
-        where: {
-          workerId,
-          canceled: false,
-          removed: false,
-          [Op.and]: [notBlockedLiteral()],
-        },
-        required: true,
-      },
-    ],
+    include: buildServiceIncludeForWorkerOffer(workerScopeWhere),
     replacements: { meId },
     order: orderByNewestStable,
   });
@@ -271,50 +367,39 @@ export const onGoingWorkersPaged = async (
   page: any = 0,
   size: any = 10
 ) => {
-  const { limit, offset } = pagination(page, size);
-  return Service.findAndCountAll({
-    where: { is_available: true, statusId: 1 },
-    include: [
-      ...serviceInclude,
-      {
-        model: Offer,
-        as: "offers",
-        where: {
-          workerId,
-          canceled: false,
-          removed: false,
-          [Op.and]: [notBlockedLiteral()],
-        },
-        required: true,
-      },
-    ],
-    replacements: { meId },
-    order: orderByNewestStable,
-    limit,
-    offset,
-    distinct: true,
-    col: "service.id",
+  const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId, {
+    canceled: false,
+    removed: false,
   });
+  if (!workerScopeWhere) return { count: 0, rows: [] } as any;
+
+  const { limit, offset } = pagination(page, size);
+  const where = { is_available: true, statusId: 1 };
+  const [count, rows] = await Promise.all([
+    countServicesForWorkerScope(where, workerScopeWhere, meId),
+    Service.findAll({
+      where,
+      include: buildServiceIncludeForWorkerOffer(workerScopeWhere),
+      replacements: { meId },
+      order: orderByNewestStable,
+      limit,
+      offset,
+    }),
+  ]);
+
+  return { count, rows } as any;
 };
 
 /**
  * Worker - Cancelados (para historial / pestaña cancelados)
  */
 export const onGoingCanceledWorkers = async (workerId: number, meId: any) => {
+  const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId);
+  if (!workerScopeWhere) return [];
+
   return Service.findAll({
     where: { statusId: 5 },
-    include: [
-      ...serviceInclude,
-      {
-        model: Offer,
-        as: "offers",
-        where: {
-          workerId,
-          [Op.and]: [notBlockedLiteral()],
-        },
-        required: true,
-      },
-    ],
+    include: buildServiceIncludeForWorkerOffer(workerScopeWhere),
     replacements: { meId },
     order: orderByNewestStable,
   });
@@ -327,6 +412,9 @@ export const onGoingCanceledWorkersPaged = async (
   size: any = 10,
   dateRange?: ServiceHistoryDateRange
 ) => {
+  const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId);
+  if (!workerScopeWhere) return { count: 0, rows: [] } as any;
+
   const { limit, offset } = pagination(page, size);
   const serviceDateWhere = buildServiceDateWhere(dateRange);
   const where: any = { statusId: 5 };
@@ -334,27 +422,19 @@ export const onGoingCanceledWorkersPaged = async (
     where.service_date = serviceDateWhere;
   }
 
-  return Service.findAndCountAll({
-    where,
-    include: [
-      ...serviceInclude,
-      {
-        model: Offer,
-        as: "offers",
-        where: {
-          workerId,
-          [Op.and]: [notBlockedLiteral()],
-        },
-        required: true,
-      },
-    ],
-    replacements: { meId },
-    order: orderByNewestStable,
-    limit,
-    offset,
-    distinct: true,
-    col: "service.id",
-  });
+  const [count, rows] = await Promise.all([
+    countServicesForWorkerScope(where, workerScopeWhere, meId),
+    Service.findAll({
+      where,
+      include: buildServiceIncludeForWorkerOffer(workerScopeWhere),
+      replacements: { meId },
+      order: orderByNewestStable,
+      limit,
+      offset,
+    }),
+  ]);
+
+  return { count, rows } as any;
 };
 
 /**
@@ -367,6 +447,13 @@ export const historyWorkers = async (
   meId: any,
   dateRange?: ServiceHistoryDateRange
 ) => {
+  const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId, {
+    accepted: true,
+    canceled: false,
+    removed: false,
+  });
+  if (!workerScopeWhere) return [];
+
   const serviceDateWhere = buildServiceDateWhere(dateRange);
   const where: any = { is_available: true };
   if (serviceDateWhere) {
@@ -375,21 +462,7 @@ export const historyWorkers = async (
 
   return Service.findAll({
     where,
-    include: [
-      ...serviceInclude,
-      {
-        model: Offer,
-        as: "offers",
-        where: {
-          workerId,
-          accepted: true,
-          canceled: false,
-          removed: false,
-          [Op.and]: [notBlockedLiteral()],
-        },
-        required: true,
-      },
-    ],
+    include: buildServiceIncludeForWorkerOffer(workerScopeWhere),
     replacements: { meId },
     order: orderByNewestStable,
   });
@@ -402,6 +475,13 @@ export const historyWorkersPaged = async (
   size: any = 10,
   dateRange?: ServiceHistoryDateRange
 ) => {
+  const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId, {
+    accepted: true,
+    canceled: false,
+    removed: false,
+  });
+  if (!workerScopeWhere) return { count: 0, rows: [] } as any;
+
   const { limit, offset } = pagination(page, size);
   const serviceDateWhere = buildServiceDateWhere(dateRange);
   const where: any = { is_available: true };
@@ -409,30 +489,19 @@ export const historyWorkersPaged = async (
     where.service_date = serviceDateWhere;
   }
 
-  return Service.findAndCountAll({
-    where,
-    include: [
-      ...serviceInclude,
-      {
-        model: Offer,
-        as: "offers",
-        where: {
-          workerId,
-          accepted: true,
-          canceled: false,
-          removed: false,
-          [Op.and]: [notBlockedLiteral()],
-        },
-        required: true,
-      },
-    ],
-    replacements: { meId },
-    order: orderByNewestStable,
-    limit,
-    offset,
-    distinct: true,
-    col: "service.id",
-  });
+  const [count, rows] = await Promise.all([
+    countServicesForWorkerScope(where, workerScopeWhere, meId),
+    Service.findAll({
+      where,
+      include: buildServiceIncludeForWorkerOffer(workerScopeWhere),
+      replacements: { meId },
+      order: orderByNewestStable,
+      limit,
+      offset,
+    }),
+  ]);
+
+  return { count, rows } as any;
 };
 
 export const get = async (id: any) => {
@@ -787,7 +856,7 @@ export const getsOnGoingSummary = async (
     limit,
     offset,
     include: serviceSummaryInclude as any,
-    order: [["service_date", "DESC"]],
+    order: orderByNewestStable,
     attributes: [
       "id",
       "userId",
@@ -800,5 +869,6 @@ export const getsOnGoingSummary = async (
       "statusId",
       applicantsCountSummaryAttribute as any,
     ],
+    distinct: true,
   });
 };
