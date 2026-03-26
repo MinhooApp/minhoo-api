@@ -5,12 +5,9 @@
 //  Nota: Integrado con rutas de administrador
 // ===============================
 
-import dotenv from "dotenv";
+import "./libs/config/bootstrap_env";
 import Server from "./_server/server";
 import { AppRoutes } from "./_routes/routes";
-
-// ⚙️ Cargar variables de entorno
-dotenv.config();
 
 // ⚙️ Puerto del archivo .env o 3000 por defecto
 const port = parseInt(process.env.PORT || "3000");

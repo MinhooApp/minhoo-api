@@ -19,8 +19,8 @@ const nowMs = () => Number(process.hrtime.bigint()) / 1_000_000;
 const round3 = (value: number) => Math.round(Number(value) * 1000) / 1000;
 const reelSummaryCacheEnabled = !isTruthy(process.env.REEL_SUMMARY_CACHE_DISABLED ?? "0");
 const reelSummaryCacheTtlSeconds = Math.max(
-  60,
-  Number(process.env.REEL_SUMMARY_CACHE_TTL_SECONDS ?? 60) || 60
+  15,
+  Number(process.env.REEL_SUMMARY_CACHE_TTL_SECONDS ?? 20) || 20
 );
 
 type ReelSummaryCacheEntry = {
@@ -259,18 +259,15 @@ const buildProfileFeedLockKeys = (req: Request) => {
   const viewerId = normalizeUserId((req as any)?.userId);
   const explicitSession = toExplicitSessionKey(req);
   const fingerprint = toClientFingerprint(req);
-  const keys: string[] = [];
-
+  // Keep profile-lock state isolated per authenticated user to avoid
+  // cross-account leakage on the same device/fingerprint.
   if (viewerId) {
-    keys.push(`${viewerId}:${explicitSession || fingerprint || "anonymous"}`);
-  }
-  if (explicitSession) {
-    keys.push(`anon_explicit:${explicitSession}`);
-  }
-  if (fingerprint) {
-    keys.push(`anon_fp:${fingerprint}`);
+    return [`${viewerId}:${explicitSession || fingerprint || "anonymous"}`];
   }
 
+  const keys: string[] = [];
+  if (explicitSession) keys.push(`anon_explicit:${explicitSession}`);
+  if (fingerprint) keys.push(`anon_fp:${fingerprint}`);
   return [...new Set(keys.filter((key) => key.length > 0))];
 };
 

@@ -16,6 +16,26 @@ import {
   toReelSummary,
   toServiceSummary,
 } from "../../../libs/summary_response";
+import {
+  loadFindSessionState,
+  saveFindSessionState,
+} from "../../../libs/cache/find_session_store";
+
+const isTruthy = (value: any) => {
+  const v = String(value ?? "").trim().toLowerCase();
+  return v === "1" || v === "true" || v === "yes" || v === "on";
+};
+
+const homeSummaryCacheEnabled = !isTruthy(process.env.HOME_SUMMARY_CACHE_DISABLED ?? "0");
+const homeSummaryCacheTtlSeconds = Math.max(
+  15,
+  Number(process.env.HOME_SUMMARY_CACHE_TTL_SECONDS ?? 20) || 20
+);
+
+type HomeSummaryCacheEntry = {
+  cachedAtMs: number;
+  body: any | null;
+};
 
 const normalizeSize = (value: any, fallback: number, max = 10) => {
   const parsed = Number(value);
@@ -54,6 +74,58 @@ const parseIncludeSections = (raw: any) => {
 
   if (!input.length) return defaults;
   return new Set(input.filter((item) => defaults.has(item)));
+};
+
+const buildHomeSummaryCacheKey = (params: {
+  viewerId: number;
+  sessionKey: string;
+  includeKey: string;
+  postsSize: number;
+  reelsSize: number;
+  servicesSize: number;
+  notificationsLimit: number;
+}) => {
+  const sessionSuffix = params.sessionKey || "anonymous";
+  return [
+    "summary:home",
+    `v:${params.viewerId}`,
+    `sk:${sessionSuffix}`,
+    `i:${params.includeKey}`,
+    `ps:${params.postsSize}`,
+    `rs:${params.reelsSize}`,
+    `ss:${params.servicesSize}`,
+    `nl:${params.notificationsLimit}`,
+  ].join(":");
+};
+
+const readHomeSummaryCache = async (cacheKey: string): Promise<any | null> => {
+  if (!homeSummaryCacheEnabled || !cacheKey) return null;
+  const loaded = await loadFindSessionState<HomeSummaryCacheEntry>({
+    scope: "home",
+    sessionKey: cacheKey,
+    ttlSeconds: homeSummaryCacheTtlSeconds,
+    initialState: {
+      cachedAtMs: 0,
+      body: null,
+    },
+  });
+  const entry = loaded?.state;
+  if (!entry?.body || !entry?.cachedAtMs) return null;
+  if (Date.now() - Number(entry.cachedAtMs) > homeSummaryCacheTtlSeconds * 1000) return null;
+  return entry.body;
+};
+
+const writeHomeSummaryCache = async (cacheKey: string, body: any) => {
+  if (!homeSummaryCacheEnabled || !cacheKey) return;
+  await saveFindSessionState<HomeSummaryCacheEntry>({
+    scope: "home",
+    sessionKey: cacheKey,
+    ttlSeconds: homeSummaryCacheTtlSeconds,
+    state: {
+      cachedAtMs: Date.now(),
+      body,
+    },
+  });
 };
 
 const normalizeCount = (value: any): number => {
@@ -115,6 +187,35 @@ export const home = async (req: Request, res: Response) => {
     const reelsSize = normalizeSize((req.query as any)?.reels_size, 6, 10);
     const servicesSize = normalizeSize((req.query as any)?.services_size, 4, 10);
     const notificationsLimit = normalizeSize((req.query as any)?.notifications_limit, 5, 10);
+    const includeKey = Array.from(include.values()).sort().join(",");
+
+    const cacheKey = buildHomeSummaryCacheKey({
+      viewerId: Number(viewerId ?? 0) || 0,
+      sessionKey,
+      includeKey,
+      postsSize,
+      reelsSize,
+      servicesSize,
+      notificationsLimit,
+    });
+
+    const cachedBody = await readHomeSummaryCache(cacheKey);
+    if (cachedBody) {
+      res.set("X-Bootstrap-Cache", "hit");
+      setCacheControl(res, {
+        visibility: viewerId ? "private" : "public",
+        maxAgeSeconds: homeSummaryCacheTtlSeconds,
+        staleWhileRevalidateSeconds: 30,
+        staleIfErrorSeconds: 60,
+      });
+      if (respondNotModifiedIfFresh(req, res, cachedBody)) return;
+      return formatResponse({
+        res,
+        success: true,
+        body: cachedBody,
+      });
+    }
+    res.set("X-Bootstrap-Cache", "miss");
 
     const [postsRaw, reelsRaw, servicesRaw, notificationsRaw, unreadNotifications] =
       await Promise.all([
@@ -193,9 +294,11 @@ export const home = async (req: Request, res: Response) => {
       },
     };
 
+    await writeHomeSummaryCache(cacheKey, payload);
+
     setCacheControl(res, {
       visibility: viewerId ? "private" : "public",
-      maxAgeSeconds: 15,
+      maxAgeSeconds: homeSummaryCacheTtlSeconds,
       staleWhileRevalidateSeconds: 30,
       staleIfErrorSeconds: 60,
     });

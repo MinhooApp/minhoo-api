@@ -1,4 +1,9 @@
 require('dotenv').config();
+const { applyFileBackedSecrets } = require("../scripts/_utils/apply-file-backed-secrets");
+
+applyFileBackedSecrets(process.env, {
+  baseDir: process.cwd(),
+});
 
 const shared = {
   username: process.env.USER_DB || 'root',

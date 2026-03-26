@@ -124,6 +124,74 @@ const socketChatMetaRateLimiter = createInMemoryRateLimiter({
   blockDurationMs: SOCKET_CHAT_META_RATE_BLOCK_MS,
 });
 
+const toUniquePositiveIds = (...values: any[]): number[] => {
+  const unique = new Set<number>();
+  for (const value of values) {
+    if (Array.isArray(value)) {
+      for (const nested of value) {
+        const nestedId = normalizePositiveInt(nested);
+        if (nestedId > 0) unique.add(nestedId);
+      }
+      continue;
+    }
+    const id = normalizePositiveInt(value);
+    if (id > 0) unique.add(id);
+  }
+  return [...unique];
+};
+
+const collectConnectedUserIds = (socket: Socket): number[] => {
+  const unique = new Set<number>();
+  for (const s of socket.nsp.sockets.values()) {
+    const uid = Number((s.data as any)?.userId ?? 0);
+    if (Number.isFinite(uid) && uid > 0) {
+      unique.add(uid);
+    }
+  }
+  return [...unique];
+};
+
+const emitToUserIds = (
+  socket: Socket,
+  event: string,
+  payload: any,
+  userIds: Array<number | string | null | undefined>,
+  excludeUserIds?: Array<number | string | null | undefined>
+) => {
+  const excluded = new Set(toUniquePositiveIds(excludeUserIds ?? []));
+  const targets = toUniquePositiveIds(userIds);
+  if (!targets.length) return;
+  for (const uid of targets) {
+    if (excluded.has(uid)) continue;
+    socket.nsp.to(userRoom(uid)).emit(event, payload);
+  }
+};
+
+const emitToAllAuthenticatedUsers = (
+  socket: Socket,
+  event: string,
+  payload: any,
+  excludeUserIds?: Array<number | string | null | undefined>
+) => {
+  const connectedUserIds = collectConnectedUserIds(socket);
+  if (!connectedUserIds.length) return;
+  emitToUserIds(socket, event, payload, connectedUserIds, excludeUserIds);
+};
+
+const extractOfferTargetUserIds = (normalized: any): number[] => {
+  return toUniquePositiveIds(
+    normalized?.ownerUserId,
+    normalized?.owner_user_id,
+    normalized?.service?.userId,
+    normalized?.service?.user_id,
+    normalized?.service?.client?.id,
+    normalized?.offer?.offerer?.userId,
+    normalized?.offer?.offerer?.user_id,
+    normalized?.offer?.offerer?.personal_data?.id,
+    normalized?.offer?.user?.id
+  );
+};
+
 function normalizePositiveInt(value: any): number {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
@@ -1388,7 +1456,7 @@ export const socketController = (socket: Socket) => {
 
   ////////////////////// Services ////////////////////////
   socket.on("services", (service: Service) => {
-    socket.broadcast.emit("services", service);
+    emitToAllAuthenticatedUsers(socket, "services", service);
   });
 
   ////////////////////// Offer ///////////////////////////
@@ -1398,18 +1466,15 @@ export const socketController = (socket: Socket) => {
 
     const globalEvent = "offers";
     const scopedEvent = `offers/${normalized.serviceId}`;
-
-    if (normalized.ownerUserId > 0) {
-      const ownerChannel = userRoom(normalized.ownerUserId);
-      socket.nsp.to(ownerChannel).emit(globalEvent, normalized);
-      socket.nsp.to(ownerChannel).emit(scopedEvent, normalized);
-      socket.broadcast.except(ownerChannel).emit(globalEvent, normalized);
-      socket.broadcast.except(ownerChannel).emit(scopedEvent, normalized);
+    const targetUserIds = extractOfferTargetUserIds(normalized);
+    if (targetUserIds.length > 0) {
+      emitToUserIds(socket, globalEvent, normalized, targetUserIds);
+      emitToUserIds(socket, scopedEvent, normalized, targetUserIds);
       return;
     }
 
-    socket.broadcast.emit(globalEvent, normalized);
-    socket.broadcast.emit(scopedEvent, normalized);
+    emitToAllAuthenticatedUsers(socket, globalEvent, normalized);
+    emitToAllAuthenticatedUsers(socket, scopedEvent, normalized);
   });
 
   ////////////////////// Post comments ///////////////////////////
@@ -1444,23 +1509,43 @@ export const socketController = (socket: Socket) => {
     };
 
     if (actorUserId) {
-      const actorChannel = userRoom(actorUserId);
-      emitPostUpdatedEvents(socket.nsp.to(actorChannel), normalized);
-      emitPostUpdatedEvents(socket.broadcast.except(actorChannel), publicPayload);
+      emitPostUpdatedEvents(
+        {
+          emit: (event: string, eventPayload: any) => {
+            emitToUserIds(socket, event, eventPayload, [actorUserId]);
+          },
+        },
+        normalized
+      );
+      emitPostUpdatedEvents(
+        {
+          emit: (event: string, eventPayload: any) => {
+            emitToAllAuthenticatedUsers(socket, event, eventPayload, [actorUserId]);
+          },
+        },
+        publicPayload
+      );
       return;
     }
 
-    emitPostUpdatedEvents(socket.broadcast, publicPayload);
+    emitPostUpdatedEvents(
+      {
+        emit: (event: string, eventPayload: any) => {
+          emitToAllAuthenticatedUsers(socket, event, eventPayload);
+        },
+      },
+      publicPayload
+    );
   });
 
   socket.on("post/commented", (payload: any) => {
     const normalized = normalizePostCommentedPayload(payload);
     if (!normalized.postId) return;
 
-    socket.broadcast.emit("post/commented", normalized);
-    socket.broadcast.emit("find/post/commented", normalized);
+    emitToAllAuthenticatedUsers(socket, "post/commented", normalized);
+    emitToAllAuthenticatedUsers(socket, "find/post/commented", normalized);
     if (EMIT_POSTS_EVENT_ON_POST_ACTIVITY) {
-      socket.broadcast.emit("posts", normalized);
+      emitToAllAuthenticatedUsers(socket, "posts", normalized);
     }
   });
 
@@ -1468,10 +1553,10 @@ export const socketController = (socket: Socket) => {
     const normalized = normalizePostCommentDeletedPayload(payload);
     if (!normalized.postId) return;
 
-    socket.broadcast.emit("post/comment-deleted", normalized);
-    socket.broadcast.emit("find/post/comment-deleted", normalized);
+    emitToAllAuthenticatedUsers(socket, "post/comment-deleted", normalized);
+    emitToAllAuthenticatedUsers(socket, "find/post/comment-deleted", normalized);
     if (EMIT_POSTS_EVENT_ON_POST_ACTIVITY) {
-      socket.broadcast.emit("posts", normalized);
+      emitToAllAuthenticatedUsers(socket, "posts", normalized);
     }
   });
 
@@ -1480,10 +1565,10 @@ export const socketController = (socket: Socket) => {
     const normalized = normalizeReelRealtimePayload(payload, "created");
     if (!normalized.reelId) return;
 
-    socket.broadcast.emit("reel/created", normalized);
-    socket.broadcast.emit("orbit/created", normalized);
-    socket.broadcast.emit("find/reel/created", normalized);
-    socket.broadcast.emit("reels", normalized);
+    emitToAllAuthenticatedUsers(socket, "reel/created", normalized);
+    emitToAllAuthenticatedUsers(socket, "orbit/created", normalized);
+    emitToAllAuthenticatedUsers(socket, "find/reel/created", normalized);
+    emitToAllAuthenticatedUsers(socket, "reels", normalized);
   });
 
   socket.on("reel/updated", (payload: any) => {
@@ -1495,41 +1580,40 @@ export const socketController = (socket: Socket) => {
     );
 
     if (actorUserId) {
-      const actorChannel = userRoom(actorUserId);
-      socket.nsp.to(actorChannel).emit("reel/updated", normalized);
-      socket.nsp.to(actorChannel).emit("orbit/updated", normalized);
-      socket.nsp.to(actorChannel).emit("find/reel/updated", normalized);
-      socket.nsp.to(actorChannel).emit("reels", normalized);
+      emitToUserIds(socket, "reel/updated", normalized, [actorUserId]);
+      emitToUserIds(socket, "orbit/updated", normalized, [actorUserId]);
+      emitToUserIds(socket, "find/reel/updated", normalized, [actorUserId]);
+      emitToUserIds(socket, "reels", normalized, [actorUserId]);
 
-      socket.broadcast.except(actorChannel).emit("reel/updated", publicPayload);
-      socket.broadcast.except(actorChannel).emit("orbit/updated", publicPayload);
-      socket.broadcast.except(actorChannel).emit("find/reel/updated", publicPayload);
-      socket.broadcast.except(actorChannel).emit("reels", publicPayload);
+      emitToAllAuthenticatedUsers(socket, "reel/updated", publicPayload, [actorUserId]);
+      emitToAllAuthenticatedUsers(socket, "orbit/updated", publicPayload, [actorUserId]);
+      emitToAllAuthenticatedUsers(socket, "find/reel/updated", publicPayload, [actorUserId]);
+      emitToAllAuthenticatedUsers(socket, "reels", publicPayload, [actorUserId]);
       return;
     }
 
-    socket.broadcast.emit("reel/updated", publicPayload);
-    socket.broadcast.emit("orbit/updated", publicPayload);
-    socket.broadcast.emit("find/reel/updated", publicPayload);
-    socket.broadcast.emit("reels", publicPayload);
+    emitToAllAuthenticatedUsers(socket, "reel/updated", publicPayload);
+    emitToAllAuthenticatedUsers(socket, "orbit/updated", publicPayload);
+    emitToAllAuthenticatedUsers(socket, "find/reel/updated", publicPayload);
+    emitToAllAuthenticatedUsers(socket, "reels", publicPayload);
   });
 
   socket.on("orbit/ring-updated", (payload: any) => {
     const normalized = normalizeOrbitRingUpdatedPayload(payload);
     if (!normalized) return;
 
-    socket.broadcast.emit("orbit/ring-updated", normalized);
+    emitToAllAuthenticatedUsers(socket, "orbit/ring-updated", normalized);
   });
 
   socket.on("reel/deleted", (payload: any) => {
     const normalized = normalizeReelDeletedPayload(payload);
     if (!normalized.reelId) return;
 
-    socket.broadcast.emit("reel/deleted", normalized);
-    socket.broadcast.emit("orbit/deleted", normalized);
-    socket.broadcast.emit("find/reel/deleted", normalized);
+    emitToAllAuthenticatedUsers(socket, "reel/deleted", normalized);
+    emitToAllAuthenticatedUsers(socket, "orbit/deleted", normalized);
+    emitToAllAuthenticatedUsers(socket, "find/reel/deleted", normalized);
     if (EMIT_REELS_EVENT_ON_REEL_DELETE) {
-      socket.broadcast.emit("reels", normalized);
+      emitToAllAuthenticatedUsers(socket, "reels", normalized);
     }
   });
 
@@ -1537,20 +1621,20 @@ export const socketController = (socket: Socket) => {
     const normalized = normalizeReelCommentedPayload(payload);
     if (!normalized.reelId) return;
 
-    socket.broadcast.emit("reel/commented", normalized);
-    socket.broadcast.emit("orbit/commented", normalized);
-    socket.broadcast.emit("find/reel/commented", normalized);
-    socket.broadcast.emit("reels", normalized);
+    emitToAllAuthenticatedUsers(socket, "reel/commented", normalized);
+    emitToAllAuthenticatedUsers(socket, "orbit/commented", normalized);
+    emitToAllAuthenticatedUsers(socket, "find/reel/commented", normalized);
+    emitToAllAuthenticatedUsers(socket, "reels", normalized);
   });
 
   socket.on("reel/comment-deleted", (payload: any) => {
     const normalized = normalizeReelCommentDeletedPayload(payload);
     if (!normalized.reelId) return;
 
-    socket.broadcast.emit("reel/comment-deleted", normalized);
-    socket.broadcast.emit("orbit/comment-deleted", normalized);
-    socket.broadcast.emit("find/reel/comment-deleted", normalized);
-    socket.broadcast.emit("reels", normalized);
+    emitToAllAuthenticatedUsers(socket, "reel/comment-deleted", normalized);
+    emitToAllAuthenticatedUsers(socket, "orbit/comment-deleted", normalized);
+    emitToAllAuthenticatedUsers(socket, "find/reel/comment-deleted", normalized);
+    emitToAllAuthenticatedUsers(socket, "reels", normalized);
   });
 
   //////////////////////////// Chat //////////////////////
@@ -2267,6 +2351,10 @@ export const socketController = (socket: Socket) => {
 
   ////////////////////// Notification /////////////////////
   socket.on("notification", (notification: Notification) => {
-    socket.broadcast.emit(`notification/${notification.userId}`, notification);
+    const notificationUserId = Number((notification as any)?.userId ?? 0);
+    if (!Number.isFinite(notificationUserId) || notificationUserId <= 0) return;
+    emitToUserIds(socket, `notification/${notificationUserId}`, notification, [
+      notificationUserId,
+    ]);
   });
 };

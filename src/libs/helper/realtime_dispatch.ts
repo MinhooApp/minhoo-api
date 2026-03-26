@@ -119,6 +119,23 @@ const toUserIds = (userIds?: Array<number | string | null | undefined>): number[
   return [...unique];
 };
 
+const collectConnectedUserIds = (): number[] => {
+  const io = getSocketInstance();
+  if (!io) return [];
+
+  const unique = new Set<number>();
+  for (const namespace of COMPAT_NAMESPACES) {
+    const nsp = io.of(namespace);
+    for (const socket of nsp.sockets.values()) {
+      const uid = Number((socket.data as any)?.userId ?? 0);
+      if (Number.isFinite(uid) && uid > 0) {
+        unique.add(uid);
+      }
+    }
+  }
+  return [...unique];
+};
+
 const emitGlobal = (event: string, payload?: unknown) => {
   const io = getSocketInstance();
   if (io) {
@@ -197,6 +214,23 @@ const emitToUsers = (
       io.of(namespace).to(userRoom(id)).emit(event, payload);
     }
   }
+};
+
+const emitToAllAuthenticatedUsers = (
+  event: string,
+  payload: unknown,
+  excludeUserIds?: Array<number | string | null | undefined>
+) => {
+  const connectedUserIds = collectConnectedUserIds();
+  if (connectedUserIds.length === 0) {
+    getInternalSocket().emit(event, payload);
+    return;
+  }
+
+  const excluded = new Set(toUserIds(excludeUserIds));
+  const targetUserIds = connectedUserIds.filter((uid) => !excluded.has(uid));
+  if (!targetUserIds.length) return;
+  emitToUsers(event, payload, targetUserIds);
 };
 
 const emitToUsersOutsideChat = (
@@ -318,18 +352,18 @@ export const emitNotificationDeletedRealtime = (userId: number, payload: unknown
 
 export const emitOrbitRingUpdatedRealtime = (payload: unknown) => {
   const normalized = normalizeOrbitRingRealtimePayload(payload);
-  emitGlobal("orbit/ring-updated", normalized);
+  emitToAllAuthenticatedUsers("orbit/ring-updated", normalized);
 };
 
 export const emitOrbitDeletedRealtime = (payload: unknown) => {
-  emitGlobal("reel/deleted", payload);
-  emitGlobal("orbit/deleted", payload);
-  emitGlobal("find/reel/deleted", payload);
+  emitToAllAuthenticatedUsers("reel/deleted", payload);
+  emitToAllAuthenticatedUsers("orbit/deleted", payload);
+  emitToAllAuthenticatedUsers("find/reel/deleted", payload);
 
   const emitLegacyReels =
     String(process.env.EMIT_REELS_EVENT_ON_REEL_DELETE ?? "1").trim() === "1";
   if (emitLegacyReels) {
-    emitGlobal("reels", payload);
+    emitToAllAuthenticatedUsers("reels", payload);
   }
 
   const emitUpdatedAlias =
@@ -367,11 +401,11 @@ export const emitOrbitDeletedRealtime = (payload: unknown) => {
       reel: reelObj,
     };
 
-    emitGlobal("reel/updated", updatedPayload);
-    emitGlobal("orbit/updated", updatedPayload);
-    emitGlobal("find/reel/updated", updatedPayload);
+    emitToAllAuthenticatedUsers("reel/updated", updatedPayload);
+    emitToAllAuthenticatedUsers("orbit/updated", updatedPayload);
+    emitToAllAuthenticatedUsers("find/reel/updated", updatedPayload);
     if (emitLegacyReels) {
-      emitGlobal("reels", updatedPayload);
+      emitToAllAuthenticatedUsers("reels", updatedPayload);
     }
   }
 };

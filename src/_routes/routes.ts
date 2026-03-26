@@ -40,6 +40,7 @@ export class AppRoutes {
     router.use("/api/v1/offer", offers_routes);
     router.use("/api/v1/worker", worker_routes);
     router.use("/api/v1/service", service_routes);
+    router.use("/api/v1/services", service_routes);
     router.use("/api/v1/comment", comment_routes);
     router.use("/api/v1/category", category_routes);
     router.use("/api/v1/notification", notification_routes);

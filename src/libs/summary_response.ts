@@ -1,5 +1,10 @@
 import { AppLocale } from "./localization/locale";
 import { formatRelativeTime } from "./localization/relative_time";
+import {
+  buildApplicantsStatus,
+  normalizeApplicantsStatus,
+  resolveApplicantsCount,
+} from "./applicants_status";
 
 const toPlain = (value: any) =>
   value && typeof value.toJSON === "function" ? value.toJSON() : value ?? null;
@@ -162,6 +167,11 @@ export const toServiceSummary = (serviceRaw: any) => {
   const currency = toText(service?.currencyPrefix ?? service?.currency_prefix) ?? "";
   const rate = Number(service?.rate);
   const price = Number.isFinite(rate) ? `${currency}${rate}`.trim() : null;
+  const applicantsCount = resolveApplicantsCount(service);
+  const applicantsStatus = normalizeApplicantsStatus(
+    service?.applicants_status ?? service?.applicantsStatus ?? buildApplicantsStatus(applicantsCount),
+    applicantsCount
+  );
   const provider =
     toUserSummary(service?.client) ??
     toUserSummary(service?.workers?.[0]?.personal_data) ??
@@ -180,6 +190,10 @@ export const toServiceSummary = (serviceRaw: any) => {
     status:
       toText(service?.status?.status ?? service?.status?.name ?? service?.status?.description) ??
       toText(service?.statusId),
+    applicants_count: applicantsCount,
+    applicantsCount,
+    applicants_status: applicantsStatus,
+    applicantsStatus,
     createdAt: toIsoDate(service?.service_date ?? service?.createdAt),
   };
 };

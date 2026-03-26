@@ -1,9 +1,7 @@
 import fs from "fs";
 import nodemailer from "nodemailer";
 import { promisify } from "util";
-import dotenv from "dotenv";
-
-dotenv.config();
+import "../../libs/config/bootstrap_env";
 
 // Interfaz para definir todos los parámetros
 interface SendEmailParams {

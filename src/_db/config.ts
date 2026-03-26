@@ -1,5 +1,4 @@
-import dotenv from 'dotenv'
-dotenv.config()
+import "../libs/config/bootstrap_env";
 
 export const database = {
     dialect: process.env.DIALECT_DB,

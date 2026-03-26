@@ -1,4 +1,3 @@
-import { worker } from "repository/worker/worker_repository";
 import {
   socket,
   Request,
@@ -10,29 +9,99 @@ import {
 export const update = async (req: Request, res: Response) => {};
 
 export const finalized = async (req: Request, res: Response) => {
-  const { id } = req.params;
+  const serviceId = Number(req.params?.id);
   try {
-    const tempService = await repository.get(id);
-    if (tempService!.userId != req.userId) {
+    if (!Number.isFinite(serviceId) || serviceId <= 0) {
       return formatResponse({
-        res: res,
+        res,
         success: false,
-        message: "Service not found.",
+        message: "Invalid service id.",
         code: 400,
       });
     }
-    const service = await repository.finalizedService(id);
-    const offer = {
-      serviceId: id,
+
+    const tempService = await repository.get(serviceId);
+    if (!tempService) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Service not found.",
+        code: 404,
+      });
+    }
+
+    if (Number((tempService as any).userId) !== Number(req.userId)) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Forbidden. You can only finalize your own service.",
+        code: 403,
+      });
+    }
+
+    const finalizedResult: any = await repository.finalizedService(serviceId);
+    if (finalizedResult?.notFound) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Service not found.",
+        code: 404,
+      });
+    }
+    if (finalizedResult?.invalidServiceId) {
+      return formatResponse({
+        res,
+        success: false,
+        message: "Invalid service id.",
+        code: 400,
+      });
+    }
+
+    const responseBody = {
+      id: Number(finalizedResult?.id ?? serviceId),
+      status: String(finalizedResult?.status ?? "CANCELED"),
+      acceptedCount: Number(finalizedResult?.acceptedCount ?? 0),
+      closedAt: String(finalizedResult?.closedAt ?? new Date().toISOString()),
     };
-    socket.emit("offers", offer);
-    const deletedService = await repository.get(id);
-    socket.emit("services", deletedService);
-    return formatResponse({ res: res, success: true, body: { service } });
+
+    const refreshLists = [
+      "myonGoing",
+      "myHistory",
+      "myHistoryCanceled",
+      "onGoing/worker",
+      "history/worker",
+      "worker/canceled",
+    ];
+
+    socket.emit("offers", {
+      action: "finalized",
+      serviceId: responseBody.id,
+      ownerUserId: Number(tempService?.userId ?? finalizedResult?.service?.userId ?? 0),
+      refreshLists: ["onGoing/worker", "history/worker", "worker/canceled"],
+      updatedAt: new Date().toISOString(),
+    });
+
+    const serviceForSocket =
+      finalizedResult?.service && typeof finalizedResult.service.toJSON === "function"
+        ? finalizedResult.service.toJSON()
+        : finalizedResult?.service ?? null;
+
+    socket.emit("services", {
+      ...(serviceForSocket ?? {}),
+      ...responseBody,
+      refreshLists,
+    });
+
+    socket.emit("service/finalized", {
+      ...responseBody,
+      refreshLists,
+    });
+
+    return formatResponse({ res, success: true, body: responseBody });
   } catch (error) {
     console.log(error);
     return formatResponse({
-      res: res,
+      res,
       success: false,
       message: error,
       code: 400,

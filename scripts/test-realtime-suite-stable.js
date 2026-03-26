@@ -5,8 +5,10 @@ const path = require("path");
 const { spawn } = require("child_process");
 const axios = require("axios");
 const dotenv = require("dotenv");
+const { applyFileBackedSecrets } = require("./_utils/apply-file-backed-secrets");
 
 dotenv.config({ path: path.resolve(__dirname, "..", ".env") });
+applyFileBackedSecrets(process.env, { forceOverride: false, baseDir: path.resolve(__dirname, "..") });
 
 const ROOT = path.resolve(__dirname, "..");
 const argv = new Set(process.argv.slice(2));

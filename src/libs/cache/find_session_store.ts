@@ -1,4 +1,4 @@
-type FindScope = "orbit" | "post" | "worker";
+type FindScope = "home" | "orbit" | "post" | "worker";
 type FindStoreBackend = "redis" | "memory";
 
 type LoadFindSessionStateParams<T> = {
@@ -184,7 +184,7 @@ export const loadFindSessionState = async <T>(
     };
   }
 
-  const ttlSeconds = Math.max(60, Math.floor(Number(params.ttlSeconds) || 0));
+  const ttlSeconds = Math.max(5, Math.floor(Number(params.ttlSeconds) || 0));
   const key = buildRedisKey(params.scope, sessionKey);
   const memoryFallbackState = readMemory<T>(key, params.initialState);
 
@@ -231,7 +231,7 @@ export const saveFindSessionState = async <T>(
   const sessionKey = String(params.sessionKey ?? "").trim();
   if (!sessionKey) return "memory";
 
-  const ttlSeconds = Math.max(60, Math.floor(Number(params.ttlSeconds) || 0));
+  const ttlSeconds = Math.max(5, Math.floor(Number(params.ttlSeconds) || 0));
   const key = buildRedisKey(params.scope, sessionKey);
   const payload = JSON.stringify(params.state);
 

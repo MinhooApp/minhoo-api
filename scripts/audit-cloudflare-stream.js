@@ -3,6 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { execFileSync } = require("child_process");
+const { applyFileBackedSecrets } = require("./_utils/apply-file-backed-secrets");
 
 const ROOT_DIR = path.resolve(__dirname, "..");
 const ENV_PATH = path.join(ROOT_DIR, ".env");
@@ -36,6 +37,7 @@ const loadEnvFile = (filePath) => {
 };
 
 const envFile = loadEnvFile(ENV_PATH);
+applyFileBackedSecrets(envFile, { forceOverride: false, baseDir: ROOT_DIR });
 const accountId = String(envFile.CLOUDFLARE_ACCOUNT_ID || "").trim();
 const mediaToken = String(envFile.CLOUDFLARE_MEDIA_API_TOKEN || envFile.CLOUDFLARE_API_TOKEN || envFile.CLOUDFLARE_TOKEN || "").trim();
 

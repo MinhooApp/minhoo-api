@@ -1,6 +1,73 @@
 import { Request, Response, formatResponse, repository } from "../_module/module";
 import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
 import { isSummaryMode, toServiceSummary } from "../../../libs/summary_response";
+import {
+  enrichServiceApplicantsStatus,
+  enrichServicesApplicantsStatus,
+} from "../../../libs/applicants_status";
+
+type ServiceHistoryDateRange = {
+  from?: Date | null;
+  to?: Date | null;
+};
+
+const normalizeQueryToken = (input: unknown): string => {
+  const raw = Array.isArray(input) ? input[0] : input;
+  return String(raw ?? "").trim().toLowerCase();
+};
+
+const parseHistoryYear = (input: unknown): number | null => {
+  const raw = normalizeQueryToken(input);
+  if (!raw) return null;
+  const year = Number(raw);
+  if (!Number.isInteger(year)) return null;
+  if (year < 1970 || year > 9999) return null;
+  return year;
+};
+
+const subtractUtcMonths = (base: Date, months: number): Date => {
+  const date = new Date(base.getTime());
+  date.setUTCMonth(date.getUTCMonth() - months);
+  return date;
+};
+
+const resolveHistoryDateRange = (
+  query: Record<string, unknown> = {}
+): ServiceHistoryDateRange => {
+  const now = new Date();
+  const year = parseHistoryYear(query.year);
+  if (year !== null) {
+    const from = new Date(Date.UTC(year, 0, 1, 0, 0, 0, 0));
+    const to = new Date(Date.UTC(year + 1, 0, 1, 0, 0, 0, 0) - 1);
+    return { from, to };
+  }
+
+  const filter = normalizeQueryToken(
+    query.filter ??
+      query.date_filter ??
+      query.dateFilter ??
+      query.history_filter ??
+      query.historyFilter ??
+      "latest"
+  );
+
+  if (filter === "last_30_days") {
+    const from = new Date(now.getTime());
+    from.setUTCDate(from.getUTCDate() - 30);
+    return { from, to: now };
+  }
+
+  if (filter === "last_3_months") {
+    return { from: subtractUtcMonths(now, 3), to: now };
+  }
+
+  if (filter === "last_6_months") {
+    return { from: subtractUtcMonths(now, 6), to: now };
+  }
+
+  // latest (default): no date restriction, only newest-first sorting.
+  return {};
+};
 
 function toPlain<T>(data: T): T {
   return JSON.parse(JSON.stringify(data));
@@ -12,6 +79,18 @@ function toBool(input: unknown, defaultVal = true): boolean {
   if (["true", "1", "yes", "y"].includes(s)) return true;
   if (["false", "0", "no", "n"].includes(s)) return false;
   return defaultVal;
+}
+
+function parsePageAndSize(query: Record<string, unknown> = {}) {
+  const pageNum = Math.max(0, Number(query.page ?? 0) || 0);
+  const sizeNum = Math.min(Math.max(Number(query.size ?? 10) || 10, 1), 20);
+  return { pageNum, sizeNum };
+}
+
+function toCount(countValue: unknown): number {
+  if (Array.isArray(countValue)) return countValue.length;
+  const parsed = Number(countValue ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function ensureCurrencyOnService(svc: any) {
@@ -103,10 +182,10 @@ function sortNewestFirst(list: any[]) {
 
   const pickDate = (x: any): number => {
     const raw =
-      x?.createdAt ??
-      x?.created_at ??
       x?.service_date ??
       x?.serviceDate ??
+      x?.createdAt ??
+      x?.created_at ??
       x?.date ??
       x?.updatedAt ??
       x?.updated_at;
@@ -131,6 +210,7 @@ export const gets = async (req: Request, res: Response) => {
 
     services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
+    services = enrichServicesApplicantsStatus(services);
     services = sortNewestFirst(services);
 
     if (summary) {
@@ -155,6 +235,7 @@ export const myonGoing = async (req: Request, res: Response) => {
 
     services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
+    services = enrichServicesApplicantsStatus(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -175,6 +256,7 @@ export const onGoing = async (req: Request, res: Response) => {
 
     services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
+    services = enrichServicesApplicantsStatus(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -190,8 +272,7 @@ export const onGoing = async (req: Request, res: Response) => {
 
 export const getsOnGoing = async (req: Request, res: Response) => {
   try {
-    const pageNum = Math.max(0, Number(req.query.page ?? 0) || 0);
-    const sizeNum = Math.min(Math.max(Number(req.query.size ?? 10) || 10, 1), 20);
+    const { pageNum, sizeNum } = parsePageAndSize(req.query as Record<string, unknown>);
     const summary = isSummaryMode((req.query as any)?.summary);
     const servicesRaw = await (summary
       ? repository.getsOnGoingSummary
@@ -202,6 +283,7 @@ export const getsOnGoing = async (req: Request, res: Response) => {
 
     let rows = ensureCurrencyOnList(safe.rows ?? []);
     rows = normalizeApplicantUsernamesOnList(rows);
+    rows = enrichServicesApplicantsStatus(rows);
     rows = sortNewestFirst(rows);
     const responseRows = summary
       ? rows.map((service: any) => toServiceSummary(service))
@@ -210,7 +292,7 @@ export const getsOnGoing = async (req: Request, res: Response) => {
     const payload = {
       page: pageNum,
       size: sizeNum,
-      count: safe.count ?? 0,
+      count: toCount(safe.count),
       services: responseRows,
     };
 
@@ -239,14 +321,29 @@ export const getsOnGoing = async (req: Request, res: Response) => {
 
 export const onGoingWorkers = async (req: Request, res: Response) => {
   try {
-    const servicesRaw = await repository.onGoingWorkers(req.workerId, req.userId);
-    let services = toPlain(servicesRaw) as any[];
+    const { pageNum, sizeNum } = parsePageAndSize(req.query as Record<string, unknown>);
+    const servicesRaw = await repository.onGoingWorkersPaged(
+      req.workerId,
+      req.userId,
+      pageNum,
+      sizeNum
+    );
+    const safe = toPlain(servicesRaw) as any;
+    let services = ensureCurrencyOnList(safe.rows ?? []);
 
-    services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
-    services = sortNewestFirst(services);
+    services = enrichServicesApplicantsStatus(services);
 
-    return formatResponse({ res: res, success: true, body: { services } });
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        page: pageNum,
+        size: sizeNum,
+        count: toCount(safe.count),
+        services,
+      },
+    });
   } catch (error: any) {
     console.log(error.toString());
     return formatResponse({
@@ -259,14 +356,31 @@ export const onGoingWorkers = async (req: Request, res: Response) => {
 
 export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
   try {
-    const servicesRaw = await repository.onGoingCanceledWorkers(req.workerId, req.userId);
-    let services = toPlain(servicesRaw) as any[];
+    const { pageNum, sizeNum } = parsePageAndSize(req.query as Record<string, unknown>);
+    const historyDateRange = resolveHistoryDateRange(req.query as Record<string, unknown>);
+    const servicesRaw = await repository.onGoingCanceledWorkersPaged(
+      req.workerId,
+      req.userId,
+      pageNum,
+      sizeNum,
+      historyDateRange
+    );
+    const safe = toPlain(servicesRaw) as any;
+    let services = ensureCurrencyOnList(safe.rows ?? []);
 
-    services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
-    services = sortNewestFirst(services);
+    services = enrichServicesApplicantsStatus(services);
 
-    return formatResponse({ res: res, success: true, body: { services } });
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        page: pageNum,
+        size: sizeNum,
+        count: toCount(safe.count),
+        services,
+      },
+    });
   } catch (error: any) {
     console.log(error.toString());
     return formatResponse({
@@ -279,14 +393,31 @@ export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
 
 export const historyWorkers = async (req: Request, res: Response) => {
   try {
-    const servicesRaw = await repository.historyWorkers(req.workerId, req.userId);
-    let services = toPlain(servicesRaw) as any[];
+    const historyDateRange = resolveHistoryDateRange(req.query as Record<string, unknown>);
+    const { pageNum, sizeNum } = parsePageAndSize(req.query as Record<string, unknown>);
+    const servicesRaw = await repository.historyWorkersPaged(
+      req.workerId,
+      req.userId,
+      pageNum,
+      sizeNum,
+      historyDateRange
+    );
+    const safe = toPlain(servicesRaw) as any;
+    let services = ensureCurrencyOnList(safe.rows ?? []);
 
-    services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
-    services = sortNewestFirst(services);
+    services = enrichServicesApplicantsStatus(services);
 
-    return formatResponse({ res: res, success: true, body: { services } });
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        page: pageNum,
+        size: sizeNum,
+        count: toCount(safe.count),
+        services,
+      },
+    });
   } catch (error: any) {
     console.log(error.toString());
     return formatResponse({
@@ -305,6 +436,7 @@ export const get = async (req: Request, res: Response) => {
 
     service = ensureCurrencyOnService(service);
     service = normalizeApplicantUsernamesOnService(service);
+    service = enrichServiceApplicantsStatus(service);
 
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error: any) {
@@ -321,12 +453,14 @@ export const myHistory = async (req: Request, res: Response) => {
   try {
     const { canceled } = req.query as Record<string, unknown>;
     const canceledBool = toBool(canceled, true);
+    const historyDateRange = resolveHistoryDateRange(req.query as Record<string, unknown>);
 
-    const servicesRaw = await repository.history(req.userId, canceledBool);
+    const servicesRaw = await repository.history(req.userId, canceledBool, historyDateRange);
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
+    services = enrichServicesApplicantsStatus(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res, success: true, body: { services } });
@@ -342,11 +476,13 @@ export const myHistory = async (req: Request, res: Response) => {
 
 export const myHistoryCanceled = async (req: Request, res: Response) => {
   try {
-    const servicesRaw = await repository.historyCanceled(req.userId);
+    const historyDateRange = resolveHistoryDateRange(req.query as Record<string, unknown>);
+    const servicesRaw = await repository.historyCanceled(req.userId, historyDateRange);
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
+    services = enrichServicesApplicantsStatus(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });
@@ -362,11 +498,13 @@ export const myHistoryCanceled = async (req: Request, res: Response) => {
 
 export const history = async (req: Request, res: Response) => {
   try {
-    const servicesRaw = await repository.history();
+    const historyDateRange = resolveHistoryDateRange(req.query as Record<string, unknown>);
+    const servicesRaw = await repository.history(undefined, true, historyDateRange);
     let services = toPlain(servicesRaw) as any[];
 
     services = ensureCurrencyOnList(services);
     services = normalizeApplicantUsernamesOnList(services);
+    services = enrichServicesApplicantsStatus(services);
     services = sortNewestFirst(services);
 
     return formatResponse({ res: res, success: true, body: { services } });

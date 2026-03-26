@@ -25,8 +25,8 @@ const nowMs = () => Number(process.hrtime.bigint()) / 1_000_000;
 const round3 = (value: number) => Math.round(Number(value) * 1000) / 1000;
 const postSummaryCacheEnabled = !isTruthy(process.env.POST_SUMMARY_CACHE_DISABLED ?? "0");
 const postSummaryCacheTtlSeconds = Math.max(
-  60,
-  Number(process.env.POST_SUMMARY_CACHE_TTL_SECONDS ?? 60) || 60
+  15,
+  Number(process.env.POST_SUMMARY_CACHE_TTL_SECONDS ?? 20) || 20
 );
 
 type PostSummaryCacheEntry = {

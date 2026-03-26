@@ -7,6 +7,9 @@ require("dotenv").config();
 const { execSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
+const { applyFileBackedSecrets } = require("./_utils/apply-file-backed-secrets");
+
+applyFileBackedSecrets(process.env, { forceOverride: false, baseDir: process.cwd() });
 
 const argv = process.argv.slice(2);
 const hasFlag = (flag) => argv.includes(flag);
@@ -480,7 +483,6 @@ const main = async () => {
   if (INTERNAL_DEBUG_TOKEN) internalHeaders["x-internal-debug-token"] = INTERNAL_DEBUG_TOKEN;
 
   checks.push(probeServiceActive("minhoo-api.service"));
-  checks.push(probeServiceActive("minhoo-api-green.service"));
   checks.push(probeServiceActive("nginx.service"));
   checks.push(probeServiceActive("mysql.service"));
   const nginxStubStatus = await probeNginxStubStatus();
@@ -490,14 +492,6 @@ const main = async () => {
     await probeHttp({
       name: "blue_ping",
       url: "http://127.0.0.1:3000/api/v1/ping",
-      expected: [200],
-      warnMs: 400,
-    })
-  );
-  checks.push(
-    await probeHttp({
-      name: "green_ping",
-      url: "http://127.0.0.1:3001/api/v1/ping",
       expected: [200],
       warnMs: 400,
     })
@@ -521,14 +515,6 @@ const main = async () => {
   );
   checks.push(
     await probeHttp({
-      name: "green_bootstrap",
-      url: `http://127.0.0.1:3001${SMOKE_BOOTSTRAP_PATH}`,
-      expected: [200],
-      warnMs: 1400,
-    })
-  );
-  checks.push(
-    await probeHttp({
       name: "public_bootstrap",
       url: `${PUBLIC_BASE_URL}${SMOKE_BOOTSTRAP_PATH}`,
       expected: [200],
@@ -546,26 +532,8 @@ const main = async () => {
   );
   checks.push(
     await probeHttp({
-      name: "green_catalog_countries",
-      url: "http://127.0.0.1:3001/api/v1/catalog/countries",
-      expected: [200],
-      warnMs: 900,
-    })
-  );
-
-  checks.push(
-    await probeHttp({
       name: "blue_internal_summary_routes",
       url: "http://127.0.0.1:3000/api/v1/internal/debug/summary-routes",
-      headers: internalHeaders,
-      expected: [200],
-      warnMs: 1000,
-    })
-  );
-  checks.push(
-    await probeHttp({
-      name: "green_internal_summary_routes",
-      url: "http://127.0.0.1:3001/api/v1/internal/debug/summary-routes",
       headers: internalHeaders,
       expected: [200],
       warnMs: 1000,
@@ -581,17 +549,6 @@ const main = async () => {
       warnMs: 2500,
     })
   );
-  checks.push(
-    await probeHttp({
-      name: "green_internal_perf_check",
-      url: "http://127.0.0.1:3001/api/v1/internal/perf-check",
-      headers: internalHeaders,
-      expected: [200],
-      timeout: 30000,
-      warnMs: 2500,
-    })
-  );
-
   const risks = [];
   for (const check of checks) {
     if (!check.ok) {

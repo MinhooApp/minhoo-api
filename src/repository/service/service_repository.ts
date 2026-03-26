@@ -16,6 +16,8 @@ const SERVICE_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
   Number(process.env.SERVICE_REPORT_AUTO_DELETE_THRESHOLD ?? 20) || 20
 );
 const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
+const SERVICE_STATUS_COMPLETED = 4;
+const SERVICE_STATUS_CANCELED = 5;
 
 const notBlockedLiteral = () =>
   Sequelize.literal(`
@@ -39,6 +41,27 @@ const pagination = (page: any = 0, size: any = 10) => {
   return { limit: safeLimit, offset: safePage * safeLimit };
 };
 
+export type ServiceHistoryDateRange = {
+  from?: Date | null;
+  to?: Date | null;
+};
+
+const buildServiceDateWhere = (dateRange?: ServiceHistoryDateRange) => {
+  const from = dateRange?.from instanceof Date ? dateRange.from : null;
+  const to = dateRange?.to instanceof Date ? dateRange.to : null;
+
+  if (from && to) {
+    return { [Op.between]: [from, to] };
+  }
+  if (from) {
+    return { [Op.gte]: from };
+  }
+  if (to) {
+    return { [Op.lte]: to };
+  }
+  return null;
+};
+
 const serviceSummaryInclude = [
   {
     model: User,
@@ -56,6 +79,23 @@ const serviceSummaryInclude = [
     attributes: ["id", "name", "es_name"],
   },
 ] as const;
+
+const applicantsCountSummaryAttribute = [
+  Sequelize.literal(`(
+    SELECT COUNT(DISTINCT o.workerId)
+    FROM offers o
+    WHERE
+      o.serviceId = \`service\`.\`id\`
+      AND o.canceled = 0
+      AND o.removed = 0
+  )`),
+  "applicants_count",
+] as const;
+
+const orderByNewestStable: any[] = [
+  ["service_date", "DESC"],
+  ["id", "DESC"],
+];
 
 export const add = async (body: any) => {
   const service = await Service.create(body);
@@ -87,6 +127,7 @@ export const getsSummary = async (size: any = 20) => {
       "currencyPrefix",
       "service_date",
       "statusId",
+      applicantsCountSummaryAttribute as any,
     ],
     include: serviceSummaryInclude as any,
     order: [["service_date", "DESC"]],
@@ -94,36 +135,67 @@ export const getsSummary = async (size: any = 20) => {
   });
 };
 
-export const history = async (userId?: number, canceled = true) => {
+export const history = async (
+  userId?: number,
+  canceled = true,
+  dateRange?: ServiceHistoryDateRange
+) => {
+  const serviceDateWhere = buildServiceDateWhere(dateRange);
+
   if (userId != undefined) {
+    const where: any = {
+      userId,
+      statusId: { [Op.notIn]: canceled ? [1] : [1, 5] },
+    };
+    if (serviceDateWhere) {
+      where.service_date = serviceDateWhere;
+    }
+
     return Service.findAll({
-      where: {
-        userId,
-        statusId: { [Op.notIn]: canceled ? [1] : [1, 5] },
-      },
+      where,
       include: serviceInclude,
       order: [["service_date", "DESC"]],
     });
   }
 
+  const where: any = { statusId: { [Op.notIn]: [1, 5] } };
+  if (serviceDateWhere) {
+    where.service_date = serviceDateWhere;
+  }
+
   return Service.findAll({
-    where: { statusId: { [Op.notIn]: [1, 5] } },
+    where,
     include: serviceInclude,
     order: [["service_date", "DESC"]],
   });
 };
 
-export const historyCanceled = async (userId?: number) => {
+export const historyCanceled = async (
+  userId?: number,
+  dateRange?: ServiceHistoryDateRange
+) => {
+  const serviceDateWhere = buildServiceDateWhere(dateRange);
+
   if (userId != undefined) {
+    const where: any = { userId, statusId: 5 };
+    if (serviceDateWhere) {
+      where.service_date = serviceDateWhere;
+    }
+
     return Service.findAll({
-      where: { userId, statusId: 5 },
+      where,
       include: serviceInclude,
       order: [["service_date", "DESC"]],
     });
   }
 
+  const where: any = { statusId: 5 };
+  if (serviceDateWhere) {
+    where.service_date = serviceDateWhere;
+  }
+
   return Service.findAll({
-    where: { statusId: 5 },
+    where,
     include: serviceInclude,
     order: [["service_date", "DESC"]],
   });
@@ -189,7 +261,39 @@ export const onGoingWorkers = async (workerId: number, meId: any) => {
       },
     ],
     replacements: { meId },
-    order: [["service_date", "DESC"]],
+    order: orderByNewestStable,
+  });
+};
+
+export const onGoingWorkersPaged = async (
+  workerId: number,
+  meId: any,
+  page: any = 0,
+  size: any = 10
+) => {
+  const { limit, offset } = pagination(page, size);
+  return Service.findAndCountAll({
+    where: { is_available: true, statusId: 1 },
+    include: [
+      ...serviceInclude,
+      {
+        model: Offer,
+        as: "offers",
+        where: {
+          workerId,
+          canceled: false,
+          removed: false,
+          [Op.and]: [notBlockedLiteral()],
+        },
+        required: true,
+      },
+    ],
+    replacements: { meId },
+    order: orderByNewestStable,
+    limit,
+    offset,
+    distinct: true,
+    col: "service.id",
   });
 };
 
@@ -212,7 +316,44 @@ export const onGoingCanceledWorkers = async (workerId: number, meId: any) => {
       },
     ],
     replacements: { meId },
-    order: [["service_date", "DESC"]],
+    order: orderByNewestStable,
+  });
+};
+
+export const onGoingCanceledWorkersPaged = async (
+  workerId: number,
+  meId: any,
+  page: any = 0,
+  size: any = 10,
+  dateRange?: ServiceHistoryDateRange
+) => {
+  const { limit, offset } = pagination(page, size);
+  const serviceDateWhere = buildServiceDateWhere(dateRange);
+  const where: any = { statusId: 5 };
+  if (serviceDateWhere) {
+    where.service_date = serviceDateWhere;
+  }
+
+  return Service.findAndCountAll({
+    where,
+    include: [
+      ...serviceInclude,
+      {
+        model: Offer,
+        as: "offers",
+        where: {
+          workerId,
+          [Op.and]: [notBlockedLiteral()],
+        },
+        required: true,
+      },
+    ],
+    replacements: { meId },
+    order: orderByNewestStable,
+    limit,
+    offset,
+    distinct: true,
+    col: "service.id",
   });
 };
 
@@ -221,9 +362,19 @@ export const onGoingCanceledWorkers = async (workerId: number, meId: any) => {
  * IMPORTANTE: accepted true PERO canceled/removed false.
  * Si no haces esto, un accepted-canceled se “cuela” como Accepted.
  */
-export const historyWorkers = async (workerId: number, meId: any) => {
+export const historyWorkers = async (
+  workerId: number,
+  meId: any,
+  dateRange?: ServiceHistoryDateRange
+) => {
+  const serviceDateWhere = buildServiceDateWhere(dateRange);
+  const where: any = { is_available: true };
+  if (serviceDateWhere) {
+    where.service_date = serviceDateWhere;
+  }
+
   return Service.findAll({
-    where: { is_available: true },
+    where,
     include: [
       ...serviceInclude,
       {
@@ -240,7 +391,47 @@ export const historyWorkers = async (workerId: number, meId: any) => {
       },
     ],
     replacements: { meId },
-    order: [["service_date", "DESC"]],
+    order: orderByNewestStable,
+  });
+};
+
+export const historyWorkersPaged = async (
+  workerId: number,
+  meId: any,
+  page: any = 0,
+  size: any = 10,
+  dateRange?: ServiceHistoryDateRange
+) => {
+  const { limit, offset } = pagination(page, size);
+  const serviceDateWhere = buildServiceDateWhere(dateRange);
+  const where: any = { is_available: true };
+  if (serviceDateWhere) {
+    where.service_date = serviceDateWhere;
+  }
+
+  return Service.findAndCountAll({
+    where,
+    include: [
+      ...serviceInclude,
+      {
+        model: Offer,
+        as: "offers",
+        where: {
+          workerId,
+          accepted: true,
+          canceled: false,
+          removed: false,
+          [Op.and]: [notBlockedLiteral()],
+        },
+        required: true,
+      },
+    ],
+    replacements: { meId },
+    order: orderByNewestStable,
+    limit,
+    offset,
+    distinct: true,
+    col: "service.id",
   });
 };
 
@@ -325,12 +516,76 @@ export const removeWorker = async (serviceId: any, workerId: any) => {
 };
 
 export const finalizedService = async (id: any) => {
-  const serviceTemp = await Service.findByPk(id);
-  await serviceTemp!.update({ statusId: 2 });
+  const serviceId = Number(id);
+  if (!Number.isFinite(serviceId) || serviceId <= 0) {
+    return { invalidServiceId: true };
+  }
 
-  return Service.findOne({
-    where: { id },
-    include: serviceInclude,
+  const sequelize = (Service as any).sequelize;
+  if (!sequelize) {
+    throw new Error("Service sequelize instance is not available");
+  }
+
+  return sequelize.transaction(async (transaction: any) => {
+    const service = await Service.findOne({
+      where: { id: serviceId },
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+
+    if (!service) {
+      return { notFound: true };
+    }
+
+    const acceptedCount = await Offer.count({
+      where: {
+        serviceId,
+        accepted: true,
+        canceled: false,
+        removed: false,
+      },
+      transaction,
+    });
+
+    const currentStatusId = Number((service as any).statusId ?? 0);
+    const alreadyFinal =
+      currentStatusId === SERVICE_STATUS_COMPLETED ||
+      currentStatusId === SERVICE_STATUS_CANCELED;
+
+    if (!alreadyFinal) {
+      const nextStatusId =
+        Number(acceptedCount) > 0
+          ? SERVICE_STATUS_COMPLETED
+          : SERVICE_STATUS_CANCELED;
+
+      // Atomic transition: no workers accepted => CANCELED, otherwise COMPLETED.
+      await service.update({ statusId: nextStatusId }, { transaction });
+    }
+
+    await service.reload({ transaction });
+
+    const statusId = Number((service as any).statusId ?? 0);
+    const status =
+      statusId === SERVICE_STATUS_CANCELED ? "CANCELED" : "COMPLETED";
+    const closedAt = new Date(
+      (service as any).updatedAt ?? Date.now()
+    ).toISOString();
+
+    const fullService = await Service.findOne({
+      where: { id: serviceId },
+      include: serviceInclude,
+      transaction,
+    });
+
+    return {
+      id: serviceId,
+      status,
+      statusId,
+      acceptedCount: Number(acceptedCount) || 0,
+      closedAt,
+      alreadyFinal,
+      service: fullService,
+    };
   });
 };
 
@@ -543,6 +798,7 @@ export const getsOnGoingSummary = async (
       "currencyPrefix",
       "service_date",
       "statusId",
+      applicantsCountSummaryAttribute as any,
     ],
   });
 };

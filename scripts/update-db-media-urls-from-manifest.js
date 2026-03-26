@@ -5,8 +5,10 @@ const fs = require("fs");
 const path = require("path");
 const mysql = require("mysql2/promise");
 const dotenv = require("dotenv");
+const { applyFileBackedSecrets } = require("./_utils/apply-file-backed-secrets");
 
 dotenv.config({ path: path.join(process.cwd(), ".env") });
+applyFileBackedSecrets(process.env, { forceOverride: false, baseDir: process.cwd() });
 
 const manifestPathArg = process.argv.find((arg) => arg.startsWith("--manifest="));
 const MANIFEST_PATH = manifestPathArg
