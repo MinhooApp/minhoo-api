@@ -94,8 +94,13 @@ export const unsave_post = async (req: Request, res: Response) => {
           savesCount: saveCount,
           is_saved: false,
           isSaved: false,
-        },
+      },
     });
+    console.log(
+      `[unsaved_post] userId=${Number(req.userId ?? 0)} postId=${postId} removed=${Boolean(
+        (result as any)?.removed
+      )} savesCount=${saveCount}`
+    );
 
     return formatResponse({
       res,

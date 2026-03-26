@@ -1467,12 +1467,19 @@ export const socketController = (socket: Socket) => {
     const globalEvent = "offers";
     const scopedEvent = `offers/${normalized.serviceId}`;
     const targetUserIds = extractOfferTargetUserIds(normalized);
+    const action = String(normalized.action ?? "updated");
     if (targetUserIds.length > 0) {
+      console.log(
+        `[realtime-offers] action=${action} serviceId=${normalized.serviceId} mode=targeted targets=${targetUserIds.join(",")}`
+      );
       emitToUserIds(socket, globalEvent, normalized, targetUserIds);
       emitToUserIds(socket, scopedEvent, normalized, targetUserIds);
       return;
     }
 
+    console.log(
+      `[realtime-offers] action=${action} serviceId=${normalized.serviceId} mode=broadcast targets=all`
+    );
     emitToAllAuthenticatedUsers(socket, globalEvent, normalized);
     emitToAllAuthenticatedUsers(socket, scopedEvent, normalized);
   });

@@ -15,8 +15,24 @@ const getArgValue = (flag, fallback = "") => {
 const SERVICE = getArgValue("--service", process.env.MONITOR_SERVICE || "minhoo-api");
 const SINCE_MINUTES = Math.max(1, Math.min(Number(getArgValue("--minutes", process.env.MONITOR_MINUTES || "15")) || 15, 720));
 const MAX_HTTP_5XX = Math.max(0, Number(getArgValue("--max-http-5xx", process.env.MONITOR_MAX_HTTP_5XX || "0")) || 0);
-const MIN_REALTIME_EVENTS = Math.max(0, Number(getArgValue("--min-realtime-events", process.env.MONITOR_MIN_REALTIME_EVENTS || "1")) || 1);
-const MIN_PUSH_SUCCESS = Math.max(0, Number(getArgValue("--min-push-success", process.env.MONITOR_MIN_PUSH_SUCCESS || "0")) || 0);
+const minRealtimeEventsRaw = Number(
+  getArgValue("--min-realtime-events", process.env.MONITOR_MIN_REALTIME_EVENTS || "1")
+);
+const MIN_REALTIME_EVENTS = Number.isFinite(minRealtimeEventsRaw)
+  ? Math.max(0, minRealtimeEventsRaw)
+  : 1;
+const minPushSuccessRaw = Number(
+  getArgValue("--min-push-success", process.env.MONITOR_MIN_PUSH_SUCCESS || "0")
+);
+const MIN_PUSH_SUCCESS = Number.isFinite(minPushSuccessRaw)
+  ? Math.max(0, minPushSuccessRaw)
+  : 0;
+const minOffersEventsRaw = Number(
+  getArgValue("--min-offers-events", process.env.MONITOR_MIN_OFFERS_EVENTS || "0")
+);
+const MIN_OFFERS_EVENTS = Number.isFinite(minOffersEventsRaw)
+  ? Math.max(0, minOffersEventsRaw)
+  : 0;
 const STRICT = hasFlag("--strict");
 const JSON_MODE = hasFlag("--json");
 
@@ -34,6 +50,14 @@ const metrics = {
   realtime_events: 0,
   realtime_chat_message: 0,
   realtime_chats_refresh: 0,
+  realtime_offers_events: 0,
+  realtime_offers_targeted: 0,
+  realtime_offers_broadcast: 0,
+  post_saved_actions: 0,
+  post_unsaved_actions: 0,
+  reel_star_actions: 0,
+  reel_save_actions: 0,
+  reel_unsave_actions: 0,
   resp_metrics_5xx: 0,
   resp_metrics_4xx: 0,
   resp_metrics_401_chat: 0,
@@ -87,6 +111,16 @@ const parseLines = (raw) => {
     if (line.includes("[realtime-direct]")) metrics.realtime_events += 1;
     if (line.includes("[realtime-direct] chat message")) metrics.realtime_chat_message += 1;
     if (line.includes("[realtime-direct] chats refresh")) metrics.realtime_chats_refresh += 1;
+    if (line.includes("[realtime-offers]")) {
+      metrics.realtime_offers_events += 1;
+      if (line.includes("mode=targeted")) metrics.realtime_offers_targeted += 1;
+      if (line.includes("mode=broadcast")) metrics.realtime_offers_broadcast += 1;
+    }
+    if (line.includes("[saved_post]")) metrics.post_saved_actions += 1;
+    if (line.includes("[unsaved_post]")) metrics.post_unsaved_actions += 1;
+    if (line.includes("[reel_star_action]")) metrics.reel_star_actions += 1;
+    if (line.includes("[reel_save_action]")) metrics.reel_save_actions += 1;
+    if (line.includes("[reel_unsave_action]")) metrics.reel_unsave_actions += 1;
 
     if (line.includes("[perf-warning]")) metrics.perf_warnings += 1;
 
@@ -142,6 +176,12 @@ const evaluate = () => {
     );
   }
 
+  if (metrics.realtime_offers_events < MIN_OFFERS_EVENTS) {
+    warnings.push(
+      `Offers realtime events below threshold: ${metrics.realtime_offers_events} < ${MIN_OFFERS_EVENTS}`
+    );
+  }
+
   if (metrics.perf_warnings > 0) {
     warnings.push(`Performance warnings detected: ${metrics.perf_warnings}`);
   }
@@ -157,6 +197,12 @@ const printHuman = () => {
   );
   console.log(
     `[monitor] realtime events=${metrics.realtime_events} chat_message=${metrics.realtime_chat_message} chats_refresh=${metrics.realtime_chats_refresh}`
+  );
+  console.log(
+    `[monitor] offers realtime total=${metrics.realtime_offers_events} targeted=${metrics.realtime_offers_targeted} broadcast=${metrics.realtime_offers_broadcast}`
+  );
+  console.log(
+    `[monitor] star/save actions post(saved=${metrics.post_saved_actions},unsaved=${metrics.post_unsaved_actions}) reel(star=${metrics.reel_star_actions},save=${metrics.reel_save_actions},unsave=${metrics.reel_unsave_actions})`
   );
   console.log(
     `[monitor] resp 5xx=${metrics.resp_metrics_5xx} 4xx=${metrics.resp_metrics_4xx} chat401=${metrics.resp_metrics_401_chat}`

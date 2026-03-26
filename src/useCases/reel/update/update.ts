@@ -151,6 +151,7 @@ export const toggle_reel_star = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const result = await repository.toggleStar(req.userId, id);
+    const reelId = Number(id);
 
     if (result.notFound) {
       return formatResponse({
@@ -193,12 +194,17 @@ export const toggle_reel_star = async (req: Request, res: Response) => {
       ownerUserId || actorUserId,
       actorUserId
     );
+    console.log(
+      `[reel_star_action] userId=${actorUserId} reelId=${reelId} starred=${Boolean(
+        (result as any)?.starred
+      )} likesCount=${Number((result as any)?.likes_count ?? 0)}`
+    );
 
     return formatResponse({
       res,
       success: true,
       body: {
-        reelId: Number(id),
+        reelId,
         starred: result.starred,
         liked: result.starred,
         likes_count: result.likes_count,
@@ -215,6 +221,7 @@ export const save_reel = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const result = await repository.saveReel(req.userId, id);
+    const reelId = Number(id);
 
     if (result.notFound) {
       return formatResponse({
@@ -257,12 +264,17 @@ export const save_reel = async (req: Request, res: Response) => {
       ownerUserId || actorUserId,
       actorUserId
     );
+    console.log(
+      `[reel_save_action] userId=${actorUserId} reelId=${reelId} saved=true savesCount=${Number(
+        (result as any)?.saves_count ?? 0
+      )}`
+    );
 
     return formatResponse({
       res,
       success: true,
       body: {
-        reelId: Number(id),
+        reelId,
         saved: true,
         created: result.created,
         saves_count: result.saves_count,
@@ -279,6 +291,7 @@ export const unsave_reel = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const result = await repository.unsaveReel(req.userId, id);
+    const reelId = Number(id);
 
     if (result.notFound) {
       return formatResponse({
@@ -289,12 +302,17 @@ export const unsave_reel = async (req: Request, res: Response) => {
       });
     }
     emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId);
+    console.log(
+      `[reel_unsave_action] userId=${Number(req.userId ?? 0)} reelId=${reelId} saved=false savesCount=${Number(
+        (result as any)?.saves_count ?? 0
+      )}`
+    );
 
     return formatResponse({
       res,
       success: true,
       body: {
-        reelId: Number(id),
+        reelId,
         saved: false,
         removed: result.removed,
         saves_count: result.saves_count,
