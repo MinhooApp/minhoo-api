@@ -81,6 +81,47 @@ const BASELINE_SAFE_RPS = toPositiveNumber(process.env.RISK_BASELINE_SAFE_RPS, 5
 const CAPACITY_WARN_PCT = toPositiveNumber(process.env.RISK_CAPACITY_WARN_PCT, 70, 1);
 const CAPACITY_SCALE_PCT = toPositiveNumber(process.env.RISK_CAPACITY_SCALE_PCT, 80, 1);
 const CAPACITY_CRITICAL_PCT = toPositiveNumber(process.env.RISK_CAPACITY_CRITICAL_PCT, 90, 1);
+const OBSERVABILITY_WINDOW = toPositiveNumber(process.env.RISK_OBSERVABILITY_WINDOW, 300, 20);
+const OBSERVABILITY_MIN_REQUESTS = toPositiveNumber(
+  process.env.RISK_OBSERVABILITY_MIN_REQUESTS,
+  30,
+  1
+);
+const OBSERVABILITY_P95_WARN_MS = toPositiveNumber(
+  process.env.RISK_OBSERVABILITY_P95_WARN_MS,
+  900,
+  50
+);
+const OBSERVABILITY_P99_WARN_MS = toPositiveNumber(
+  process.env.RISK_OBSERVABILITY_P99_WARN_MS,
+  1500,
+  100
+);
+const OBSERVABILITY_5XX_WARN_PCT = toPositiveNumber(
+  process.env.RISK_OBSERVABILITY_5XX_WARN_PCT,
+  1.5,
+  0.1
+);
+const OBSERVABILITY_429_WARN_PCT = toPositiveNumber(
+  process.env.RISK_OBSERVABILITY_429_WARN_PCT,
+  4,
+  0.1
+);
+const OBSERVABILITY_BOOTSTRAP_HIT_MIN_PCT = toPositiveNumber(
+  process.env.RISK_OBSERVABILITY_BOOTSTRAP_HIT_MIN_PCT,
+  55,
+  1
+);
+const OBSERVABILITY_BOOTSTRAP_NOTIF_HIT_MIN_PCT = toPositiveNumber(
+  process.env.RISK_OBSERVABILITY_BOOTSTRAP_NOTIF_HIT_MIN_PCT,
+  45,
+  1
+);
+const OBSERVABILITY_HOTSPOT_P95_WARN_MS = toPositiveNumber(
+  process.env.RISK_OBSERVABILITY_HOTSPOT_P95_WARN_MS,
+  1800,
+  100
+);
 const MIN_MEM_AVAILABLE_MB = toPositiveNumber(process.env.RISK_MIN_MEM_AVAILABLE_MB, 700, 64);
 const LOAD_WARN_FACTOR = toPositiveNumber(process.env.RISK_LOAD_WARN_FACTOR, 1.75, 0.5);
 const LOAD_CRITICAL_FACTOR = toPositiveNumber(process.env.RISK_LOAD_CRITICAL_FACTOR, 2.2, 0.5);
@@ -387,6 +428,99 @@ const probeHttp = async ({ name, url, expected = [200], timeout = 15000, headers
   }
 };
 
+const extractObservabilityPayload = (payload) => {
+  const byBody = payload?.body?.observability;
+  if (byBody && typeof byBody === "object") return byBody;
+  if (payload?.observability && typeof payload.observability === "object") return payload.observability;
+  return null;
+};
+
+const probeObservabilityOverview = async ({ headers = {} } = {}) => {
+  const started = nowMs();
+  const url = `http://127.0.0.1:3000/api/v1/internal/observability/overview?window=${OBSERVABILITY_WINDOW}`;
+  try {
+    const response = await axios.get(url, {
+      headers,
+      timeout: 12000,
+      validateStatus: () => true,
+    });
+    const durationMs = round2(nowMs() - started);
+    const bytes = toByteLength(response.data);
+    if (response.status !== 200) {
+      return {
+        type: "observability",
+        name: "blue_internal_observability_overview",
+        url,
+        ok: false,
+        status: response.status,
+        duration_ms: durationMs,
+        bytes,
+      };
+    }
+
+    const observability = extractObservabilityPayload(response.data);
+    if (!observability) {
+      return {
+        type: "observability",
+        name: "blue_internal_observability_overview",
+        url,
+        ok: false,
+        status: response.status,
+        duration_ms: durationMs,
+        bytes,
+        error: "observability payload missing",
+      };
+    }
+
+    const metrics = observability.response_metrics || {};
+    const totals = metrics.totals || {};
+    const bootstrapCache = metrics.bootstrap_cache || {};
+    const bootstrapNotificationsCache = metrics.bootstrap_notifications_cache || {};
+    const hotspots = Array.isArray(metrics.hotspots) ? metrics.hotspots : [];
+    const topHotspot = hotspots[0] || null;
+
+    return {
+      type: "observability",
+      name: "blue_internal_observability_overview",
+      url,
+      ok: true,
+      status: response.status,
+      duration_ms: durationMs,
+      bytes,
+      generated_at: observability.generated_at || null,
+      requests: toFiniteNumber(totals.requests, 0),
+      p50_ms: toFiniteNumber(totals.p50_ms, null),
+      p95_ms: toFiniteNumber(totals.p95_ms, null),
+      p99_ms: toFiniteNumber(totals.p99_ms, null),
+      avg_ms: toFiniteNumber(totals.avg_ms, null),
+      error_rate_percent: toFiniteNumber(totals.error_rate_percent, null),
+      throttled_429_rate_percent: toFiniteNumber(totals.throttled_429_rate_percent, null),
+      bootstrap_hit_rate_percent: toFiniteNumber(bootstrapCache.hit_rate_percent, null),
+      bootstrap_notifications_hit_rate_percent: toFiniteNumber(
+        bootstrapNotificationsCache.hit_rate_percent,
+        null
+      ),
+      hotspot_route: topHotspot
+        ? `${String(topHotspot.method || "GET")} ${String(topHotspot.route || "")}:${
+            topHotspot.summary ? "summary" : "full"
+          }`
+        : null,
+      hotspot_p95_ms: toFiniteNumber(topHotspot?.p95_ms, null),
+    };
+  } catch (error) {
+    return {
+      type: "observability",
+      name: "blue_internal_observability_overview",
+      url,
+      ok: false,
+      status: 0,
+      duration_ms: round2(nowMs() - started),
+      bytes: 0,
+      error: String(error?.message || error),
+    };
+  }
+};
+
 const probeServiceActive = (service) => {
   try {
     const result = String(execSync(`systemctl is-active ${service}`, { encoding: "utf8" })).trim();
@@ -425,6 +559,12 @@ const formatCheckRows = (checks) => {
           : `status=${check.status}`;
         return `<tr><td>${check.name}</td><td>${check.ok ? "OK" : "FALLA"}</td><td>${state}</td><td>${check.duration_ms} ms</td><td>-</td></tr>`;
       }
+      if (check.type === "observability") {
+        const state = check.ok
+          ? `req=${check.requests} p95=${check.p95_ms}ms p99=${check.p99_ms}ms 5xx=${check.error_rate_percent}% 429=${check.throttled_429_rate_percent}%`
+          : `status=${check.status}`;
+        return `<tr><td>${check.name}</td><td>${check.ok ? "OK" : "FALLA"}</td><td>${state}</td><td>${check.duration_ms} ms</td><td>${check.bytes}</td></tr>`;
+      }
       return `<tr><td>${check.name}</td><td>${check.ok ? "OK" : "FALLA"}</td><td>${check.status}</td><td>${check.duration_ms} ms</td><td>${check.bytes}</td></tr>`;
     })
     .join("");
@@ -445,6 +585,21 @@ const formatTelegramRiskMessage = ({ summary, checks, risks }) => {
       `Capacidad: <b>${escapeHtml(capacity.utilization_percent)}%</b> (${escapeHtml(
         capacity.observed_rps
       )} rps / base segura ${escapeHtml(capacity.baseline_safe_rps)} rps)`
+    );
+  }
+  const observability = summary?.observability || {};
+  if (Number.isFinite(observability?.requests) && observability.requests >= 0) {
+    lines.push(
+      `Observabilidad: req=${escapeHtml(observability.requests)} p95=${escapeHtml(
+        observability.p95_ms
+      )}ms p99=${escapeHtml(observability.p99_ms)}ms 5xx=${escapeHtml(
+        observability.error_rate_percent
+      )}% 429=${escapeHtml(observability.throttled_429_rate_percent)}%`
+    );
+    lines.push(
+      `Cache bootstrap hit=${escapeHtml(
+        observability.bootstrap_hit_rate_percent
+      )}% notif_hit=${escapeHtml(observability.bootstrap_notifications_hit_rate_percent)}%`
     );
   }
   lines.push("");
@@ -558,17 +713,98 @@ const main = async () => {
       warnMs: 2500,
     })
   );
+  checks.push(
+    await probeObservabilityOverview({
+      headers: internalHeaders,
+    })
+  );
   const risks = [];
   for (const check of checks) {
     if (!check.ok) {
       if (check.type === "service") {
         risks.push(`[ALTA] Servicio caido o desconocido: ${check.service} (estado=${check.state})`);
         addAction(`Reiniciar y validar ${check.service} inmediatamente.`);
+      } else if (check.type === "observability") {
+        risks.push(
+          `[ALTA] Check de observabilidad fallido: status=${check.status} duration_ms=${check.duration_ms} error=${
+            check.error || "n/a"
+          }`
+        );
+        addAction("Validar INTERNAL_DEBUG_TOKEN, endpoint interno y salud del proceso API.");
       } else {
         risks.push(
           `[ALTA] Check HTTP fallido: ${check.name} status=${check.status} duration_ms=${check.duration_ms} url=${check.url}`
         );
         addAction("Validar salud de upstream y revertir cambios recientes si aplica.");
+      }
+      continue;
+    }
+    if (check.type === "observability") {
+      if (check.requests < OBSERVABILITY_MIN_REQUESTS) {
+        risks.push(
+          `[BAJA] Ventana de observabilidad con pocas muestras: requests=${check.requests} minimo=${OBSERVABILITY_MIN_REQUESTS}`
+        );
+        addAction("Generar trafico controlado antes de evaluar latencias p95/p99.");
+      } else {
+        if (Number.isFinite(check.p95_ms) && check.p95_ms > OBSERVABILITY_P95_WARN_MS) {
+          risks.push(
+            `[MEDIA] Latencia global p95 alta: p95_ms=${check.p95_ms} umbral_ms=${OBSERVABILITY_P95_WARN_MS}`
+          );
+          addAction("Revisar hotspots del overview y caches de bootstrap/home.");
+        }
+        if (Number.isFinite(check.p99_ms) && check.p99_ms > OBSERVABILITY_P99_WARN_MS) {
+          risks.push(
+            `[MEDIA] Latencia global p99 alta: p99_ms=${check.p99_ms} umbral_ms=${OBSERVABILITY_P99_WARN_MS}`
+          );
+          addAction("Auditar queries lentas y pool de DB para cola en p99.");
+        }
+        if (
+          Number.isFinite(check.error_rate_percent) &&
+          check.error_rate_percent >= OBSERVABILITY_5XX_WARN_PCT
+        ) {
+          risks.push(
+            `[ALTA] Tasa de 5xx elevada: error_rate_percent=${check.error_rate_percent}% umbral=${OBSERVABILITY_5XX_WARN_PCT}%`
+          );
+          addAction("Inspeccionar logs de errores 5xx y activar rollback si hay regresion.");
+        }
+        if (
+          Number.isFinite(check.throttled_429_rate_percent) &&
+          check.throttled_429_rate_percent >= OBSERVABILITY_429_WARN_PCT
+        ) {
+          risks.push(
+            `[MEDIA] Tasa de 429 elevada: throttled_429_rate_percent=${check.throttled_429_rate_percent}% umbral=${OBSERVABILITY_429_WARN_PCT}%`
+          );
+          addAction("Ajustar rate limits por ruta y validar burst control en cliente.");
+        }
+        if (
+          Number.isFinite(check.bootstrap_hit_rate_percent) &&
+          check.bootstrap_hit_rate_percent < OBSERVABILITY_BOOTSTRAP_HIT_MIN_PCT
+        ) {
+          risks.push(
+            `[MEDIA] Cache hit bajo en bootstrap/home: hit_rate=${check.bootstrap_hit_rate_percent}% minimo=${OBSERVABILITY_BOOTSTRAP_HIT_MIN_PCT}%`
+          );
+          addAction("Incrementar TTL o reducir bypass para mejorar hit-rate de bootstrap.");
+        }
+        if (
+          Number.isFinite(check.bootstrap_notifications_hit_rate_percent) &&
+          check.bootstrap_notifications_hit_rate_percent < OBSERVABILITY_BOOTSTRAP_NOTIF_HIT_MIN_PCT
+        ) {
+          risks.push(
+            `[BAJA] Cache hit bajo en notifications de bootstrap: hit_rate=${check.bootstrap_notifications_hit_rate_percent}% minimo=${OBSERVABILITY_BOOTSTRAP_NOTIF_HIT_MIN_PCT}%`
+          );
+          addAction("Revisar invalidaciones de notifications cache en eventos de follow/chat.");
+        }
+        if (
+          Number.isFinite(check.hotspot_p95_ms) &&
+          check.hotspot_p95_ms > OBSERVABILITY_HOTSPOT_P95_WARN_MS
+        ) {
+          risks.push(
+            `[MEDIA] Hotspot lento detectado: route=${check.hotspot_route || "n/a"} p95_ms=${
+              check.hotspot_p95_ms
+            } umbral_ms=${OBSERVABILITY_HOTSPOT_P95_WARN_MS}`
+          );
+          addAction("Optimizar endpoint hotspot (indices, payload y cache selectivo).");
+        }
       }
       continue;
     }
@@ -635,6 +871,9 @@ const main = async () => {
     );
   }
 
+  const observabilityCheck =
+    checks.find((check) => check && check.type === "observability") || null;
+
   const summary = {
     at: nowIso(),
     alert_email: ALERT_EMAIL,
@@ -649,6 +888,22 @@ const main = async () => {
     },
     system_snapshot: systemSnapshot,
     capacity: capacityTelemetry,
+    observability: observabilityCheck
+      ? {
+          requests: observabilityCheck.requests,
+          p50_ms: observabilityCheck.p50_ms,
+          p95_ms: observabilityCheck.p95_ms,
+          p99_ms: observabilityCheck.p99_ms,
+          avg_ms: observabilityCheck.avg_ms,
+          error_rate_percent: observabilityCheck.error_rate_percent,
+          throttled_429_rate_percent: observabilityCheck.throttled_429_rate_percent,
+          bootstrap_hit_rate_percent: observabilityCheck.bootstrap_hit_rate_percent,
+          bootstrap_notifications_hit_rate_percent:
+            observabilityCheck.bootstrap_notifications_hit_rate_percent,
+          hotspot_route: observabilityCheck.hotspot_route,
+          hotspot_p95_ms: observabilityCheck.hotspot_p95_ms,
+        }
+      : null,
     recommended_actions: recommendedActions,
     risk_count: risks.length,
     checks,
@@ -666,6 +921,7 @@ const main = async () => {
     const subject = `[RIESGO] Monitor de produccion Minhoo detecto ${risks.length} incidencia(s)`;
     const systemSnapshot = summary.system_snapshot || {};
     const capacity = summary.capacity || {};
+    const observability = summary.observability || {};
     const actions = Array.isArray(summary.recommended_actions) ? summary.recommended_actions : [];
     const html = `
       <h2>Alerta de Riesgo en Produccion - Minhoo</h2>
@@ -677,6 +933,11 @@ const main = async () => {
       <p><strong>Capacidad:</strong> utilizacion=${capacity.utilization_percent ?? "n/a"}% observed_rps=${
       capacity.observed_rps ?? "n/a"
     } baseline_safe_rps=${capacity.baseline_safe_rps ?? "n/a"}</p>
+      <p><strong>Observabilidad:</strong> req=${observability.requests ?? "n/a"} p95_ms=${
+      observability.p95_ms ?? "n/a"
+    } p99_ms=${observability.p99_ms ?? "n/a"} 5xx=${observability.error_rate_percent ?? "n/a"}% 429=${
+      observability.throttled_429_rate_percent ?? "n/a"
+    }%</p>
       <ul>${formatRiskRows(risks)}</ul>
       ${actions.length ? `<h3>Acciones Recomendadas</h3><ol>${actions.map((item) => `<li>${item}</li>`).join("")}</ol>` : ""}
       <h3>Checks</h3>
