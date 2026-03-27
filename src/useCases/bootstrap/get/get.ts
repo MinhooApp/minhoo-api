@@ -71,6 +71,16 @@ type HomeSummaryL1Entry = {
 };
 
 const homeSummaryL1 = new Map<string, HomeSummaryL1Entry>();
+const homeSummaryInFlight = new Map<string, Promise<any>>();
+const homeNotificationsInFlight = new Map<string, Promise<HomeNotificationsCacheBody>>();
+
+const cloneCacheValue = <T>(value: T): T => {
+  try {
+    return JSON.parse(JSON.stringify(value)) as T;
+  } catch {
+    return value;
+  }
+};
 
 const normalizeSize = (value: any, fallback: number, max = 10) => {
   const parsed = Number(value);
@@ -144,7 +154,7 @@ const readHomeSummaryL1 = (cacheKey: string): any | null => {
     homeSummaryL1.delete(cacheKey);
     return null;
   }
-  return entry.body ?? null;
+  return entry.body != null ? cloneCacheValue(entry.body) : null;
 };
 
 const writeHomeSummaryL1 = (cacheKey: string, body: any) => {
@@ -152,8 +162,30 @@ const writeHomeSummaryL1 = (cacheKey: string, body: any) => {
   cleanupHomeSummaryL1();
   homeSummaryL1.set(cacheKey, {
     expiresAtMs: Date.now() + homeSummaryCacheTtlSeconds * 1000,
-    body,
+    body: cloneCacheValue(body),
   });
+};
+
+const withSingleFlight = async <T>(
+  store: Map<string, Promise<T>>,
+  key: string,
+  task: () => Promise<T>
+): Promise<{ value: T; shared: boolean }> => {
+  if (!key) return { value: await task(), shared: false };
+
+  const current = store.get(key);
+  if (current) return { value: await current, shared: true };
+
+  const promise = (async () => task())();
+  store.set(key, promise);
+
+  try {
+    return { value: await promise, shared: false };
+  } finally {
+    if (store.get(key) === promise) {
+      store.delete(key);
+    }
+  }
 };
 
 const parseIncludeSections = (raw: any) => {
@@ -206,6 +238,23 @@ const buildHomeNotificationsCacheKey = (params: {
     `nv:${params.notificationsVersion}`,
     `nl:${params.notificationsLimit}`,
   ].join(":");
+};
+
+const toHomeSummaryPayload = (
+  body: any,
+  authenticated: boolean,
+  viewerId: number | null
+) => {
+  return {
+    meta:
+      body?.meta ??
+      {
+        authenticated,
+        userId: viewerId,
+      },
+    sections:
+      body?.sections && typeof body.sections === "object" ? { ...body.sections } : {},
+  };
 };
 
 const readHomeSummaryCache = async (cacheKey: string): Promise<any | null> => {
@@ -363,84 +412,89 @@ export const home = async (req: Request, res: Response) => {
       notificationsLimit: 0,
     });
 
+    const authenticated = Boolean((req as any)?.authenticated && viewerId);
     let payload: any = null;
     const cachedBody = await readHomeSummaryCache(cacheKey);
     if (cachedBody && typeof cachedBody === "object") {
       res.set("X-Bootstrap-Cache", "hit");
       res.set("X-Bootstrap-Cache-TTL", String(homeSummaryCacheTtlSeconds));
-      payload = {
-        meta:
-          (cachedBody as any).meta ??
-          {
-            authenticated: Boolean((req as any)?.authenticated && viewerId),
-            userId: viewerId,
-          },
-        sections:
-          (cachedBody as any).sections && typeof (cachedBody as any).sections === "object"
-            ? { ...(cachedBody as any).sections }
-            : {},
-      };
+      payload = toHomeSummaryPayload(cachedBody, authenticated, viewerId);
     } else {
-      res.set("X-Bootstrap-Cache", "miss");
+      const summaryResult = await withSingleFlight(
+        homeSummaryInFlight,
+        cacheKey,
+        async () => {
+          const cachedWarmBody = await readHomeSummaryCache(cacheKey);
+          if (cachedWarmBody && typeof cachedWarmBody === "object") {
+            return toHomeSummaryPayload(cachedWarmBody, authenticated, viewerId);
+          }
+
+          const [postsRaw, reelsRaw, servicesRaw] = await Promise.all([
+            includeForHomeCache.has("posts")
+              ? postRepository.getsSummary(0, postsSize, req.userId, { sessionKey })
+              : Promise.resolve(null),
+            includeForHomeCache.has("reels")
+              ? reelRepository.listFeed(0, reelsSize, req.userId, false, {
+                  sessionKey,
+                  summary: true,
+                })
+              : Promise.resolve(null),
+            includeForHomeCache.has("services")
+              ? serviceRepository.getsSummary(servicesSize)
+              : Promise.resolve(null),
+          ]);
+
+          await attachSavedFlags(req.userId, postsRaw?.rows ?? []);
+
+          const freshPayload = {
+            meta: {
+              authenticated,
+              userId: viewerId,
+            },
+            sections: {
+              ...(includeForHomeCache.has("posts")
+                ? {
+                    posts: {
+                      page: 0,
+                      size: postsSize,
+                      count: Number(postsRaw?.count ?? 0) || 0,
+                      items: (postsRaw?.rows ?? []).map((post: any) =>
+                        toPostSummary(post, req.userId)
+                      ),
+                    },
+                  }
+                : {}),
+              ...(includeForHomeCache.has("reels")
+                ? {
+                    reels: {
+                      page: 0,
+                      size: reelsSize,
+                      count: Number(reelsRaw?.count ?? 0) || 0,
+                      items: (reelsRaw?.rows ?? []).map((reel: any) => toReelSummary(reel)),
+                    },
+                  }
+                : {}),
+              ...(includeForHomeCache.has("services")
+                ? {
+                    services: {
+                      size: servicesSize,
+                      items: (servicesRaw ?? []).map((service: any) =>
+                        toServiceSummary(service)
+                      ),
+                    },
+                  }
+                : {}),
+            },
+          };
+
+          await writeHomeSummaryCache(cacheKey, freshPayload);
+          return toHomeSummaryPayload(freshPayload, authenticated, viewerId);
+        }
+      );
+
+      res.set("X-Bootstrap-Cache", summaryResult.shared ? "coalesced" : "miss");
       res.set("X-Bootstrap-Cache-TTL", String(homeSummaryCacheTtlSeconds));
-
-      const [postsRaw, reelsRaw, servicesRaw] = await Promise.all([
-        includeForHomeCache.has("posts")
-          ? postRepository.getsSummary(0, postsSize, req.userId, { sessionKey })
-          : Promise.resolve(null),
-        includeForHomeCache.has("reels")
-          ? reelRepository.listFeed(0, reelsSize, req.userId, false, {
-              sessionKey,
-              summary: true,
-            })
-          : Promise.resolve(null),
-        includeForHomeCache.has("services")
-          ? serviceRepository.getsSummary(servicesSize)
-          : Promise.resolve(null),
-      ]);
-
-      await attachSavedFlags(req.userId, postsRaw?.rows ?? []);
-
-      payload = {
-        meta: {
-          authenticated: Boolean((req as any)?.authenticated && viewerId),
-          userId: viewerId,
-        },
-        sections: {
-          ...(includeForHomeCache.has("posts")
-            ? {
-                posts: {
-                  page: 0,
-                  size: postsSize,
-                  count: Number(postsRaw?.count ?? 0) || 0,
-                  items: (postsRaw?.rows ?? []).map((post: any) =>
-                    toPostSummary(post, req.userId)
-                  ),
-                },
-              }
-            : {}),
-          ...(includeForHomeCache.has("reels")
-            ? {
-                reels: {
-                  page: 0,
-                  size: reelsSize,
-                  count: Number(reelsRaw?.count ?? 0) || 0,
-                  items: (reelsRaw?.rows ?? []).map((reel: any) => toReelSummary(reel)),
-                },
-              }
-            : {}),
-          ...(includeForHomeCache.has("services")
-            ? {
-                services: {
-                  size: servicesSize,
-                  items: (servicesRaw ?? []).map((service: any) => toServiceSummary(service)),
-                },
-              }
-            : {}),
-        },
-      };
-
-      await writeHomeSummaryCache(cacheKey, payload);
+      payload = summaryResult.value;
     }
 
     if (includeNotifications && viewerId) {
@@ -455,23 +509,38 @@ export const home = async (req: Request, res: Response) => {
         res.set("X-Bootstrap-Notifications-Cache", "hit");
         payload.sections.notifications = cachedNotifications;
       } else {
-        res.set("X-Bootstrap-Notifications-Cache", "miss");
-        const [notificationsRaw, unreadNotifications] = await Promise.all([
-          notificationRepository.myNotificationsSummary(viewerId, {
-            limit: notificationsLimit,
-            cursor: null,
-          }),
-          notificationRepository.countUnreadByUser(viewerId),
-        ]);
-        const notificationsBody: HomeNotificationsCacheBody = {
-          limit: notificationsLimit,
-          unreadCount: Number(unreadNotifications ?? 0) || 0,
-          items: (notificationsRaw ?? []).map((notification: any) =>
-            toNotificationSummary(notification)
-          ),
-        };
-        payload.sections.notifications = notificationsBody;
-        await writeHomeNotificationsCache(notificationsCacheKey, notificationsBody);
+        const notificationsResult = await withSingleFlight(
+          homeNotificationsInFlight,
+          notificationsCacheKey,
+          async () => {
+            const cachedWarmNotifications = await readHomeNotificationsCache(
+              notificationsCacheKey
+            );
+            if (cachedWarmNotifications) return cachedWarmNotifications;
+
+            const [notificationsRaw, unreadNotifications] = await Promise.all([
+              notificationRepository.myNotificationsSummary(viewerId, {
+                limit: notificationsLimit,
+                cursor: null,
+              }),
+              notificationRepository.countUnreadByUser(viewerId),
+            ]);
+            const notificationsBody: HomeNotificationsCacheBody = {
+              limit: notificationsLimit,
+              unreadCount: Number(unreadNotifications ?? 0) || 0,
+              items: (notificationsRaw ?? []).map((notification: any) =>
+                toNotificationSummary(notification)
+              ),
+            };
+            await writeHomeNotificationsCache(notificationsCacheKey, notificationsBody);
+            return notificationsBody;
+          }
+        );
+        res.set(
+          "X-Bootstrap-Notifications-Cache",
+          notificationsResult.shared ? "coalesced" : "miss"
+        );
+        payload.sections.notifications = notificationsResult.value;
       }
       res.set("X-Bootstrap-Notifications-Cache-TTL", String(homeNotificationsCacheTtlSeconds));
     } else {
