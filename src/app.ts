@@ -6,6 +6,7 @@
 // ===============================
 
 import "./libs/config/bootstrap_env";
+import "./_models/association";
 import Server from "./_server/server";
 import { AppRoutes } from "./_routes/routes";
 
