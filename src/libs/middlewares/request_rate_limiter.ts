@@ -8,6 +8,18 @@ type RateLimitEntry = {
 };
 
 type RateLimitKeyFn = (req: Request) => string;
+type RateLimitValueFn = (req: Request) => number;
+type RateLimitBlockedContext = {
+  req: Request;
+  key: string;
+  keyPrefix: string;
+  hits: number;
+  limit: number;
+  statusCode: number;
+  retryAfterSeconds: number;
+  blockedUntilMs: number;
+  message: string;
+};
 
 export interface RequestRateLimitOptions {
   windowMs: number;
@@ -18,6 +30,9 @@ export interface RequestRateLimitOptions {
   message?: string;
   statusCode?: number;
   keyGenerator?: RateLimitKeyFn;
+  maxResolver?: RateLimitValueFn;
+  blockDurationResolver?: RateLimitValueFn;
+  onLimit?: (context: RateLimitBlockedContext) => void;
 }
 
 const normalizeIp = (rawIp: any) => {
@@ -85,6 +100,9 @@ export const createRequestRateLimiter = (
   const message = String(options.message ?? "too many requests").trim() || "too many requests";
   const statusCode = toPositiveInt(options.statusCode, 429);
   const keyGenerator = options.keyGenerator ?? defaultKeyGenerator;
+  const maxResolver = options.maxResolver;
+  const blockDurationResolver = options.blockDurationResolver;
+  const onLimit = options.onLimit;
 
   const store = new Map<string, RateLimitEntry>();
   let lastPruneAtMs = 0;
@@ -114,6 +132,12 @@ export const createRequestRateLimiter = (
 
     const keyRaw = keyGenerator(req);
     const key = `${keyPrefix}:${String(keyRaw ?? "unknown").trim() || "unknown"}`;
+    const maxForRequest = toPositiveInt(maxResolver?.(req), max);
+    const blockDurationForRequest = toPositiveInt(
+      blockDurationResolver?.(req),
+      blockDurationMs,
+      0
+    );
     const entry = store.get(key) ?? {
       windowStartedAtMs: nowMs,
       hits: 0,
@@ -124,11 +148,26 @@ export const createRequestRateLimiter = (
     if (entry.blockedUntilMs > nowMs) {
       const retryAfterSeconds = Math.ceil((entry.blockedUntilMs - nowMs) / 1000);
       writeRateHeaders(res, {
-        limit: max,
+        limit: maxForRequest,
         remaining: 0,
         resetAtMs: entry.blockedUntilMs,
         retryAfterSeconds,
       });
+      try {
+        onLimit?.({
+          req,
+          key,
+          keyPrefix,
+          hits: entry.hits,
+          limit: maxForRequest,
+          statusCode,
+          retryAfterSeconds,
+          blockedUntilMs: entry.blockedUntilMs,
+          message,
+        });
+      } catch {
+        // do not break request flow if auditing callback fails
+      }
       return res.status(statusCode).json({
         header: { success: false },
         body: {
@@ -146,12 +185,12 @@ export const createRequestRateLimiter = (
 
     entry.hits += 1;
     entry.lastSeenAtMs = nowMs;
-    const remaining = Math.max(0, max - entry.hits);
+    const remaining = Math.max(0, maxForRequest - entry.hits);
     const resetAtMs = entry.windowStartedAtMs + windowMs;
 
-    if (entry.hits > max) {
-      if (blockDurationMs > 0) {
-        entry.blockedUntilMs = nowMs + blockDurationMs;
+    if (entry.hits > maxForRequest) {
+      if (blockDurationForRequest > 0) {
+        entry.blockedUntilMs = nowMs + blockDurationForRequest;
       }
       store.set(key, entry);
       const retryAfterSeconds =
@@ -159,11 +198,26 @@ export const createRequestRateLimiter = (
           ? Math.ceil((entry.blockedUntilMs - nowMs) / 1000)
           : Math.max(1, Math.ceil((resetAtMs - nowMs) / 1000));
       writeRateHeaders(res, {
-        limit: max,
+        limit: maxForRequest,
         remaining: 0,
         resetAtMs: entry.blockedUntilMs > nowMs ? entry.blockedUntilMs : resetAtMs,
         retryAfterSeconds,
       });
+      try {
+        onLimit?.({
+          req,
+          key,
+          keyPrefix,
+          hits: entry.hits,
+          limit: maxForRequest,
+          statusCode,
+          retryAfterSeconds,
+          blockedUntilMs: entry.blockedUntilMs,
+          message,
+        });
+      } catch {
+        // do not break request flow if auditing callback fails
+      }
       return res.status(statusCode).json({
         header: { success: false },
         body: {
@@ -175,7 +229,7 @@ export const createRequestRateLimiter = (
 
     store.set(key, entry);
     writeRateHeaders(res, {
-      limit: max,
+      limit: maxForRequest,
       remaining,
       resetAtMs,
     });

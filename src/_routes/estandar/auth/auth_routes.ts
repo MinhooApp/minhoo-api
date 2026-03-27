@@ -18,6 +18,7 @@ import {
 } from "../../../useCases/auth/_controller/controller";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
 import { createRequestRateLimiter } from "../../../libs/middlewares/request_rate_limiter";
+import { writeSecurityAuditFromRequest } from "../../../libs/security/security_audit_log";
 
 const router = Router();
 router.use((_req: any, res: any, next: any) => {
@@ -83,6 +84,21 @@ const buildAuthLimiter = (
     keyPrefix,
     message,
     keyGenerator,
+    onLimit: (context) => {
+      writeSecurityAuditFromRequest(context.req, {
+        event: "auth.rate_limited",
+        level: "warn",
+        actorUserId: Number((context.req as any)?.userId ?? 0) || null,
+        success: false,
+        reason: "rate_limit",
+        meta: {
+          scope: keyPrefix,
+          hits: context.hits,
+          limit: context.limit,
+          retryAfterSeconds: context.retryAfterSeconds,
+        },
+      });
+    },
   });
 
 const validateEmailLimiter = buildAuthLimiter(
@@ -162,6 +178,18 @@ const checkDisabledBeforeLogin = async (req: any, res: any, next: any) => {
     const isDeleted = (user as any)?.is_deleted === true || (user as any)?.is_deleted === 1;
 
     if (user && (isDisabled || isDeleted)) {
+      writeSecurityAuditFromRequest(req, {
+        event: "auth.login.blocked_account",
+        level: "warn",
+        actorUserId: Number((user as any)?.id ?? 0) || null,
+        targetUserId: Number((user as any)?.id ?? 0) || null,
+        success: false,
+        reason: isDeleted ? "deleted_account" : "disabled_account",
+        meta: {
+          email: String(email ?? "").trim().toLowerCase() || undefined,
+          phone: String(phone ?? "").trim() || undefined,
+        },
+      });
       return res.status(403).json({
         header: { success: false },
         body: {
