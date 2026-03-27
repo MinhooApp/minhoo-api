@@ -27,15 +27,33 @@ const isTruthy = (value: any) => {
 };
 
 const homeSummaryCacheEnabled = !isTruthy(process.env.HOME_SUMMARY_CACHE_DISABLED ?? "0");
-const homeSummaryCacheTtlSeconds = Math.max(
-  15,
-  Number(process.env.HOME_SUMMARY_CACHE_TTL_SECONDS ?? 20) || 20
+const normalizeHomeCacheTtlSeconds = (value: any, fallback = 20) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(30, Math.max(10, Math.floor(parsed)));
+};
+const homeSummaryCacheTtlSeconds = normalizeHomeCacheTtlSeconds(
+  process.env.HOME_SUMMARY_CACHE_TTL_SECONDS ?? 20,
+  20
+);
+const homeSummaryL1MaxEntries = Math.max(
+  100,
+  Number(process.env.HOME_SUMMARY_L1_MAX_ENTRIES ?? 2000) || 2000
+);
+const homeSummaryGuestUseExplicitSession = isTruthy(
+  process.env.HOME_SUMMARY_GUEST_USE_EXPLICIT_SESSION ?? "1"
 );
 
 type HomeSummaryCacheEntry = {
   cachedAtMs: number;
   body: any | null;
 };
+type HomeSummaryL1Entry = {
+  expiresAtMs: number;
+  body: any;
+};
+
+const homeSummaryL1 = new Map<string, HomeSummaryL1Entry>();
 
 const normalizeSize = (value: any, fallback: number, max = 10) => {
   const parsed = Number(value);
@@ -43,13 +61,17 @@ const normalizeSize = (value: any, fallback: number, max = 10) => {
   return Math.min(Math.max(1, Math.floor(parsed)), max);
 };
 
-const toSessionKey = (req: Request) => {
+const toExplicitSessionKey = (req: Request) => {
   const queryKey = String(
     (req.query as any)?.session_key ?? (req.query as any)?.sessionKey ?? ""
   ).trim();
   const headerKey = String(req.header("x-session-key") ?? "").trim();
-  const explicit = queryKey || headerKey;
-  if (explicit) return explicit.slice(0, 128);
+  return (queryKey || headerKey).slice(0, 128);
+};
+
+const toSessionKey = (req: Request) => {
+  const explicit = toExplicitSessionKey(req);
+  if (explicit) return explicit;
 
   const viewerId = Number((req as any)?.userId ?? 0);
   if (Number.isFinite(viewerId) && viewerId > 0) return `u:${viewerId}`;
@@ -65,6 +87,58 @@ const toSessionKey = (req: Request) => {
     .slice(0, 40);
 };
 
+const hashTo = (value: string, size = 24) =>
+  crypto.createHash("sha1").update(String(value ?? "")).digest("hex").slice(0, size);
+
+const toHomeCacheAudienceKey = (req: Request, viewerId: number | null) => {
+  const safeViewerId = Number(viewerId ?? 0);
+  if (Number.isFinite(safeViewerId) && safeViewerId > 0) return `u:${safeViewerId}`;
+
+  const explicit = toExplicitSessionKey(req);
+  if (explicit && homeSummaryGuestUseExplicitSession) {
+    return `gsk:${hashTo(explicit, 28)}`;
+  }
+
+  const ip = String(req.ip ?? "").trim();
+  const userAgent = String(req.header("user-agent") ?? "").trim();
+  const raw = `${ip}|${userAgent}`;
+  if (!raw.replace("|", "")) return "guest";
+  return `g:${hashTo(raw, 28)}`;
+};
+
+const cleanupHomeSummaryL1 = () => {
+  const now = Date.now();
+  for (const [key, entry] of homeSummaryL1.entries()) {
+    if (entry.expiresAtMs <= now) homeSummaryL1.delete(key);
+  }
+  while (homeSummaryL1.size > homeSummaryL1MaxEntries) {
+    const oldestKey = homeSummaryL1.keys().next().value;
+    if (!oldestKey) break;
+    homeSummaryL1.delete(oldestKey);
+  }
+};
+
+const readHomeSummaryL1 = (cacheKey: string): any | null => {
+  if (!cacheKey) return null;
+  cleanupHomeSummaryL1();
+  const entry = homeSummaryL1.get(cacheKey);
+  if (!entry) return null;
+  if (entry.expiresAtMs <= Date.now()) {
+    homeSummaryL1.delete(cacheKey);
+    return null;
+  }
+  return entry.body ?? null;
+};
+
+const writeHomeSummaryL1 = (cacheKey: string, body: any) => {
+  if (!cacheKey || body == null) return;
+  cleanupHomeSummaryL1();
+  homeSummaryL1.set(cacheKey, {
+    expiresAtMs: Date.now() + homeSummaryCacheTtlSeconds * 1000,
+    body,
+  });
+};
+
 const parseIncludeSections = (raw: any) => {
   const defaults = new Set(["posts", "reels", "services", "notifications"]);
   const input = String(raw ?? "")
@@ -78,14 +152,14 @@ const parseIncludeSections = (raw: any) => {
 
 const buildHomeSummaryCacheKey = (params: {
   viewerId: number;
-  sessionKey: string;
+  cacheAudienceKey: string;
   includeKey: string;
   postsSize: number;
   reelsSize: number;
   servicesSize: number;
   notificationsLimit: number;
 }) => {
-  const sessionSuffix = params.sessionKey || "anonymous";
+  const sessionSuffix = params.cacheAudienceKey || "anonymous";
   return [
     "summary:home",
     `v:${params.viewerId}`,
@@ -100,6 +174,8 @@ const buildHomeSummaryCacheKey = (params: {
 
 const readHomeSummaryCache = async (cacheKey: string): Promise<any | null> => {
   if (!homeSummaryCacheEnabled || !cacheKey) return null;
+  const l1 = readHomeSummaryL1(cacheKey);
+  if (l1) return l1;
   const loaded = await loadFindSessionState<HomeSummaryCacheEntry>({
     scope: "home",
     sessionKey: cacheKey,
@@ -112,11 +188,13 @@ const readHomeSummaryCache = async (cacheKey: string): Promise<any | null> => {
   const entry = loaded?.state;
   if (!entry?.body || !entry?.cachedAtMs) return null;
   if (Date.now() - Number(entry.cachedAtMs) > homeSummaryCacheTtlSeconds * 1000) return null;
+  writeHomeSummaryL1(cacheKey, entry.body);
   return entry.body;
 };
 
 const writeHomeSummaryCache = async (cacheKey: string, body: any) => {
   if (!homeSummaryCacheEnabled || !cacheKey) return;
+  writeHomeSummaryL1(cacheKey, body);
   await saveFindSessionState<HomeSummaryCacheEntry>({
     scope: "home",
     sessionKey: cacheKey,
@@ -182,6 +260,7 @@ export const home = async (req: Request, res: Response) => {
     const include = parseIncludeSections((req.query as any)?.include);
     const sessionKey = toSessionKey(req);
     const viewerId = Number((req as any)?.userId ?? 0) || null;
+    const cacheAudienceKey = toHomeCacheAudienceKey(req, viewerId);
 
     const postsSize = normalizeSize((req.query as any)?.posts_size, 5, 10);
     const reelsSize = normalizeSize((req.query as any)?.reels_size, 6, 10);
@@ -191,7 +270,7 @@ export const home = async (req: Request, res: Response) => {
 
     const cacheKey = buildHomeSummaryCacheKey({
       viewerId: Number(viewerId ?? 0) || 0,
-      sessionKey,
+      cacheAudienceKey,
       includeKey,
       postsSize,
       reelsSize,
@@ -202,6 +281,7 @@ export const home = async (req: Request, res: Response) => {
     const cachedBody = await readHomeSummaryCache(cacheKey);
     if (cachedBody) {
       res.set("X-Bootstrap-Cache", "hit");
+      res.set("X-Bootstrap-Cache-TTL", String(homeSummaryCacheTtlSeconds));
       setCacheControl(res, {
         visibility: viewerId ? "private" : "public",
         maxAgeSeconds: homeSummaryCacheTtlSeconds,
@@ -216,6 +296,7 @@ export const home = async (req: Request, res: Response) => {
       });
     }
     res.set("X-Bootstrap-Cache", "miss");
+    res.set("X-Bootstrap-Cache-TTL", String(homeSummaryCacheTtlSeconds));
 
     const [postsRaw, reelsRaw, servicesRaw, notificationsRaw, unreadNotifications] =
       await Promise.all([
