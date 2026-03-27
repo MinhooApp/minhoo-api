@@ -11,6 +11,24 @@ const TOKEN_A = String(process.env.TOKEN_A || "").trim();
 const TOKEN_B = String(process.env.TOKEN_B || "").trim();
 const USER_A_ENV = Number(process.env.USER_A || 0);
 const USER_B_ENV = Number(process.env.USER_B || 0);
+const OWNER_EMAIL = String(
+  process.env.OWNER_EMAIL || process.env.TARGET_EMAIL || ""
+).trim();
+const OWNER_PASSWORD = String(
+  process.env.OWNER_PASSWORD || process.env.TARGET_PASSWORD || ""
+).trim();
+const OWNER_LOGIN_UUID = String(
+  process.env.OWNER_LOGIN_UUID || process.env.TARGET_LOGIN_UUID || process.env.LOGIN_UUID || ""
+).trim();
+const VIEWER_EMAIL = String(
+  process.env.VIEWER_EMAIL || process.env.COMMENTER_EMAIL || ""
+).trim();
+const VIEWER_PASSWORD = String(
+  process.env.VIEWER_PASSWORD || process.env.COMMENTER_PASSWORD || ""
+).trim();
+const VIEWER_LOGIN_UUID = String(
+  process.env.VIEWER_LOGIN_UUID || process.env.COMMENTER_LOGIN_UUID || ""
+).trim();
 
 const TIMEOUT_MS = Number(process.env.TEST_TIMEOUT_MS || 12000);
 
@@ -90,6 +108,84 @@ function createApi(token) {
       "Content-Type": "application/json",
     },
   });
+}
+
+function pickToken(loginData) {
+  return String(
+    loginData?.body?.user?.auth_token ??
+      loginData?.body?.auth_token ??
+      loginData?.body?.token ??
+      loginData?.token ??
+      ""
+  ).trim();
+}
+
+function pickUserId(loginData) {
+  const raw =
+    loginData?.body?.user?.id ??
+    loginData?.body?.id ??
+    loginData?.user?.id ??
+    0;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 0;
+}
+
+async function loginWithEmail(email, password, uuid) {
+  assert(email, "Missing email for chat realtime login");
+  assert(password, `Missing password for ${email}`);
+
+  const body = { email, password };
+  if (String(uuid || "").trim().length >= 20) body.uuid = String(uuid).trim();
+
+  const response = await axios.post(`${API_BASE_URL}/auth/login`, body, {
+    timeout: TIMEOUT_MS,
+    validateStatus: () => true,
+    headers: { "Content-Type": "application/json" },
+  });
+
+  assert(
+    response.status >= 200 && response.status < 300,
+    `Login failed for ${email}. status=${response.status} body=${JSON.stringify(response.data)}`
+  );
+
+  const token = pickToken(response.data);
+  const userId = pickUserId(response.data);
+  assert(isLikelyJwt(token), `login token inválido para ${email}`);
+  assert(userId > 0, `login userId inválido para ${email}`);
+
+  return { token, userId };
+}
+
+async function resolveRuntimeAuth() {
+  const hasTokenA =
+    TOKEN_A &&
+    !looksLikePlaceholderToken(TOKEN_A) &&
+    isLikelyJwt(TOKEN_A);
+  const hasTokenB =
+    TOKEN_B &&
+    !looksLikePlaceholderToken(TOKEN_B) &&
+    isLikelyJwt(TOKEN_B);
+
+  if (hasTokenA && hasTokenB) {
+    const userA = resolveUserId(USER_A_ENV, TOKEN_A);
+    const userB = resolveUserId(USER_B_ENV, TOKEN_B);
+    assert(userA > 0, "Missing valid USER_A (env or token payload)");
+    assert(userB > 0, "Missing valid USER_B (env or token payload)");
+    assert(userA !== userB, "USER_A and USER_B must be different users");
+    return { tokenA: TOKEN_A, tokenB: TOKEN_B, userA, userB };
+  }
+
+  const [owner, viewer] = await Promise.all([
+    loginWithEmail(OWNER_EMAIL, OWNER_PASSWORD, OWNER_LOGIN_UUID),
+    loginWithEmail(VIEWER_EMAIL, VIEWER_PASSWORD, VIEWER_LOGIN_UUID),
+  ]);
+  assert(owner.userId !== viewer.userId, "owner/viewer must be different users");
+  return {
+    tokenA: owner.token,
+    tokenB: viewer.token,
+    userA: owner.userId,
+    userB: viewer.userId,
+  };
 }
 
 async function assertHttpTokenValid(api, label) {
@@ -237,35 +333,24 @@ async function testForbiddenChatJoin(socketA, userA) {
 }
 
 async function main() {
-  assert(TOKEN_A, "Missing TOKEN_A");
-  assert(TOKEN_B, "Missing TOKEN_B");
-  assert(!looksLikePlaceholderToken(TOKEN_A), "TOKEN_A parece placeholder (usa JWT real)");
-  assert(!looksLikePlaceholderToken(TOKEN_B), "TOKEN_B parece placeholder (usa JWT real)");
-  assert(isLikelyJwt(TOKEN_A), "TOKEN_A no parece JWT válido");
-  assert(isLikelyJwt(TOKEN_B), "TOKEN_B no parece JWT válido");
-
-  const userA = resolveUserId(USER_A_ENV, TOKEN_A);
-  const userB = resolveUserId(USER_B_ENV, TOKEN_B);
-  assert(userA > 0, "Missing valid USER_A (env or token payload)");
-  assert(userB > 0, "Missing valid USER_B (env or token payload)");
-  assert(userA !== userB, "USER_A and USER_B must be different users");
+  const { tokenA, tokenB, userA, userB } = await resolveRuntimeAuth();
 
   console.log(`[test] API_BASE_URL=${API_BASE_URL}`);
   console.log(`[test] SOCKET_URL=${SOCKET_URL}`);
   console.log(`[test] userA=${userA} userB=${userB}`);
 
-  const apiA = createApi(TOKEN_A);
-  const apiB = createApi(TOKEN_B);
+  const apiA = createApi(tokenA);
+  const apiB = createApi(tokenB);
   await assertHttpTokenValid(apiA, "A");
   await assertHttpTokenValid(apiB, "B");
   console.log("[pass] token HTTP válido en /chat");
 
-  const socketA = await connectSocket({ token: TOKEN_A, userId: userA, label: "A" });
-  const socketB = await connectSocket({ token: TOKEN_B, userId: userB, label: "B" });
+  const socketA = await connectSocket({ token: tokenA, userId: userA, label: "A" });
+  const socketB = await connectSocket({ token: tokenB, userId: userB, label: "B" });
 
   try {
-    await bindUser(socketA, userA, TOKEN_A, "A");
-    await bindUser(socketB, userB, TOKEN_B, "B");
+    await bindUser(socketA, userA, tokenA, "A");
+    await bindUser(socketB, userB, tokenB, "B");
     console.log("[pass] bind-user");
 
     await testChatsIsolation(socketA, socketB, userA, userB);

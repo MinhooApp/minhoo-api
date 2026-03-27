@@ -19,8 +19,11 @@ const API_BASE_URL = String(
 const SOCKET_URL = String(process.env.SOCKET_URL || "http://127.0.0.1:3000").trim();
 
 const TEST_TIMEOUT_MS = Number(process.env.SUITE_TEST_TIMEOUT_MS || 120000);
-const COOLDOWN_MS = Number(process.env.SUITE_COOLDOWN_MS || 1200);
+const COOLDOWN_MS = Number(process.env.SUITE_COOLDOWN_MS || 9000);
 const RETRY_COOLDOWN_MS = Number(process.env.SUITE_RETRY_COOLDOWN_MS || 2000);
+const PRELOGIN_TOKENS = /^(1|true|yes|on)$/i.test(
+  String(process.env.SUITE_PRELOGIN_TOKENS || "0")
+);
 
 const OWNER_EMAIL = String(
   process.env.SUITE_OWNER_EMAIL || process.env.OWNER_EMAIL || "info@minhoo.app"
@@ -218,6 +221,28 @@ function runScript(script, env) {
 }
 
 async function buildRuntimeEnv() {
+  const runtimeEnv = {
+    API_BASE_URL,
+    SOCKET_URL,
+    OWNER_EMAIL,
+    OWNER_PASSWORD,
+    OWNER_LOGIN_UUID,
+    TARGET_EMAIL: OWNER_EMAIL,
+    TARGET_PASSWORD: OWNER_PASSWORD,
+    TARGET_LOGIN_UUID: OWNER_LOGIN_UUID,
+    EMAIL: OWNER_EMAIL,
+    PASSWORD: OWNER_PASSWORD,
+    LOGIN_UUID: OWNER_LOGIN_UUID,
+    VIEWER_EMAIL,
+    VIEWER_PASSWORD,
+    VIEWER_LOGIN_UUID,
+    COMMENTER_EMAIL: VIEWER_EMAIL,
+    COMMENTER_PASSWORD: VIEWER_PASSWORD,
+    COMMENTER_LOGIN_UUID: VIEWER_LOGIN_UUID,
+  };
+
+  if (!PRELOGIN_TOKENS) return runtimeEnv;
+
   const ownerPasswordCandidates = parsePasswordCandidates(
     OWNER_PASSWORD,
     process.env.SUITE_OWNER_PASSWORD_FALLBACKS ||
@@ -243,29 +268,18 @@ async function buildRuntimeEnv() {
   assert(owner.userId !== viewer.userId, "Suite owner and viewer must be different users");
 
   return {
-    API_BASE_URL,
-    SOCKET_URL,
+    ...runtimeEnv,
     TOKEN_A: owner.token,
     TOKEN_B: viewer.token,
     USER_A: String(owner.userId),
     USER_B: String(viewer.userId),
     OWNER_TOKEN: owner.token,
     VIEWER_TOKEN: viewer.token,
-    OWNER_EMAIL,
     OWNER_PASSWORD: owner.password,
-    OWNER_LOGIN_UUID,
-    TARGET_EMAIL: OWNER_EMAIL,
     TARGET_PASSWORD: owner.password,
-    TARGET_LOGIN_UUID: OWNER_LOGIN_UUID,
-    EMAIL: OWNER_EMAIL,
     PASSWORD: owner.password,
-    LOGIN_UUID: OWNER_LOGIN_UUID,
-    VIEWER_EMAIL,
     VIEWER_PASSWORD: viewer.password,
-    VIEWER_LOGIN_UUID,
-    COMMENTER_EMAIL: VIEWER_EMAIL,
     COMMENTER_PASSWORD: viewer.password,
-    COMMENTER_LOGIN_UUID: VIEWER_LOGIN_UUID,
   };
 }
 
@@ -274,7 +288,9 @@ async function run() {
   log(`SOCKET_URL=${SOCKET_URL}`);
   log(`tests=${tests.length} timeoutMs=${TEST_TIMEOUT_MS} cooldownMs=${COOLDOWN_MS}`);
   log(`owner=${OWNER_EMAIL} viewer=${VIEWER_EMAIL}`);
+  log(`prelogin_tokens=${PRELOGIN_TOKENS ? "on" : "off"}`);
 
+  const suiteEnv = await buildRuntimeEnv();
   const results = [];
 
   for (const test of tests) {
@@ -282,9 +298,8 @@ async function run() {
     let passed = false;
 
     for (let attempt = 1; attempt <= maxRetries + 1; attempt++) {
-      const env = await buildRuntimeEnv();
       log(`run ${test.script} attempt=${attempt}/${maxRetries + 1}`);
-      const result = await runScript(test.script, env);
+      const result = await runScript(test.script, suiteEnv);
       const ok = result.code === 0 && !result.timedOut;
 
       results.push({

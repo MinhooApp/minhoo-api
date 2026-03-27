@@ -21,6 +21,10 @@ function assert(condition, message) {
   if (!condition) throw new Error(message);
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function makeClient(token = "") {
   const headers = token
     ? {
@@ -183,62 +187,129 @@ async function unsavePost(apiViewer, postId) {
   );
 }
 
+async function createTemporaryPost(apiOwner) {
+  const categoryId = await getDefaultCategoryId(apiOwner);
+  const response = await apiOwner.post("/post", {
+    post: `tmp profile-saved-state ${Date.now()}`,
+    categoryId,
+  });
+  assert(
+    response.status >= 200 && response.status < 300,
+    `create temp post failed status=${response.status} body=${JSON.stringify(response.data)}`
+  );
+  const postId = Number(
+    response?.data?.body?.id ??
+      response?.data?.body?.post?.id ??
+      response?.data?.body?.data?.id ??
+      0
+  );
+  assert(postId > 0, "create temp post did not return valid id");
+  return postId;
+}
+
+async function getDefaultCategoryId(apiClient) {
+  const response = await apiClient.get("/category");
+  assert(
+    response.status >= 200 && response.status < 300,
+    `get category failed status=${response.status} body=${JSON.stringify(response.data)}`
+  );
+  const categories = response?.data?.body?.categories;
+  assert(Array.isArray(categories) && categories.length > 0, "No categories available");
+  const category = categories.find((item) => Number(item?.id) > 0);
+  assert(category, "No valid category id found");
+  return Number(category.id);
+}
+
+async function deleteTemporaryPost(apiOwner, postId) {
+  const response = await apiOwner.delete(`/post/${postId}`);
+  assert(
+    response.status >= 200 && response.status < 300,
+    `delete temp post failed status=${response.status} body=${JSON.stringify(response.data)}`
+  );
+}
+
+async function waitForPostInProfile(apiViewer, ownerId, postId, timeoutMs = 12000) {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    const posts = await getProfilePosts(apiViewer, ownerId);
+    const found = findPostById(posts, postId);
+    if (found) return posts;
+    await sleep(150);
+  }
+  return await getProfilePosts(apiViewer, ownerId);
+}
+
 async function main() {
-  const { viewerToken, viewerId, ownerId } = await resolveAuth();
+  const { viewerToken, ownerToken, viewerId, ownerId } = await resolveAuth();
   const apiViewer = makeClient(viewerToken);
+  const apiOwner = makeClient(ownerToken);
 
   console.log(`[test] API_BASE_URL=${API_BASE_URL}`);
   console.log(`[test] viewerId=${viewerId} ownerId=${ownerId}`);
 
-  let posts = await getProfilePosts(apiViewer, ownerId);
-  assert(posts.length > 0, "El owner no tiene posts para probar");
+  let temporaryPostId = 0;
+  try {
+    let posts = await getProfilePosts(apiViewer, ownerId);
+    if (posts.length === 0) {
+      temporaryPostId = await createTemporaryPost(apiOwner);
+      posts = await waitForPostInProfile(apiViewer, ownerId, temporaryPostId);
+    }
+    assert(posts.length > 0, "El owner no tiene posts para probar");
 
-  const candidate = posts.find((post) => Number(post?.userId) === ownerId) || posts[0];
-  const postId = Number(candidate?.id || 0);
-  assert(postId > 0, "No se encontró postId válido para prueba");
-  console.log(`[test] target postId=${postId}`);
+    const candidate =
+      (temporaryPostId && findPostById(posts, temporaryPostId)) ||
+      posts.find((post) => Number(post?.userId) === ownerId) ||
+      posts[0];
+    const postId = Number(candidate?.id || 0);
+    assert(postId > 0, "No se encontró postId válido para prueba");
+    console.log(`[test] target postId=${postId}`);
 
-  // Baseline in unsaved state
-  await unsavePost(apiViewer, postId);
-  posts = await getProfilePosts(apiViewer, ownerId);
-  const baselinePost = findPostById(posts, postId);
-  assert(baselinePost, "No se encontró el post en perfil (baseline)");
-  const baselineSaved = readSavedFlag(baselinePost);
-  const baselineCount = readSavedCount(baselinePost);
-  assert(
-    baselineSaved === false,
-    `Esperado is_saved=false en baseline, llegó ${baselineSaved}`
-  );
-  console.log(
-    `[pass] baseline profile post is_saved=false saved_count=${baselineCount}`
-  );
+    // Baseline in unsaved state
+    await unsavePost(apiViewer, postId);
+    posts = await getProfilePosts(apiViewer, ownerId);
+    const baselinePost = findPostById(posts, postId);
+    assert(baselinePost, "No se encontró el post en perfil (baseline)");
+    const baselineSaved = readSavedFlag(baselinePost);
+    const baselineCount = readSavedCount(baselinePost);
+    assert(
+      baselineSaved === false,
+      `Esperado is_saved=false en baseline, llegó ${baselineSaved}`
+    );
+    console.log(
+      `[pass] baseline profile post is_saved=false saved_count=${baselineCount}`
+    );
 
-  // Save and verify profile payload reflects change
-  await savePost(apiViewer, postId);
-  posts = await getProfilePosts(apiViewer, ownerId);
-  const savedPost = findPostById(posts, postId);
-  assert(savedPost, "No se encontró el post en perfil (saved)");
-  const savedFlag = readSavedFlag(savedPost);
-  const savedCount = readSavedCount(savedPost);
-  assert(savedFlag === true, `Esperado is_saved=true tras guardar, llegó ${savedFlag}`);
-  assert(
-    savedCount >= baselineCount,
-    `saved_count no válido: baseline=${baselineCount} now=${savedCount}`
-  );
-  console.log(
-    `[pass] after save profile post is_saved=true saved_count=${savedCount}`
-  );
+    // Save and verify profile payload reflects change
+    await savePost(apiViewer, postId);
+    posts = await getProfilePosts(apiViewer, ownerId);
+    const savedPost = findPostById(posts, postId);
+    assert(savedPost, "No se encontró el post en perfil (saved)");
+    const savedFlag = readSavedFlag(savedPost);
+    const savedCount = readSavedCount(savedPost);
+    assert(savedFlag === true, `Esperado is_saved=true tras guardar, llegó ${savedFlag}`);
+    assert(
+      savedCount >= baselineCount,
+      `saved_count no válido: baseline=${baselineCount} now=${savedCount}`
+    );
+    console.log(
+      `[pass] after save profile post is_saved=true saved_count=${savedCount}`
+    );
 
-  // Cleanup
-  await unsavePost(apiViewer, postId);
-  posts = await getProfilePosts(apiViewer, ownerId);
-  const finalPost = findPostById(posts, postId);
-  assert(finalPost, "No se encontró el post en perfil (final)");
-  const finalSaved = readSavedFlag(finalPost);
-  assert(finalSaved === false, `Esperado is_saved=false al final, llegó ${finalSaved}`);
-  console.log("[pass] cleanup final state is_saved=false");
+    // Cleanup
+    await unsavePost(apiViewer, postId);
+    posts = await getProfilePosts(apiViewer, ownerId);
+    const finalPost = findPostById(posts, postId);
+    assert(finalPost, "No se encontró el post en perfil (final)");
+    const finalSaved = readSavedFlag(finalPost);
+    assert(finalSaved === false, `Esperado is_saved=false al final, llegó ${finalSaved}`);
+    console.log("[pass] cleanup final state is_saved=false");
 
-  console.log("[pass] profile saved-state persistence is working");
+    console.log("[pass] profile saved-state persistence is working");
+  } finally {
+    if (temporaryPostId > 0) {
+      await deleteTemporaryPost(apiOwner, temporaryPostId).catch(() => {});
+    }
+  }
 }
 
 main().catch((error) => {
