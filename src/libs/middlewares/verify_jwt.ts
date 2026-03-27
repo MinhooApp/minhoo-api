@@ -41,6 +41,54 @@ const verifyTokenWithKnownSecrets = (
   return null;
 };
 
+const normalizeTokenCandidate = (raw: any): string => {
+  const value = String(raw ?? "").trim();
+  if (!value) return "";
+  if (value.toLowerCase().startsWith("bearer ")) {
+    return value.slice(7).trim();
+  }
+  return value;
+};
+
+const extractAuthToken = (req: Request): string => {
+  const headerCandidates = [
+    req.header("Authorization"),
+    req.header("x-auth-token"),
+    req.header("x-access-token"),
+    req.header("auth_token"),
+  ];
+  for (const candidate of headerCandidates) {
+    const token = normalizeTokenCandidate(candidate);
+    if (token) return token;
+  }
+
+  const queryCandidates = [
+    (req.query as any)?.urlToken,
+    (req.query as any)?.auth_token,
+    (req.query as any)?.authToken,
+    (req.query as any)?.token,
+  ];
+  for (const candidate of queryCandidates) {
+    const token = normalizeTokenCandidate(candidate);
+    if (token) return token;
+  }
+
+  const bodyAny = (req as any)?.body ?? {};
+  const bodyCandidates = [
+    bodyAny?.auth_token,
+    bodyAny?.authToken,
+    bodyAny?.token,
+    bodyAny?.access_token,
+    bodyAny?.accessToken,
+  ];
+  for (const candidate of bodyCandidates) {
+    const token = normalizeTokenCandidate(candidate);
+    if (token) return token;
+  }
+
+  return "";
+};
+
 /**
  * Validación “tolerante” + bloqueo por cuenta deshabilitada:
  * - 401 solo si la firma del token es inválida, no existe, o está revocado.
@@ -59,19 +107,14 @@ export const TokenValidation = (
 
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
-      // 0) Obtener token (header o ?urlToken=...)
-      let header = req.header("Authorization");
-      const urlToken = req.query.urlToken ? String(req.query.urlToken) : undefined;
-      if (!header && urlToken) header = `Bearer ${urlToken}`;
-
-      if (!header || !header.startsWith("Bearer ")) {
+      // 0) Obtener token (Authorization Bearer + compatibilidad legacy)
+      const token = extractAuthToken(req);
+      if (!token) {
         return res.status(401).json({
           header: { success: false, authenticated: false },
           messages: ["Access denied, token missing"],
         });
       }
-
-      const token = header.split(" ")[1];
 
       // 1) Verificar firma real; si expiró, aplicar gracia SOLO con firma válida
       let payload: IPayload | null = null;
