@@ -20,6 +20,10 @@ import {
   loadFindSessionState,
   saveFindSessionState,
 } from "../../../libs/cache/find_session_store";
+import {
+  getHomeContentCacheVersion,
+  getHomeNotificationsCacheVersion,
+} from "../../../libs/cache/bootstrap_home_cache_version";
 
 const isTruthy = (value: any) => {
   const v = String(value ?? "").trim().toLowerCase();
@@ -166,6 +170,7 @@ const parseIncludeSections = (raw: any) => {
 const buildHomeSummaryCacheKey = (params: {
   viewerId: number;
   cacheAudienceKey: string;
+  contentVersion: number;
   includeKey: string;
   postsSize: number;
   reelsSize: number;
@@ -177,6 +182,7 @@ const buildHomeSummaryCacheKey = (params: {
     "summary:home",
     `v:${params.viewerId}`,
     `sk:${sessionSuffix}`,
+    `cv:${params.contentVersion}`,
     `i:${params.includeKey}`,
     `ps:${params.postsSize}`,
     `rs:${params.reelsSize}`,
@@ -187,11 +193,13 @@ const buildHomeSummaryCacheKey = (params: {
 
 const buildHomeNotificationsCacheKey = (params: {
   viewerId: number;
+  notificationsVersion: number;
   notificationsLimit: number;
 }) => {
   return [
     "summary:home:notifications",
     `v:${params.viewerId}`,
+    `nv:${params.notificationsVersion}`,
     `nl:${params.notificationsLimit}`,
   ].join(":");
 };
@@ -336,10 +344,12 @@ export const home = async (req: Request, res: Response) => {
     const servicesSize = normalizeSize((req.query as any)?.services_size, 4, 10);
     const notificationsLimit = normalizeSize((req.query as any)?.notifications_limit, 5, 10);
     const includeKey = Array.from(includeForHomeCache.values()).sort().join(",");
+    const contentVersion = await getHomeContentCacheVersion();
 
     const cacheKey = buildHomeSummaryCacheKey({
       viewerId: Number(viewerId ?? 0) || 0,
       cacheAudienceKey,
+      contentVersion,
       includeKey,
       postsSize,
       reelsSize,
@@ -428,8 +438,10 @@ export const home = async (req: Request, res: Response) => {
     }
 
     if (includeNotifications && viewerId) {
+      const notificationsVersion = await getHomeNotificationsCacheVersion(viewerId);
       const notificationsCacheKey = buildHomeNotificationsCacheKey({
         viewerId: Number(viewerId),
+        notificationsVersion,
         notificationsLimit,
       });
       const cachedNotifications = await readHomeNotificationsCache(notificationsCacheKey);

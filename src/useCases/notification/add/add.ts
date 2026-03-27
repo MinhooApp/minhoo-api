@@ -7,6 +7,7 @@ import {
 import { emitNotificationRealtime } from "../../../libs/helper/realtime_dispatch";
 import * as chatRepository from "../../../repository/chat/chat_repository";
 import * as groupRepository from "../../../repository/group/group_repository";
+import { bumpHomeNotificationsCacheVersion } from "../../../libs/cache/bootstrap_home_cache_version";
 
 type NotificationScope = "direct" | "group";
 
@@ -360,6 +361,7 @@ export const sendNotification = async (
     };
 
     const notification = await repository.add(notificationData);
+    await bumpHomeNotificationsCacheVersion(params.userId);
 
     emitNotificationRealtime(params.userId, notification);
 

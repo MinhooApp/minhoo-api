@@ -6,6 +6,7 @@ import {
 } from "../_module/module";
 import multer from "multer";
 import { uploadImageBufferToCloudflare } from "../../_utils/cloudflare_images";
+import { bumpHomeContentCacheVersion } from "../../../libs/cache/bootstrap_home_cache_version";
 
 const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const POST_MAX_FILES = 20;
@@ -111,6 +112,7 @@ const createPost = async (req: Request, res: Response, mediaItems?: any) => {
   }
 
   const post = await repository.add(req.body);
+  await bumpHomeContentCacheVersion();
   return formatResponse({ res, success: true, body: post });
 };
 

@@ -9,6 +9,7 @@ import {
 import { emitOrbitRingUpdatedRealtime } from "../../../libs/helper/realtime_dispatch";
 import { getActiveOrbitStateByUser } from "../../../repository/reel/orbit_ring_projection";
 import { formatRelativeTime } from "../../../libs/localization/relative_time";
+import { bumpHomeContentCacheVersion } from "../../../libs/cache/bootstrap_home_cache_version";
 
 const parseBool = (value: any, fallback = true) => {
   if (typeof value === "boolean") return value;
@@ -353,6 +354,8 @@ export const create_reel = async (req: Request, res: Response) => {
         ...ringSnapshot,
       },
     });
+
+    await bumpHomeContentCacheVersion();
 
     return formatResponse({
       res,

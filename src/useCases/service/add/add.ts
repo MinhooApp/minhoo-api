@@ -9,6 +9,7 @@ import {
   sendPushToMultipleUsers,
   sendNotification,
 } from "../_module/module";
+import { bumpHomeContentCacheVersion } from "../../../libs/cache/bootstrap_home_cache_version";
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
@@ -157,6 +158,7 @@ export const add = async (req: Request, res: Response) => {
     normalizeCurrency(req.body);
 
     const service: any = await repository.add(req.body);
+    await bumpHomeContentCacheVersion();
 
     // ✅ evita circular JSON
     const safeService = toPlain(service);

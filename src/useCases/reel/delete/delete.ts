@@ -6,6 +6,10 @@ import {
   emitOrbitRingUpdatedRealtime,
 } from "../../../libs/helper/realtime_dispatch";
 import { getActiveOrbitStateByUser } from "../../../repository/reel/orbit_ring_projection";
+import {
+  bumpHomeContentCacheVersion,
+  bumpHomeNotificationsCacheVersion,
+} from "../../../libs/cache/bootstrap_home_cache_version";
 
 const toPlainObject = (value: any): any => {
   if (!value) return value;
@@ -141,6 +145,8 @@ export const delete_reel = async (req: Request, res: Response) => {
       user: payload.user,
     });
 
+    await bumpHomeContentCacheVersion();
+
     return formatResponse({
       res,
       success: true,
@@ -232,13 +238,20 @@ export const delete_reel_comment = async (req: Request, res: Response) => {
       await notificationRepository.softDeleteByIds(
         notifications.map((notification: any) => Number((notification as any)?.id ?? 0))
       );
+      const notificationUserIds = new Set<number>();
       notifications.forEach((notification: any) => {
         const notificationPayload = buildDeletedNotificationPayload(notification, deletedAt);
         const notificationUserId = Number(notificationPayload?.userId ?? 0);
         if (notificationUserId > 0) {
+          notificationUserIds.add(notificationUserId);
           emitNotificationDeletedRealtime(notificationUserId, notificationPayload);
         }
       });
+      await Promise.all(
+        Array.from(notificationUserIds).map((userId) =>
+          bumpHomeNotificationsCacheVersion(userId)
+        )
+      );
     }
 
     return formatResponse({
