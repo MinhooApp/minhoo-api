@@ -4,6 +4,7 @@
 const axios = require("axios");
 const nodemailer = require("nodemailer");
 const path = require("path");
+const crypto = require("crypto");
 require("dotenv").config();
 const { execSync } = require("child_process");
 const fs = require("fs");
@@ -66,6 +67,12 @@ const TELEGRAM_THREAD_ID = (() => {
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return Math.trunc(parsed);
 })();
+const RISK_ALERT_REMINDER_MINUTES = toPositiveNumber(
+  process.env.RISK_ALERT_REMINDER_MINUTES,
+  30,
+  1
+);
+const RISK_ALERT_REMINDER_MS = RISK_ALERT_REMINDER_MINUTES * 60 * 1000;
 const TELEGRAM_HTTP_FAMILY = (() => {
   const parsed = Number(process.env.TELEGRAM_HTTP_FAMILY || 4);
   return Number.isFinite(parsed) && (parsed === 4 || parsed === 6) ? parsed : 4;
@@ -209,6 +216,48 @@ const writeMonitorState = (state) => {
     console.warn(`[monitor-state] write failed: ${String(error?.message || error)}`);
   }
 };
+const toEpochMs = (value) => {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  const fromDate = Date.parse(String(value || ""));
+  if (Number.isFinite(fromDate) && fromDate > 0) return fromDate;
+  return 0;
+};
+const buildRiskSignature = (risks) => {
+  if (!Array.isArray(risks) || risks.length === 0) return "";
+  const normalize = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/0x[0-9a-f]+/gi, "#")
+      .replace(/\b\d+(?:\.\d+)?\b/g, "#")
+      .replace(/\s+/g, " ")
+      .trim();
+  const canonical = [...risks]
+    .map((item) => normalize(item))
+    .filter(Boolean)
+    .sort()
+    .join("\n");
+  if (!canonical) return "";
+  return crypto.createHash("sha1").update(canonical).digest("hex");
+};
+const readAlertState = () => {
+  const state = readMonitorState();
+  if (!state || typeof state !== "object") return {};
+  const nested = state.alert_state;
+  if (!nested || typeof nested !== "object") return {};
+  return nested;
+};
+const writeAlertState = (alertState) => {
+  const previous = readMonitorState() || {};
+  const next = {
+    ...previous,
+    alert_state: {
+      ...(previous.alert_state || {}),
+      ...(alertState || {}),
+    },
+  };
+  writeMonitorState(next);
+};
 const probeSystemSnapshot = () => {
   let load_1m = null;
   let load_5m = null;
@@ -283,6 +332,11 @@ const probeNginxStubStatus = async () => {
 const computeCapacityTelemetry = (stubStatus) => {
   const nowAtMs = Date.now();
   const previous = readMonitorState();
+  const previousTsMs = toFiniteNumber(previous?.capacity?.ts_ms ?? previous?.ts_ms, null);
+  const previousRequestsTotal = toFiniteNumber(
+    previous?.capacity?.requests_total ?? previous?.requests_total,
+    null
+  );
   const currentRequests = toFiniteNumber(stubStatus?.requests_total, null);
   let observed_rps = null;
   let sample_seconds = null;
@@ -291,12 +345,12 @@ const computeCapacityTelemetry = (stubStatus) => {
 
   if (
     previous &&
-    Number.isFinite(toFiniteNumber(previous.ts_ms, null)) &&
-    Number.isFinite(toFiniteNumber(previous.requests_total, null)) &&
+    Number.isFinite(previousTsMs) &&
+    Number.isFinite(previousRequestsTotal) &&
     Number.isFinite(currentRequests)
   ) {
-    sample_seconds = (nowAtMs - Number(previous.ts_ms)) / 1000;
-    requests_delta = Number(currentRequests) - Number(previous.requests_total);
+    sample_seconds = (nowAtMs - Number(previousTsMs)) / 1000;
+    requests_delta = Number(currentRequests) - Number(previousRequestsTotal);
     if (sample_seconds >= 10 && requests_delta >= 0) {
       observed_rps = round2(requests_delta / sample_seconds);
       utilization_percent = round2((observed_rps / BASELINE_SAFE_RPS) * 100);
@@ -304,9 +358,14 @@ const computeCapacityTelemetry = (stubStatus) => {
   }
 
   if (Number.isFinite(currentRequests)) {
-    writeMonitorState({
+    const capacityState = {
       ts_ms: nowAtMs,
       requests_total: Number(currentRequests),
+    };
+    writeMonitorState({
+      ...(previous || {}),
+      ...capacityState,
+      capacity: capacityState,
     });
   }
 
@@ -569,7 +628,7 @@ const formatCheckRows = (checks) => {
     })
     .join("");
 };
-const formatTelegramRiskMessage = ({ summary, checks, risks }) => {
+const formatTelegramRiskMessage = ({ summary, checks, risks, reason }) => {
   const failedChecks = checks.filter((check) => !check.ok);
   const slowChecks = checks.filter((check) => check.type === "http" && check.ok && check.slow);
   const actions = Array.isArray(summary?.recommended_actions) ? summary.recommended_actions : [];
@@ -578,6 +637,7 @@ const formatTelegramRiskMessage = ({ summary, checks, risks }) => {
   lines.push("<b>Alerta de Riesgo en Produccion - Minhoo</b>");
   lines.push(`Hora: <code>${escapeHtml(summary.at)}</code>`);
   lines.push(`Cantidad de riesgos: <b>${risks.length}</b>`);
+  if (reason) lines.push(`Motivo del envio: <b>${escapeHtml(reason)}</b>`);
   lines.push(`Checks fallidos: <b>${failedChecks.length}</b>`);
   lines.push(`Checks lentos: <b>${slowChecks.length}</b>`);
   if (Number.isFinite(capacity?.utilization_percent)) {
@@ -619,6 +679,20 @@ const formatTelegramRiskMessage = ({ summary, checks, risks }) => {
     }
   }
   lines.push("");
+  lines.push(`URL base: <code>${escapeHtml(PUBLIC_BASE_URL)}</code>`);
+  return lines.join("\n");
+};
+const formatTelegramRecoveryMessage = ({ summary, lastAlertState, clearedAfterMinutes }) => {
+  const lines = [];
+  lines.push("<b>Recuperado - Monitor Minhoo</b>");
+  lines.push(`Hora: <code>${escapeHtml(summary.at)}</code>`);
+  if (Number.isFinite(clearedAfterMinutes) && clearedAfterMinutes >= 0) {
+    lines.push(`Riesgo estabilizado tras: <b>${escapeHtml(clearedAfterMinutes)} min</b>`);
+  }
+  if (lastAlertState?.last_risk_alert_reason) {
+    lines.push(`Ultima alerta enviada como: <b>${escapeHtml(lastAlertState.last_risk_alert_reason)}</b>`);
+  }
+  lines.push("Estado actual: <b>sin riesgos</b>.");
   lines.push(`URL base: <code>${escapeHtml(PUBLIC_BASE_URL)}</code>`);
   return lines.join("\n");
 };
@@ -873,6 +947,38 @@ const main = async () => {
 
   const observabilityCheck =
     checks.find((check) => check && check.type === "observability") || null;
+  const previousAlertState = readAlertState();
+  const nowAtEpochMs = Date.now();
+  const previousRiskActive = Boolean(previousAlertState.risk_active);
+  const previousRiskSignature = String(previousAlertState.risk_signature || "").trim();
+  const previousLastRiskAlertAtMs = toEpochMs(previousAlertState.last_risk_alert_at_ms);
+  const currentRiskSignature = buildRiskSignature(risks);
+  const riskStartedAtMs = toEpochMs(
+    previousAlertState.risk_started_at_ms || previousAlertState.risk_started_at
+  );
+  let shouldSendRiskAlert = false;
+  let riskAlertReason = "suppressed";
+  if (risks.length > 0) {
+    if (!previousRiskActive) {
+      shouldSendRiskAlert = true;
+      riskAlertReason = "new";
+    } else if (!previousLastRiskAlertAtMs) {
+      shouldSendRiskAlert = true;
+      riskAlertReason = "new";
+    } else if (currentRiskSignature && currentRiskSignature !== previousRiskSignature) {
+      shouldSendRiskAlert = true;
+      riskAlertReason = "changed";
+    } else if (nowAtEpochMs - previousLastRiskAlertAtMs >= RISK_ALERT_REMINDER_MS) {
+      shouldSendRiskAlert = true;
+      riskAlertReason = "reminder";
+    }
+  }
+  const shouldSendRecoveryAlert = risks.length === 0 && previousRiskActive;
+  const riskAlertSuppressed = risks.length > 0 && !shouldSendRiskAlert;
+  const clearedAfterMinutes =
+    shouldSendRecoveryAlert && riskStartedAtMs > 0
+      ? round2((nowAtEpochMs - riskStartedAtMs) / 60000)
+      : null;
 
   const summary = {
     at: nowIso(),
@@ -885,6 +991,21 @@ const main = async () => {
       telegram_configured: telegramConfigured,
       telegram_chat_id_masked: maskTail(TELEGRAM_CHAT_ID),
       telegram_thread_id: TELEGRAM_THREAD_ID,
+    },
+    alert_policy: {
+      risk_reminder_minutes: RISK_ALERT_REMINDER_MINUTES,
+      sends_only_on_risk_or_recovery: true,
+    },
+    alert_decision: {
+      should_send_risk_alert: shouldSendRiskAlert,
+      should_send_recovery_alert: shouldSendRecoveryAlert,
+      risk_alert_suppressed: riskAlertSuppressed,
+      risk_alert_reason: riskAlertReason,
+      previous_risk_active: previousRiskActive,
+      previous_last_risk_alert_at_ms: previousLastRiskAlertAtMs || null,
+      previous_risk_signature: previousRiskSignature || null,
+      current_risk_signature: currentRiskSignature || null,
+      cleared_after_minutes: clearedAfterMinutes,
     },
     system_snapshot: systemSnapshot,
     capacity: capacityTelemetry,
@@ -913,11 +1034,13 @@ const main = async () => {
 
   let emailedRisk = false;
   let telegramRisk = false;
+  let emailedRecovery = false;
+  let telegramRecovery = false;
   let emailedTest = false;
   let telegramTest = false;
   const notifierErrors = [];
 
-  if (risks.length > 0) {
+  if (risks.length > 0 && shouldSendRiskAlert) {
     const subject = `[RIESGO] Monitor de produccion Minhoo detecto ${risks.length} incidencia(s)`;
     const systemSnapshot = summary.system_snapshot || {};
     const capacity = summary.capacity || {};
@@ -926,6 +1049,7 @@ const main = async () => {
     const html = `
       <h2>Alerta de Riesgo en Produccion - Minhoo</h2>
       <p><strong>Fecha/Hora:</strong> ${summary.at}</p>
+      <p><strong>Motivo del envio:</strong> ${riskAlertReason}</p>
       <p><strong>Cantidad de riesgos:</strong> ${risks.length}</p>
       <p><strong>Sistema:</strong> cpu=${systemSnapshot.cpu_count || "n/a"} load_5m=${
       systemSnapshot.load_5m ?? "n/a"
@@ -954,13 +1078,48 @@ const main = async () => {
     }
   }
 
-  if (risks.length > 0 && telegramReady) {
+  if (risks.length > 0 && shouldSendRiskAlert && telegramReady) {
     try {
-      const text = formatTelegramRiskMessage({ summary, checks, risks });
+      const text = formatTelegramRiskMessage({ summary, checks, risks, reason: riskAlertReason });
       await sendTelegram({ text });
       telegramRisk = true;
     } catch (error) {
       notifierErrors.push(`telegram_risk_fallido: ${String(error?.message || error)}`);
+    }
+  }
+
+  if (shouldSendRecoveryAlert) {
+    const subject = "[RECUPERADO] Monitor de produccion Minhoo sin riesgos activos";
+    const html = `
+      <h2>Recuperacion de Produccion - Minhoo</h2>
+      <p><strong>Fecha/Hora:</strong> ${summary.at}</p>
+      <p><strong>Estado actual:</strong> sin riesgos activos</p>
+      <p><strong>Duracion aproximada del incidente:</strong> ${
+        Number.isFinite(clearedAfterMinutes) ? `${clearedAfterMinutes} min` : "n/a"
+      }</p>
+      <p><strong>Ultimo motivo de alerta previa:</strong> ${
+        previousAlertState.last_risk_alert_reason || "n/a"
+      }</p>
+    `;
+    try {
+      await sendEmail({ to: ALERT_EMAIL, subject, html });
+      emailedRecovery = true;
+    } catch (error) {
+      notifierErrors.push(`email_recovery_fallido: ${String(error?.message || error)}`);
+    }
+  }
+
+  if (shouldSendRecoveryAlert && telegramReady) {
+    try {
+      const text = formatTelegramRecoveryMessage({
+        summary,
+        lastAlertState: previousAlertState,
+        clearedAfterMinutes,
+      });
+      await sendTelegram({ text });
+      telegramRecovery = true;
+    } catch (error) {
+      notifierErrors.push(`telegram_recovery_fallido: ${String(error?.message || error)}`);
     }
   }
 
@@ -997,11 +1156,56 @@ const main = async () => {
     }
   }
 
+  const nextAlertState = (() => {
+    if (risks.length > 0) {
+      const startedAtMs = previousRiskActive && riskStartedAtMs > 0 ? riskStartedAtMs : nowAtEpochMs;
+      const lastRiskAlertAtMs = shouldSendRiskAlert
+        ? nowAtEpochMs
+        : previousLastRiskAlertAtMs || toEpochMs(previousAlertState.last_risk_alert_at_ms) || null;
+      return {
+        risk_active: true,
+        risk_started_at_ms: startedAtMs,
+        risk_started_at: new Date(startedAtMs).toISOString(),
+        risk_signature: currentRiskSignature || null,
+        risk_count: risks.length,
+        last_risk_alert_at_ms: lastRiskAlertAtMs,
+        last_risk_alert_reason: shouldSendRiskAlert
+          ? riskAlertReason
+          : String(previousAlertState.last_risk_alert_reason || "suppressed"),
+        last_recovered_at_ms: toEpochMs(previousAlertState.last_recovered_at_ms) || null,
+        last_recovered_at: String(previousAlertState.last_recovered_at || ""),
+      };
+    }
+
+    const recoveredAtMs = shouldSendRecoveryAlert
+      ? nowAtEpochMs
+      : toEpochMs(previousAlertState.last_recovered_at_ms) || null;
+
+    return {
+      risk_active: false,
+      risk_started_at_ms: null,
+      risk_started_at: null,
+      risk_signature: null,
+      risk_count: 0,
+      last_risk_alert_at_ms: previousLastRiskAlertAtMs || null,
+      last_risk_alert_reason: String(previousAlertState.last_risk_alert_reason || ""),
+      last_recovered_at_ms: recoveredAtMs,
+      last_recovered_at: recoveredAtMs ? new Date(recoveredAtMs).toISOString() : null,
+    };
+  })();
+  writeAlertState(nextAlertState);
+
   console.log(
     JSON.stringify(
       {
         emailed_risk_alert: emailedRisk,
         telegram_risk_alert: telegramRisk,
+        emailed_recovery_alert: emailedRecovery,
+        telegram_recovery_alert: telegramRecovery,
+        risk_alert_suppressed: riskAlertSuppressed,
+        risk_alert_reason: riskAlertReason,
+        should_send_risk_alert: shouldSendRiskAlert,
+        should_send_recovery_alert: shouldSendRecoveryAlert,
         emailed_test: emailedTest,
         telegram_test: telegramTest,
         notifier_errors: notifierErrors,
@@ -1018,7 +1222,7 @@ const main = async () => {
     }
   }
 
-  if (risks.length > 0 && !emailedRisk && !telegramRisk) {
+  if (risks.length > 0 && shouldSendRiskAlert && !emailedRisk && !telegramRisk) {
     process.exitCode = 3;
     return;
   }
