@@ -36,6 +36,10 @@ const homeSummaryCacheTtlSeconds = normalizeHomeCacheTtlSeconds(
   process.env.HOME_SUMMARY_CACHE_TTL_SECONDS ?? 20,
   20
 );
+const homeNotificationsCacheTtlSeconds = normalizeHomeCacheTtlSeconds(
+  process.env.HOME_NOTIFICATIONS_CACHE_TTL_SECONDS ?? 10,
+  10
+);
 const homeSummaryL1MaxEntries = Math.max(
   100,
   Number(process.env.HOME_SUMMARY_L1_MAX_ENTRIES ?? 2000) || 2000
@@ -47,6 +51,15 @@ const homeSummaryGuestUseExplicitSession = isTruthy(
 type HomeSummaryCacheEntry = {
   cachedAtMs: number;
   body: any | null;
+};
+type HomeNotificationsCacheBody = {
+  limit: number;
+  unreadCount: number;
+  items: any[];
+};
+type HomeNotificationsCacheEntry = {
+  cachedAtMs: number;
+  body: HomeNotificationsCacheBody | null;
 };
 type HomeSummaryL1Entry = {
   expiresAtMs: number;
@@ -172,6 +185,17 @@ const buildHomeSummaryCacheKey = (params: {
   ].join(":");
 };
 
+const buildHomeNotificationsCacheKey = (params: {
+  viewerId: number;
+  notificationsLimit: number;
+}) => {
+  return [
+    "summary:home:notifications",
+    `v:${params.viewerId}`,
+    `nl:${params.notificationsLimit}`,
+  ].join(":");
+};
+
 const readHomeSummaryCache = async (cacheKey: string): Promise<any | null> => {
   if (!homeSummaryCacheEnabled || !cacheKey) return null;
   const l1 = readHomeSummaryL1(cacheKey);
@@ -199,6 +223,48 @@ const writeHomeSummaryCache = async (cacheKey: string, body: any) => {
     scope: "home",
     sessionKey: cacheKey,
     ttlSeconds: homeSummaryCacheTtlSeconds,
+    state: {
+      cachedAtMs: Date.now(),
+      body,
+    },
+  });
+};
+
+const readHomeNotificationsCache = async (
+  cacheKey: string
+): Promise<HomeNotificationsCacheBody | null> => {
+  if (!homeSummaryCacheEnabled || !cacheKey) return null;
+  const l1 = readHomeSummaryL1(cacheKey);
+  if (l1) return l1 as HomeNotificationsCacheBody;
+
+  const loaded = await loadFindSessionState<HomeNotificationsCacheEntry>({
+    scope: "home",
+    sessionKey: cacheKey,
+    ttlSeconds: homeNotificationsCacheTtlSeconds,
+    initialState: {
+      cachedAtMs: 0,
+      body: null,
+    },
+  });
+  const entry = loaded?.state;
+  if (!entry?.body || !entry?.cachedAtMs) return null;
+  if (Date.now() - Number(entry.cachedAtMs) > homeNotificationsCacheTtlSeconds * 1000) {
+    return null;
+  }
+  writeHomeSummaryL1(cacheKey, entry.body);
+  return entry.body;
+};
+
+const writeHomeNotificationsCache = async (
+  cacheKey: string,
+  body: HomeNotificationsCacheBody
+) => {
+  if (!homeSummaryCacheEnabled || !cacheKey) return;
+  writeHomeSummaryL1(cacheKey, body);
+  await saveFindSessionState<HomeNotificationsCacheEntry>({
+    scope: "home",
+    sessionKey: cacheKey,
+    ttlSeconds: homeNotificationsCacheTtlSeconds,
     state: {
       cachedAtMs: Date.now(),
       body,
@@ -261,12 +327,15 @@ export const home = async (req: Request, res: Response) => {
     const sessionKey = toSessionKey(req);
     const viewerId = Number((req as any)?.userId ?? 0) || null;
     const cacheAudienceKey = toHomeCacheAudienceKey(req, viewerId);
+    const includeNotifications = include.has("notifications") && Boolean(viewerId);
+    const includeForHomeCache = new Set(include);
+    includeForHomeCache.delete("notifications");
 
     const postsSize = normalizeSize((req.query as any)?.posts_size, 5, 10);
     const reelsSize = normalizeSize((req.query as any)?.reels_size, 6, 10);
     const servicesSize = normalizeSize((req.query as any)?.services_size, 4, 10);
     const notificationsLimit = normalizeSize((req.query as any)?.notifications_limit, 5, 10);
-    const includeKey = Array.from(include.values()).sort().join(",");
+    const includeKey = Array.from(includeForHomeCache.values()).sort().join(",");
 
     const cacheKey = buildHomeSummaryCacheKey({
       viewerId: Number(viewerId ?? 0) || 0,
@@ -275,107 +344,122 @@ export const home = async (req: Request, res: Response) => {
       postsSize,
       reelsSize,
       servicesSize,
-      notificationsLimit,
+      notificationsLimit: 0,
     });
 
+    let payload: any = null;
     const cachedBody = await readHomeSummaryCache(cacheKey);
-    if (cachedBody) {
+    if (cachedBody && typeof cachedBody === "object") {
       res.set("X-Bootstrap-Cache", "hit");
       res.set("X-Bootstrap-Cache-TTL", String(homeSummaryCacheTtlSeconds));
-      setCacheControl(res, {
-        visibility: viewerId ? "private" : "public",
-        maxAgeSeconds: homeSummaryCacheTtlSeconds,
-        staleWhileRevalidateSeconds: 30,
-        staleIfErrorSeconds: 60,
-      });
-      if (respondNotModifiedIfFresh(req, res, cachedBody)) return;
-      return formatResponse({
-        res,
-        success: true,
-        body: cachedBody,
-      });
-    }
-    res.set("X-Bootstrap-Cache", "miss");
-    res.set("X-Bootstrap-Cache-TTL", String(homeSummaryCacheTtlSeconds));
+      payload = {
+        meta:
+          (cachedBody as any).meta ??
+          {
+            authenticated: Boolean((req as any)?.authenticated && viewerId),
+            userId: viewerId,
+          },
+        sections:
+          (cachedBody as any).sections && typeof (cachedBody as any).sections === "object"
+            ? { ...(cachedBody as any).sections }
+            : {},
+      };
+    } else {
+      res.set("X-Bootstrap-Cache", "miss");
+      res.set("X-Bootstrap-Cache-TTL", String(homeSummaryCacheTtlSeconds));
 
-    const [postsRaw, reelsRaw, servicesRaw, notificationsRaw, unreadNotifications] =
-      await Promise.all([
-        include.has("posts")
+      const [postsRaw, reelsRaw, servicesRaw] = await Promise.all([
+        includeForHomeCache.has("posts")
           ? postRepository.getsSummary(0, postsSize, req.userId, { sessionKey })
           : Promise.resolve(null),
-        include.has("reels")
+        includeForHomeCache.has("reels")
           ? reelRepository.listFeed(0, reelsSize, req.userId, false, {
               sessionKey,
               summary: true,
             })
           : Promise.resolve(null),
-        include.has("services")
+        includeForHomeCache.has("services")
           ? serviceRepository.getsSummary(servicesSize)
           : Promise.resolve(null),
-        include.has("notifications") && viewerId
-          ? notificationRepository.myNotificationsSummary(viewerId, {
-              limit: notificationsLimit,
-              cursor: null,
-            })
-          : Promise.resolve(null),
-        include.has("notifications") && viewerId
-          ? notificationRepository.countUnreadByUser(viewerId)
-          : Promise.resolve(0),
       ]);
 
-    await attachSavedFlags(req.userId, postsRaw?.rows ?? []);
+      await attachSavedFlags(req.userId, postsRaw?.rows ?? []);
 
-    const payload = {
-      meta: {
-        authenticated: Boolean((req as any)?.authenticated && viewerId),
-        userId: viewerId,
-      },
-      sections: {
-        ...(include.has("posts")
-          ? {
-              posts: {
-                page: 0,
-                size: postsSize,
-                count: Number(postsRaw?.count ?? 0) || 0,
-                items: (postsRaw?.rows ?? []).map((post: any) =>
-                  toPostSummary(post, req.userId)
-                ),
-              },
-            }
-          : {}),
-        ...(include.has("reels")
-          ? {
-              reels: {
-                page: 0,
-                size: reelsSize,
-                count: Number(reelsRaw?.count ?? 0) || 0,
-                items: (reelsRaw?.rows ?? []).map((reel: any) => toReelSummary(reel)),
-              },
-            }
-          : {}),
-        ...(include.has("services")
-          ? {
-              services: {
-                size: servicesSize,
-                items: (servicesRaw ?? []).map((service: any) => toServiceSummary(service)),
-              },
-            }
-          : {}),
-        ...(include.has("notifications") && viewerId
-          ? {
-              notifications: {
-                limit: notificationsLimit,
-                unreadCount: Number(unreadNotifications ?? 0) || 0,
-                items: (notificationsRaw ?? []).map((notification: any) =>
-                  toNotificationSummary(notification)
-                ),
-              },
-            }
-          : {}),
-      },
-    };
+      payload = {
+        meta: {
+          authenticated: Boolean((req as any)?.authenticated && viewerId),
+          userId: viewerId,
+        },
+        sections: {
+          ...(includeForHomeCache.has("posts")
+            ? {
+                posts: {
+                  page: 0,
+                  size: postsSize,
+                  count: Number(postsRaw?.count ?? 0) || 0,
+                  items: (postsRaw?.rows ?? []).map((post: any) =>
+                    toPostSummary(post, req.userId)
+                  ),
+                },
+              }
+            : {}),
+          ...(includeForHomeCache.has("reels")
+            ? {
+                reels: {
+                  page: 0,
+                  size: reelsSize,
+                  count: Number(reelsRaw?.count ?? 0) || 0,
+                  items: (reelsRaw?.rows ?? []).map((reel: any) => toReelSummary(reel)),
+                },
+              }
+            : {}),
+          ...(includeForHomeCache.has("services")
+            ? {
+                services: {
+                  size: servicesSize,
+                  items: (servicesRaw ?? []).map((service: any) => toServiceSummary(service)),
+                },
+              }
+            : {}),
+        },
+      };
 
-    await writeHomeSummaryCache(cacheKey, payload);
+      await writeHomeSummaryCache(cacheKey, payload);
+    }
+
+    if (includeNotifications && viewerId) {
+      const notificationsCacheKey = buildHomeNotificationsCacheKey({
+        viewerId: Number(viewerId),
+        notificationsLimit,
+      });
+      const cachedNotifications = await readHomeNotificationsCache(notificationsCacheKey);
+      if (cachedNotifications) {
+        res.set("X-Bootstrap-Notifications-Cache", "hit");
+        payload.sections.notifications = cachedNotifications;
+      } else {
+        res.set("X-Bootstrap-Notifications-Cache", "miss");
+        const [notificationsRaw, unreadNotifications] = await Promise.all([
+          notificationRepository.myNotificationsSummary(viewerId, {
+            limit: notificationsLimit,
+            cursor: null,
+          }),
+          notificationRepository.countUnreadByUser(viewerId),
+        ]);
+        const notificationsBody: HomeNotificationsCacheBody = {
+          limit: notificationsLimit,
+          unreadCount: Number(unreadNotifications ?? 0) || 0,
+          items: (notificationsRaw ?? []).map((notification: any) =>
+            toNotificationSummary(notification)
+          ),
+        };
+        payload.sections.notifications = notificationsBody;
+        await writeHomeNotificationsCache(notificationsCacheKey, notificationsBody);
+      }
+      res.set("X-Bootstrap-Notifications-Cache-TTL", String(homeNotificationsCacheTtlSeconds));
+    } else {
+      res.set("X-Bootstrap-Notifications-Cache", "bypass");
+      res.set("X-Bootstrap-Notifications-Cache-TTL", String(homeNotificationsCacheTtlSeconds));
+    }
 
     setCacheControl(res, {
       visibility: viewerId ? "private" : "public",
