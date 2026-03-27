@@ -3,7 +3,7 @@ import Like from "../../_models/like/like";
 import { postInclude } from "./post_include";
 import MediaPost from "../../_models/post/media_post";
 import PostReport from "../../_models/post/post_report";
-import { Op, Sequelize, UniqueConstraintError } from "sequelize";
+import { IndexHints, Op, Sequelize, UniqueConstraintError } from "sequelize";
 import Follower from "../../_models/follower/follower";
 import User from "../../_models/user/user";
 import Comment from "../../_models/comment/comment";
@@ -581,12 +581,12 @@ const fetchPostCandidatePool = async ({
 }) => {
   const pageFactor = Math.max(1, page + 1);
   const basePoolSize = Math.min(
-    380,
-    Math.max(90, size * 10, pageFactor * size * 7)
+    240,
+    Math.max(60, size * 7, pageFactor * size * 5)
   );
-  const trendingPoolSize = Math.max(size * 4, Math.floor(basePoolSize * 0.6));
-  const socialPoolSize = Math.max(size * 3, Math.floor(basePoolSize * 0.45));
-  const explorationPoolSize = Math.max(size * 3, Math.floor(basePoolSize * 0.4));
+  const trendingPoolSize = Math.max(size * 3, Math.floor(basePoolSize * 0.5));
+  const socialPoolSize = Math.max(size * 2, Math.floor(basePoolSize * 0.35));
+  const explorationPoolSize = Math.max(size * 2, Math.floor(basePoolSize * 0.3));
 
   const followedIds = Array.from(viewerContext.followedCreatorIds.values());
   const excludedCreatorIds = toUniqueNumbers([...followedIds, viewerId ?? 0]);
@@ -611,12 +611,24 @@ const fetchPostCandidatePool = async ({
     extraWhere?: any;
     order: any[];
     limit: number;
+    indexHintValues?: string[];
   }) => {
+    const indexHints =
+      Array.isArray(params.indexHintValues) && params.indexHintValues.length > 0
+        ? [
+            {
+              type: IndexHints.USE,
+              values: params.indexHintValues,
+            },
+          ]
+        : undefined;
+
     return withPostDbProfile(profiler, params.label, () =>
       Post.findAll({
         where: combineWhere(where, params.extraWhere),
         replacements,
         attributes,
+        indexHints: indexHints as any,
         order: params.order,
         limit: Math.max(1, Math.floor(params.limit)),
         raw: true,
@@ -628,11 +640,13 @@ const fetchPostCandidatePool = async ({
     await Promise.all([
       readRows({
         label: "posts.findAll(candidate_recent)",
+        indexHintValues: ["idx_posts_feed_recent_visible"],
         order: [["created_date", "DESC"], ["id", "DESC"]],
         limit: basePoolSize,
       }),
       readRows({
         label: "posts.findAll(candidate_trending)",
+        indexHintValues: ["idx_posts_feed_trending_visible"],
         order: [
           ["shares_count", "DESC"],
           ["saves_count", "DESC"],
@@ -645,6 +659,7 @@ const fetchPostCandidatePool = async ({
       followedIds.length
         ? readRows({
             label: "posts.findAll(candidate_social)",
+            indexHintValues: ["idx_posts_feed_user_visible_recent"],
             extraWhere: { userId: { [Op.in]: followedIds } },
             order: [["created_date", "DESC"], ["id", "DESC"]],
             limit: socialPoolSize,
@@ -653,6 +668,7 @@ const fetchPostCandidatePool = async ({
       categoryIds.length
         ? readRows({
             label: "posts.findAll(candidate_interest)",
+            indexHintValues: ["idx_posts_feed_category_visible_recent"],
             extraWhere: { categoryId: { [Op.in]: categoryIds } },
             order: [["created_date", "DESC"], ["id", "DESC"]],
             limit: socialPoolSize,
@@ -660,6 +676,7 @@ const fetchPostCandidatePool = async ({
         : Promise.resolve([] as any[]),
       readRows({
         label: "posts.findAll(candidate_exploration)",
+        indexHintValues: ["idx_posts_feed_recent_visible"],
         extraWhere: excludedCreatorIds.length
           ? { userId: { [Op.notIn]: excludedCreatorIds } }
           : undefined,

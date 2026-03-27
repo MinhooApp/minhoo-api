@@ -1,4 +1,4 @@
-import { Op, Sequelize, UniqueConstraintError } from "sequelize";
+import { IndexHints, Op, Sequelize, UniqueConstraintError } from "sequelize";
 import Offer from "../../_models/offer/offer";
 import Service from "../../_models/service/service";
 import { serviceInclude } from "./service_includes";
@@ -272,6 +272,12 @@ export const getsSummary = async (size: any = 20) => {
       applicantsCountSummaryAttribute as any,
     ],
     include: serviceSummaryInclude as any,
+    indexHints: [
+      {
+        type: IndexHints.USE,
+        values: ["idx_services_available_date"],
+      },
+    ],
     order: [["service_date", "DESC"]],
     limit,
   });

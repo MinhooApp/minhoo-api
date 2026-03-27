@@ -9,7 +9,7 @@ import Service from "../../_models/service/service";
 import MediaPost from "../../_models/post/media_post";
 import Notification from "../../_models/notification/notification";
 import { BlockUserRepository } from "../user/block_user_repository";
-import { Op, Sequelize } from "sequelize";
+import { IndexHints, Op, Sequelize } from "sequelize";
 const excludeKeys = ["createdAt ", "updatedAt ", "password "];
 export const PROFILE_RECOMMENDATION_MESSAGE_PREFIX = "Suggested profile:";
 export const PROFILE_RECOMMENDATION_NOTIFICATION_TYPE = "profile_recommendation";
@@ -423,15 +423,24 @@ export const countUnreadByUser = async (userId: number) => {
 
   return withNotificationCountCache({
     userId: safeUserId,
-    loader: async () =>
-      Notification.count({
+    loader: async () => {
+      const unreadCount = await Notification.count({
         where: {
           userId: safeUserId,
           deleted: false,
           read: false,
           ...(hasBlockedUsers ? { interactorId: { [Op.notIn]: blockedUserIds } } : {}),
         },
-      }),
+        // Sequelize typings don't include indexHints in count options, but MySQL supports it.
+        indexHints: [
+          {
+            type: IndexHints.USE,
+            values: ["idx_notifications_user_deleted_read"],
+          },
+        ],
+      } as any);
+      return Number(Array.isArray(unreadCount) ? unreadCount.length : unreadCount);
+    },
   });
 };
 
