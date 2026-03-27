@@ -6,7 +6,7 @@ import {
   repository,
 } from "../_module/module";
 import * as savedRepository from "../../../repository/saved/saved_repository";
-import { bumpHomeContentCacheVersion } from "../../../libs/cache/bootstrap_home_cache_version";
+import { bumpHomeContentSectionVersion } from "../../../libs/cache/bootstrap_home_cache_version";
 
 export const deletePost = async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -20,7 +20,7 @@ export const deletePost = async (req: Request, res: Response) => {
   }
   await repository.deletePost(id);
   await savedRepository.removeByPostId(Number(id));
-  await bumpHomeContentCacheVersion();
+  await bumpHomeContentSectionVersion("posts");
 
   return formatResponse({
     res: res,
@@ -41,7 +41,7 @@ export const deletePostAdmin = async (req: Request, res: Response) => {
   }
   await repository.deletePost(id);
   await savedRepository.removeByPostId(Number(id));
-  await bumpHomeContentCacheVersion();
+  await bumpHomeContentSectionVersion("posts");
 
   return formatResponse({
     res: res,

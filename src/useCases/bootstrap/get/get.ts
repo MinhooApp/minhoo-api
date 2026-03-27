@@ -21,7 +21,7 @@ import {
   saveFindSessionState,
 } from "../../../libs/cache/find_session_store";
 import {
-  getHomeContentCacheVersion,
+  getHomeContentSectionVersions,
   getHomeNotificationsCacheVersion,
 } from "../../../libs/cache/bootstrap_home_cache_version";
 
@@ -170,7 +170,9 @@ const parseIncludeSections = (raw: any) => {
 const buildHomeSummaryCacheKey = (params: {
   viewerId: number;
   cacheAudienceKey: string;
-  contentVersion: number;
+  postsVersion: number;
+  reelsVersion: number;
+  servicesVersion: number;
   includeKey: string;
   postsSize: number;
   reelsSize: number;
@@ -182,7 +184,9 @@ const buildHomeSummaryCacheKey = (params: {
     "summary:home",
     `v:${params.viewerId}`,
     `sk:${sessionSuffix}`,
-    `cv:${params.contentVersion}`,
+    `pv:${params.postsVersion}`,
+    `rv:${params.reelsVersion}`,
+    `sv:${params.servicesVersion}`,
     `i:${params.includeKey}`,
     `ps:${params.postsSize}`,
     `rs:${params.reelsSize}`,
@@ -344,12 +348,14 @@ export const home = async (req: Request, res: Response) => {
     const servicesSize = normalizeSize((req.query as any)?.services_size, 4, 10);
     const notificationsLimit = normalizeSize((req.query as any)?.notifications_limit, 5, 10);
     const includeKey = Array.from(includeForHomeCache.values()).sort().join(",");
-    const contentVersion = await getHomeContentCacheVersion();
+    const sectionVersions = await getHomeContentSectionVersions(includeForHomeCache.values());
 
     const cacheKey = buildHomeSummaryCacheKey({
       viewerId: Number(viewerId ?? 0) || 0,
       cacheAudienceKey,
-      contentVersion,
+      postsVersion: sectionVersions.posts,
+      reelsVersion: sectionVersions.reels,
+      servicesVersion: sectionVersions.services,
       includeKey,
       postsSize,
       reelsSize,

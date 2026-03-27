@@ -7,7 +7,7 @@ import {
   socket,
   sendEmailToMany,
 } from "../_module/module";
-import { bumpHomeContentCacheVersion } from "../../../libs/cache/bootstrap_home_cache_version";
+import { bumpHomeContentSectionVersion } from "../../../libs/cache/bootstrap_home_cache_version";
 export const deleteService = async (req: Request, res: Response) => {
   const { id } = req.params;
   const tempService = await repository.getByUser(id, req.userId);
@@ -42,7 +42,7 @@ export const deleteService = async (req: Request, res: Response) => {
   };
 
   await repository.deleteservice(id);
-  await bumpHomeContentCacheVersion();
+  await bumpHomeContentSectionVersion("services");
   const response = await repository.getByUser(id, req.userId);
   sendEmailToMany(emailParams);
 

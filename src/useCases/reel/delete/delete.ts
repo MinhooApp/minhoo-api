@@ -7,7 +7,7 @@ import {
 } from "../../../libs/helper/realtime_dispatch";
 import { getActiveOrbitStateByUser } from "../../../repository/reel/orbit_ring_projection";
 import {
-  bumpHomeContentCacheVersion,
+  bumpHomeContentSectionVersion,
   bumpHomeNotificationsCacheVersion,
 } from "../../../libs/cache/bootstrap_home_cache_version";
 
@@ -145,7 +145,7 @@ export const delete_reel = async (req: Request, res: Response) => {
       user: payload.user,
     });
 
-    await bumpHomeContentCacheVersion();
+    await bumpHomeContentSectionVersion("reels");
 
     return formatResponse({
       res,

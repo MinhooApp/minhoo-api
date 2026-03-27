@@ -5,7 +5,7 @@ import {
   formatResponse,
   repository,
 } from "../_module/module";
-import { bumpHomeContentCacheVersion } from "../../../libs/cache/bootstrap_home_cache_version";
+import { bumpHomeContentSectionVersion } from "../../../libs/cache/bootstrap_home_cache_version";
 
 export const update = async (req: Request, res: Response) => {};
 
@@ -98,7 +98,7 @@ export const finalized = async (req: Request, res: Response) => {
       refreshLists,
     });
 
-    await bumpHomeContentCacheVersion();
+    await bumpHomeContentSectionVersion("services");
 
     return formatResponse({ res, success: true, body: responseBody });
   } catch (error) {
