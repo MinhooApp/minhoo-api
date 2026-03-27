@@ -25,7 +25,9 @@ require_file() {
 }
 
 require_file "${ASSET_DIR}/minhoo-api-green.service"
+require_file "${ASSET_DIR}/minhoo-api.service"
 require_file "${ASSET_DIR}/api.minhoo.xyz"
+require_file "${ASSET_DIR}/zz-minhoo-security.conf"
 require_file "${ASSET_DIR}/z-minhoo-tuning.cnf"
 
 echo "[1/8] Creating backups..."
@@ -39,6 +41,11 @@ fi
 cp -a \
   /etc/nginx/sites-enabled/api.minhoo.xyz \
   "${NGINX_BACKUP_DIR}/api.minhoo.xyz.bak.${TS}"
+if [[ -f /etc/nginx/conf.d/zz-minhoo-security.conf ]]; then
+  cp -a \
+    /etc/nginx/conf.d/zz-minhoo-security.conf \
+    "/etc/nginx/conf.d/zz-minhoo-security.conf.bak.${TS}"
+fi
 cp -a /etc/mysql/mysql.conf.d/mysqld.cnf "/etc/mysql/mysql.conf.d/mysqld.cnf.bak.${TS}"
 if [[ -f /etc/mysql/mysql.conf.d/z-minhoo-tuning.cnf ]]; then
   cp -a \
@@ -59,20 +66,25 @@ fi
 chmod 640 "${ROOT_DIR}/.env.green"
 chmod 755 "${ROOT_DIR}/src/_data" "${ROOT_DIR}/src/_data/catalog" 2>/dev/null || true
 
-echo "[3/8] Installing systemd green service..."
+echo "[3/8] Installing systemd blue/green services..."
+install -m 0644 "${ASSET_DIR}/minhoo-api.service" /etc/systemd/system/minhoo-api.service
 install -m 0644 "${ASSET_DIR}/minhoo-api-green.service" /etc/systemd/system/minhoo-api-green.service
 
 echo "[4/8] Installing Nginx blue/green upstream config..."
 install -m 0644 "${ASSET_DIR}/api.minhoo.xyz" /etc/nginx/sites-enabled/api.minhoo.xyz
+install -m 0644 "${ASSET_DIR}/zz-minhoo-security.conf" /etc/nginx/conf.d/zz-minhoo-security.conf
 
 echo "[5/8] Installing MySQL tuning drop-in..."
 install -m 0644 "${ASSET_DIR}/z-minhoo-tuning.cnf" /etc/mysql/mysql.conf.d/z-minhoo-tuning.cnf
 
-echo "[6/8] Reloading systemd and starting green..."
+echo "[6/8] Reloading systemd and restarting blue/green..."
 systemctl daemon-reload
+systemctl enable minhoo-api.service >/dev/null 2>&1 || true
 systemctl enable minhoo-api-green.service >/dev/null 2>&1 || true
+systemctl restart minhoo-api.service
 systemctl restart minhoo-api-green.service
 sleep 1
+systemctl --no-pager --full status minhoo-api.service | sed -n '1,25p'
 systemctl --no-pager --full status minhoo-api-green.service | sed -n '1,25p'
 
 echo "[7/8] Validating and reloading Nginx..."

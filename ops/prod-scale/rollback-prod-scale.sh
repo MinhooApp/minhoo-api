@@ -23,9 +23,23 @@ else
   echo "No nginx backup found. Skipping."
 fi
 
+SECURITY_BAK="$(latest_backup /etc/nginx/conf.d/zz-minhoo-security.conf.bak.*)"
+if [[ -n "${SECURITY_BAK}" ]]; then
+  cp -a "${SECURITY_BAK}" /etc/nginx/conf.d/zz-minhoo-security.conf
+  echo "Restored: ${SECURITY_BAK}"
+fi
+
 echo "[2/5] Stopping and disabling green service..."
 systemctl stop minhoo-api-green.service >/dev/null 2>&1 || true
 systemctl disable minhoo-api-green.service >/dev/null 2>&1 || true
+
+BLUE_BAK="$(latest_backup /etc/systemd/system/minhoo-api.service.bak.*)"
+if [[ -n "${BLUE_BAK}" ]]; then
+  cp -a "${BLUE_BAK}" /etc/systemd/system/minhoo-api.service
+  echo "Restored: ${BLUE_BAK}"
+else
+  echo "No blue service backup found. Keeping current /etc/systemd/system/minhoo-api.service"
+fi
 
 GREEN_BAK="$(latest_backup /etc/systemd/system/minhoo-api-green.service.bak.*)"
 if [[ -n "${GREEN_BAK}" ]]; then

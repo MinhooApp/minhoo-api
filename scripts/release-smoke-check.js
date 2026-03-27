@@ -2,6 +2,47 @@
 
 /* eslint-disable no-console */
 const axios = require("axios");
+const path = require("path");
+const dotenv = require("dotenv");
+const { applyFileBackedSecrets } = require("./_utils/apply-file-backed-secrets");
+
+const isTruthy = (value) => {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  );
+};
+
+const loadSmokeEnv = () => {
+  dotenv.config();
+
+  const explicitEnvFile = String(process.env.SMOKE_ENV_FILE || process.env.ENV_FILE || "").trim();
+  const fallbackGreenEnvFile =
+    !explicitEnvFile && String(process.env.SMOKE_BASE_URL || "").includes(":3001")
+      ? ".env.green"
+      : "";
+  const selectedEnvFile = explicitEnvFile || fallbackGreenEnvFile;
+
+  if (selectedEnvFile) {
+    dotenv.config({
+      path: path.resolve(process.cwd(), selectedEnvFile),
+      override: true,
+    });
+  }
+
+  applyFileBackedSecrets(process.env, {
+    forceOverride: false,
+    allowCreateMissingTargets: isTruthy(process.env.SECRETS_FILE_CREATE_MISSING_TARGETS),
+    baseDir: process.cwd(),
+  });
+};
+
+loadSmokeEnv();
 
 const BASE_URL = String(process.env.SMOKE_BASE_URL || "http://127.0.0.1:3000").replace(/\/+$/, "");
 const AUTH_TOKEN = String(process.env.SMOKE_AUTH_TOKEN || "").trim();
@@ -62,6 +103,21 @@ const main = async () => {
     await probe({
       name: "ping",
       path: "/api/v1/ping",
+    })
+  );
+
+  checks.push(
+    await probe({
+      name: "live",
+      path: "/api/v1/live",
+    })
+  );
+
+  checks.push(
+    await probe({
+      name: "ready",
+      path: "/api/v1/ready",
+      expected: [200],
     })
   );
 

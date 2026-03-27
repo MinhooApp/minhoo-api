@@ -60,9 +60,18 @@ const parseIpAllowlist = () => {
   );
 };
 
+const isLoopbackIp = (ipRaw: any) => {
+  const ip = normalizeIp(ipRaw);
+  return ip === "127.0.0.1" || ip === "::1" || ip === "localhost";
+};
+
 const canUseInternalDebug = (req: Request) => {
   if (String(process.env.NODE_ENV ?? "").trim().toLowerCase() !== "production") {
     return true;
+  }
+
+  if (!isTruthy(process.env.INTERNAL_DEBUG_ENABLED ?? "1")) {
+    return false;
   }
 
   if (!isTruthy(req.header("x-internal-debug"))) {
@@ -79,11 +88,17 @@ const canUseInternalDebug = (req: Request) => {
     return false;
   }
 
-  const ipAllowlist = parseIpAllowlist();
-  if (!ipAllowlist.size) return true;
-
   const requestIp = getRequestIp(req);
-  return ipAllowlist.has(requestIp);
+  if (isLoopbackIp(requestIp)) {
+    return true;
+  }
+
+  const ipAllowlist = parseIpAllowlist();
+  if (ipAllowlist.size) {
+    return ipAllowlist.has(requestIp);
+  }
+
+  return isTruthy(process.env.INTERNAL_DEBUG_ALLOW_REMOTE ?? "0");
 };
 
 export const InternalDebugGuard = (): RequestHandler => {

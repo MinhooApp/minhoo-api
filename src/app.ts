@@ -23,13 +23,6 @@ const server = new Server({ port });
 // Rutas principales del sistema (ya configuradas en AppRoutes)
 server.setRoutes(AppRoutes.routes);
 
-// Rutas de administrador (habilitar / deshabilitar usuarios)
-import adminUserRoutes from "./admin/admin_user_routes";
-
-// Vincular módulo de administración
-// (nota: usa /api/v1/admin/... como prefijo)
-server.app.use("/api/v1/admin", adminUserRoutes);
-
 // ===============================
 // 🚀 Iniciar servidor
 // ===============================
@@ -38,3 +31,38 @@ server.listen();
 
 console.log(`🚀 Servidor iniciado correctamente en el puerto ${port}`);
 console.log(`🔒 Módulo admin habilitado en /api/v1/admin/users/{id}/disable|enable`);
+
+const shutdownGraceMs = Math.max(
+  5_000,
+  Math.trunc(Number(process.env.SHUTDOWN_GRACE_MS ?? 15_000) || 15_000)
+);
+let isShuttingDown = false;
+
+const shutdown = async (signal: NodeJS.Signals) => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`[shutdown] signal=${signal} grace_ms=${shutdownGraceMs}`);
+  try {
+    await server.close(shutdownGraceMs);
+    console.log("[shutdown] graceful stop completed");
+    process.exit(0);
+  } catch (error) {
+    console.error("[shutdown] graceful stop failed", error);
+    process.exit(1);
+  }
+};
+
+(["SIGINT", "SIGTERM"] as NodeJS.Signals[]).forEach((signal) => {
+  process.on(signal, () => {
+    void shutdown(signal);
+  });
+});
+
+process.on("uncaughtException", (error) => {
+  console.error("[uncaughtException]", error);
+  void shutdown("SIGTERM");
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[unhandledRejection]", reason);
+});

@@ -3,11 +3,20 @@
 /* eslint-disable no-console */
 const axios = require("axios");
 const nodemailer = require("nodemailer");
+const path = require("path");
 require("dotenv").config();
 const { execSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const { applyFileBackedSecrets } = require("./_utils/apply-file-backed-secrets");
+
+const explicitEnvFile = String(process.env.RISK_ENV_FILE || process.env.ENV_FILE || "").trim();
+if (explicitEnvFile) {
+  require("dotenv").config({
+    path: path.resolve(process.cwd(), explicitEnvFile),
+    override: true,
+  });
+}
 
 applyFileBackedSecrets(process.env, { forceOverride: false, baseDir: process.cwd() });
 

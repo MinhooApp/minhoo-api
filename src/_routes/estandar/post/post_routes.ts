@@ -15,6 +15,7 @@ import {
   deletePost,
   deletePostAdmin,
 } from "../../../useCases/post/_controller/controller";
+import { createRequestRateLimiter } from "../../../libs/middlewares/request_rate_limiter";
 import {
   buildCanonicalShareUrl,
   buildDisplayName,
@@ -26,6 +27,44 @@ import {
 import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
 
 const router = Router();
+const parsePositiveInt = (value: any, fallback: number, min = 1) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.trunc(parsed);
+  if (rounded < min) return fallback;
+  return rounded;
+};
+
+const APP_RATE_WINDOW_MS = parsePositiveInt(
+  process.env.APP_RATE_WINDOW_MS,
+  60_000
+);
+const APP_RATE_MAX_ENTRIES = parsePositiveInt(
+  process.env.APP_RATE_MAX_ENTRIES,
+  50_000,
+  500
+);
+const postReadLimiter = createRequestRateLimiter({
+  windowMs: APP_RATE_WINDOW_MS,
+  max: parsePositiveInt(process.env.POST_RATE_MAX_READ, 150),
+  maxEntries: APP_RATE_MAX_ENTRIES,
+  keyPrefix: "post:read",
+  message: "too many post read requests, try later",
+});
+const postWriteLimiter = createRequestRateLimiter({
+  windowMs: APP_RATE_WINDOW_MS,
+  max: parsePositiveInt(process.env.POST_RATE_MAX_WRITE, 25),
+  maxEntries: APP_RATE_MAX_ENTRIES,
+  keyPrefix: "post:write",
+  message: "too many post write requests, try later",
+});
+const postSharePageLimiter = createRequestRateLimiter({
+  windowMs: APP_RATE_WINDOW_MS,
+  max: parsePositiveInt(process.env.POST_RATE_MAX_SHARE_PAGE, 120),
+  maxEntries: APP_RATE_MAX_ENTRIES,
+  keyPrefix: "post:share_page",
+  message: "too many post share page requests, try later",
+});
 
 const buildPostSharePage = async (req: any) => {
   const postId = String(req.params.id ?? "").trim();
@@ -82,16 +121,16 @@ const buildPostSharePage = async (req: any) => {
   };
 };
 
-router.post("/", TokenValidation(), add);
-router.get("/", TokenOptional(), gets);
-router.get("/suggested", TokenOptional(), getsSuggested);
-router.put("/like/:id", TokenValidation(), like);
-router.post("/:id/report", TokenValidation(), report);
-router.post("/:id/share", TokenValidation(), share);
-router.get("/:id", TokenOptional(), get);
-router.delete("/admin/:id", TokenValidation([8088]), deletePostAdmin);
-router.delete("/:id", TokenValidation(), deletePost);
-router.get("/share/:id", async (req, res) => {
+router.post("/", postWriteLimiter, TokenValidation(), add);
+router.get("/", postReadLimiter, TokenOptional(), gets);
+router.get("/suggested", postReadLimiter, TokenOptional(), getsSuggested);
+router.put("/like/:id", postWriteLimiter, TokenValidation(), like);
+router.post("/:id/report", postWriteLimiter, TokenValidation(), report);
+router.post("/:id/share", postWriteLimiter, TokenValidation(), share);
+router.get("/:id", postReadLimiter, TokenOptional(), get);
+router.delete("/admin/:id", postWriteLimiter, TokenValidation([8088]), deletePostAdmin);
+router.delete("/:id", postWriteLimiter, TokenValidation(), deletePost);
+router.get("/share/:id", postSharePageLimiter, async (req, res) => {
   try {
     const html = await renderShareLandingPage(await buildPostSharePage(req));
     setCacheControl(res, {
