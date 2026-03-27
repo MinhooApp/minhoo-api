@@ -83,7 +83,7 @@ function toBool(input: unknown, defaultVal = true): boolean {
 
 function parsePageAndSize(query: Record<string, unknown> = {}) {
   const pageNum = Math.max(0, Number(query.page ?? 0) || 0);
-  const sizeNum = Math.min(Math.max(Number(query.size ?? 10) || 10, 1), 20);
+  const sizeNum = Math.min(Math.max(Number(query.size ?? 15) || 15, 1), 50);
   return { pageNum, sizeNum };
 }
 
@@ -92,6 +92,48 @@ function toCount(countValue: unknown): number {
   const parsed = Number(countValue ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+const resolveWorkerHistoryScopeToken = (query: Record<string, unknown> = {}) => {
+  return normalizeQueryToken(
+    query.scope ??
+      query.history_scope ??
+      query.status_scope ??
+      query.tab ??
+      query.type ??
+      query.state ??
+      query.section ??
+      query.status ??
+      query.filter ??
+      "all"
+  );
+};
+
+const resolveWorkerHistoryStatusIds = (
+  query: Record<string, unknown> = {}
+): number[] | undefined => {
+  const scopeCandidate = resolveWorkerHistoryScopeToken(query);
+
+  // Date filters are handled separately. Don't interpret as scope.
+  if (
+    ["latest", "last_30_days", "last_3_months", "last_6_months"].includes(scopeCandidate)
+  ) {
+    return undefined;
+  }
+
+  if (!scopeCandidate || scopeCandidate === "all") return undefined;
+  if (scopeCandidate === "in_progress" || scopeCandidate === "in-progress") return [1, 3];
+  if (scopeCandidate === "assigned") return [2];
+  if (scopeCandidate === "working") return [3];
+  if (scopeCandidate === "completed") return [4];
+  if (scopeCandidate === "closed") return [2, 4];
+  if (scopeCandidate === "canceled" || scopeCandidate === "cancelled") return [5];
+
+  const numeric = Number(scopeCandidate);
+  if (Number.isInteger(numeric) && numeric > 0) return [numeric];
+
+  // unknown scope -> keep backward-compatible all-history behavior
+  return undefined;
+};
 
 function ensureCurrencyOnService(svc: any) {
   if (!svc) return svc;
@@ -330,9 +372,12 @@ export const onGoingWorkers = async (req: Request, res: Response) => {
     );
     const safe = toPlain(servicesRaw) as any;
     let services = ensureCurrencyOnList(safe.rows ?? []);
+    const totalCount = toCount(safe.count);
 
     services = normalizeApplicantUsernamesOnList(services);
     services = enrichServicesApplicantsStatus(services);
+    const visibleCount = services.length;
+    const hasMore = (pageNum + 1) * sizeNum < totalCount;
 
     return formatResponse({
       res: res,
@@ -340,7 +385,10 @@ export const onGoingWorkers = async (req: Request, res: Response) => {
       body: {
         page: pageNum,
         size: sizeNum,
-        count: toCount(safe.count),
+        count: totalCount,
+        count_page: visibleCount,
+        count_total: totalCount,
+        has_more: hasMore,
         services,
       },
     });
@@ -367,9 +415,12 @@ export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
     );
     const safe = toPlain(servicesRaw) as any;
     let services = ensureCurrencyOnList(safe.rows ?? []);
+    const totalCount = toCount(safe.count);
 
     services = normalizeApplicantUsernamesOnList(services);
     services = enrichServicesApplicantsStatus(services);
+    const visibleCount = services.length;
+    const hasMore = (pageNum + 1) * sizeNum < totalCount;
 
     return formatResponse({
       res: res,
@@ -377,7 +428,10 @@ export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
       body: {
         page: pageNum,
         size: sizeNum,
-        count: toCount(safe.count),
+        count: totalCount,
+        count_page: visibleCount,
+        count_total: totalCount,
+        has_more: hasMore,
         services,
       },
     });
@@ -394,19 +448,37 @@ export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
 export const historyWorkers = async (req: Request, res: Response) => {
   try {
     const historyDateRange = resolveHistoryDateRange(req.query as Record<string, unknown>);
+    const workerHistoryStatusIds = resolveWorkerHistoryStatusIds(
+      req.query as Record<string, unknown>
+    );
     const { pageNum, sizeNum } = parsePageAndSize(req.query as Record<string, unknown>);
     const servicesRaw = await repository.historyWorkersPaged(
       req.workerId,
       req.userId,
       pageNum,
       sizeNum,
-      historyDateRange
+      historyDateRange,
+      workerHistoryStatusIds
     );
     const safe = toPlain(servicesRaw) as any;
     let services = ensureCurrencyOnList(safe.rows ?? []);
+    const totalCount = toCount(safe.count);
+    const statusCounts = await repository.historyWorkersStatusCounts(
+      req.workerId,
+      req.userId,
+      historyDateRange
+    );
+    const countAssigned = Number(statusCounts[2] ?? 0) || 0;
+    const countWorking = Number(statusCounts[3] ?? 0) || 0;
+    const countCompleted = Number(statusCounts[4] ?? 0) || 0;
+    const countInitialized = Number(statusCounts[1] ?? 0) || 0;
+    const countInProgress = countInitialized + countWorking;
+    const countClosed = countAssigned + countCompleted;
 
     services = normalizeApplicantUsernamesOnList(services);
     services = enrichServicesApplicantsStatus(services);
+    const visibleCount = services.length;
+    const hasMore = (pageNum + 1) * sizeNum < totalCount;
 
     return formatResponse({
       res: res,
@@ -414,7 +486,15 @@ export const historyWorkers = async (req: Request, res: Response) => {
       body: {
         page: pageNum,
         size: sizeNum,
-        count: toCount(safe.count),
+        count: totalCount,
+        count_page: visibleCount,
+        count_total: totalCount,
+        count_in_progress: countInProgress,
+        count_closed: countClosed,
+        count_assigned: countAssigned,
+        count_working: countWorking,
+        count_completed: countCompleted,
+        has_more: hasMore,
         services,
       },
     });

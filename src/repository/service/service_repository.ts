@@ -151,6 +151,46 @@ const countServicesForWorkerScope = async (
   });
 };
 
+export const historyWorkersStatusCounts = async (
+  workerId: number,
+  meId: any,
+  dateRange?: ServiceHistoryDateRange
+) => {
+  const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId, {
+    accepted: true,
+    canceled: false,
+    removed: false,
+  });
+  if (!workerScopeWhere) return {} as Record<number, number>;
+
+  const serviceDateWhere = buildServiceDateWhere(dateRange);
+  const where: any = { is_available: true };
+  if (serviceDateWhere) {
+    where.service_date = serviceDateWhere;
+  }
+
+  const rows = await Service.findAll({
+    where,
+    include: [buildWorkerOfferFilterInclude(workerScopeWhere, meId)] as any,
+    attributes: [
+      "statusId",
+      [Sequelize.fn("COUNT", Sequelize.fn("DISTINCT", Sequelize.col("service.id"))), "count"],
+    ],
+    group: ["service.statusId"],
+    raw: true,
+  });
+
+  const counts: Record<number, number> = {};
+  for (const row of rows as any[]) {
+    const statusId = Number((row as any)?.statusId ?? 0);
+    const count = Number((row as any)?.count ?? 0);
+    if (Number.isFinite(statusId) && statusId > 0) {
+      counts[statusId] = Number.isFinite(count) ? count : 0;
+    }
+  }
+  return counts;
+};
+
 const toPositiveInt = (value: any): number | null => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -348,6 +388,7 @@ export const getsOnGoing = async (
  */
 export const onGoingWorkers = async (workerId: number, meId: any) => {
   const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId, {
+    accepted: false,
     canceled: false,
     removed: false,
   });
@@ -368,6 +409,7 @@ export const onGoingWorkersPaged = async (
   size: any = 10
 ) => {
   const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId, {
+    accepted: false,
     canceled: false,
     removed: false,
   });
@@ -445,7 +487,8 @@ export const onGoingCanceledWorkersPaged = async (
 export const historyWorkers = async (
   workerId: number,
   meId: any,
-  dateRange?: ServiceHistoryDateRange
+  dateRange?: ServiceHistoryDateRange,
+  statusIds?: number[]
 ) => {
   const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId, {
     accepted: true,
@@ -456,6 +499,9 @@ export const historyWorkers = async (
 
   const serviceDateWhere = buildServiceDateWhere(dateRange);
   const where: any = { is_available: true };
+  if (Array.isArray(statusIds) && statusIds.length > 0) {
+    where.statusId = statusIds.length === 1 ? statusIds[0] : { [Op.in]: statusIds };
+  }
   if (serviceDateWhere) {
     where.service_date = serviceDateWhere;
   }
@@ -473,7 +519,8 @@ export const historyWorkersPaged = async (
   meId: any,
   page: any = 0,
   size: any = 10,
-  dateRange?: ServiceHistoryDateRange
+  dateRange?: ServiceHistoryDateRange,
+  statusIds?: number[]
 ) => {
   const workerScopeWhere = await buildWorkerScopeWhere(workerId, meId, {
     accepted: true,
@@ -485,6 +532,9 @@ export const historyWorkersPaged = async (
   const { limit, offset } = pagination(page, size);
   const serviceDateWhere = buildServiceDateWhere(dateRange);
   const where: any = { is_available: true };
+  if (Array.isArray(statusIds) && statusIds.length > 0) {
+    where.statusId = statusIds.length === 1 ? statusIds[0] : { [Op.in]: statusIds };
+  }
   if (serviceDateWhere) {
     where.service_date = serviceDateWhere;
   }
