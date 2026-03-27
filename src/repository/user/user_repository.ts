@@ -67,7 +67,7 @@ const notBlockedBetweenMeAndTarget = () =>
 export const gets = async () => {
   const user = await User.findAll({
     where: { available: true, disabled: false, is_deleted: false },
-    include: userIncludes(),
+    include: userIncludes(-1, { includeFollowGraph: false }),
   });
   return user;
 };
@@ -271,7 +271,7 @@ export const users = async (page: any = 0, size: any = 10) => {
   const users = await User.findAndCountAll({
     where: { available: 1, disabled: false, is_deleted: false },
     ...option,
-    include: userIncludes(),
+    include: userIncludes(-1, { includeFollowGraph: false }),
   });
   return users;
 };
@@ -288,12 +288,14 @@ export const get = async (id: any, meId: any = -1) => {
       [Op.and]: [notBlockedBetweenMeAndTarget()],
     },
     include: [
-      ...userIncludes(meId),
+      ...userIncludes(meId, { includeFollowGraph: false }),
       {
         model: Post,
         as: "posts",
         where: { is_delete: false },
         required: false,
+        separate: true,
+        order: [["created_date", "DESC"]],
         include: [
           {
             model: MediaPost,
@@ -306,7 +308,6 @@ export const get = async (id: any, meId: any = -1) => {
       },
     ],
     replacements: { meId, id },
-    order: [[{ model: Post, as: "posts" }, "created_date", "DESC"]],
   });
 
   return user;
@@ -316,7 +317,7 @@ export const get = async (id: any, meId: any = -1) => {
 export const update = async (id: any, body: any) => {
   const userTemp = await User.findOne({
     where: { id },
-    include: userIncludes(),
+    include: userIncludes(-1, { includeFollowGraph: false }),
   });
   const user = await userTemp?.update(body);
   return [user];
@@ -370,7 +371,7 @@ export const assignUuid = async (id: number, uuid: string) => {
 export const activeAlerts = async (id: any) => {
   const userTemp = await User.findOne({
     where: { id },
-    include: userIncludes(),
+    include: userIncludes(-1, { includeFollowGraph: false }),
   });
   const user = await userTemp?.update({ alert: !userTemp!.alert });
   return user;
