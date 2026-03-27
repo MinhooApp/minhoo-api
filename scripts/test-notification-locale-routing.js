@@ -26,7 +26,6 @@ const VIEWER_PASSWORD = String(
 ).trim();
 const VIEWER_LOGIN_UUID = String(process.env.VIEWER_LOGIN_UUID || "").trim();
 
-const TARGET_POST_ID = Math.max(1, Number(process.env.TARGET_POST_ID || 415) || 415);
 const POLL_ATTEMPTS = Math.max(6, Math.min(Number(process.env.NOTIFICATION_POLL_ATTEMPTS || 20), 60));
 const POLL_WAIT_MS = Math.max(200, Math.min(Number(process.env.NOTIFICATION_POLL_WAIT_MS || 500), 2000));
 
@@ -122,22 +121,6 @@ async function updateLanguage(api, language) {
   assert(after === normalized, `Expected language=${normalized}, received ${after || "(empty)"}`);
 }
 
-async function unsavePost(api, postId) {
-  const response = await api.delete(`/saved/posts/${postId}`);
-  assert(
-    response.status >= 200 && response.status < 300,
-    `DELETE /saved/posts/${postId} failed status=${response.status} body=${JSON.stringify(response.data)}`
-  );
-}
-
-async function savePost(api, postId) {
-  const response = await api.post(`/saved/posts/${postId}`, {});
-  assert(
-    response.status >= 200 && response.status < 300,
-    `POST /saved/posts/${postId} failed status=${response.status} body=${JSON.stringify(response.data)}`
-  );
-}
-
 async function readNotifications(api, limit = 50) {
   const response = await api.get(`/notification?limit=${limit}`);
   assert(
@@ -158,28 +141,55 @@ function findMaxNotificationId(items) {
   return maxId;
 }
 
-function findNewLikeNotification(items, { afterId, interactorId }) {
+function findNewNotificationByType(items, { afterId, interactorId, type }) {
+  const normalizedType = String(type || "").trim().toLowerCase();
   return items.find((item) => {
     const id = Number(item?.id || 0);
-    const type = String(item?.type || "").toLowerCase();
+    const itemType = String(item?.type || "").toLowerCase();
     const actor = Number(item?.interactorId || 0);
-    return id > afterId && type === "like" && actor === interactorId;
+    return id > afterId && itemType === normalizedType && actor === interactorId;
   });
 }
 
-async function waitForLikeNotification(api, matcher) {
+async function waitForNotificationByType(api, matcher) {
   for (let attempt = 1; attempt <= POLL_ATTEMPTS; attempt += 1) {
     const notifications = await readNotifications(api, 60);
-    const found = findNewLikeNotification(notifications, matcher);
+    const found = findNewNotificationByType(notifications, matcher);
     if (found) return found;
     await sleep(POLL_WAIT_MS);
   }
   return null;
 }
 
+async function getRelationship(api, targetUserId) {
+  const response = await api.get(`/user/${targetUserId}/relationship`);
+  assert(
+    response.status >= 200 && response.status < 300,
+    `GET /user/${targetUserId}/relationship failed status=${response.status} body=${JSON.stringify(response.data)}`
+  );
+  return Boolean(response?.data?.body?.isFollowing);
+}
+
+async function ensureUnfollow(api, targetUserId) {
+  const isFollowing = await getRelationship(api, targetUserId);
+  if (!isFollowing) return;
+  const response = await api.delete(`/user/${targetUserId}/follow`);
+  assert(
+    response.status >= 200 && response.status < 300,
+    `DELETE /user/${targetUserId}/follow failed status=${response.status} body=${JSON.stringify(response.data)}`
+  );
+}
+
+async function followUser(api, targetUserId) {
+  const response = await api.post(`/user/${targetUserId}/follow`);
+  assert(
+    response.status >= 200 && response.status < 300,
+    `POST /user/${targetUserId}/follow failed status=${response.status} body=${JSON.stringify(response.data)}`
+  );
+}
+
 async function main() {
   console.log(`[test] API_BASE_URL=${API_BASE_URL}`);
-  console.log(`[test] targetPostId=${TARGET_POST_ID}`);
 
   const [owner, viewer] = await Promise.all([
     login(OWNER_EMAIL, OWNER_PASSWORD, OWNER_LOGIN_UUID),
@@ -197,47 +207,49 @@ async function main() {
     : "en";
 
   try {
-    await unsavePost(viewerApi, TARGET_POST_ID);
+    await ensureUnfollow(viewerApi, owner.userId);
 
     // Case 1: owner in Spanish
     await updateLanguage(ownerApi, "es");
     const beforeEs = findMaxNotificationId(await readNotifications(ownerApi, 30));
-    await savePost(viewerApi, TARGET_POST_ID);
+    await followUser(viewerApi, owner.userId);
 
-    const esNotification = await waitForLikeNotification(ownerApi, {
+    const esNotification = await waitForNotificationByType(ownerApi, {
       afterId: beforeEs,
       interactorId: viewer.userId,
+      type: "follow",
     });
-    assert(esNotification, "No new Spanish like notification found");
+    assert(esNotification, "No new Spanish follow notification found");
 
     const esMessage = String(esNotification?.message || "");
     assert(
-      esMessage.includes("Ha guardado tu publicacion."),
+      esMessage.includes("comenzo a seguirte"),
       `Expected Spanish message, received: ${JSON.stringify(esMessage)}`
     );
     console.log(`[pass] locale=es notification message=${JSON.stringify(esMessage)}`);
 
-    await unsavePost(viewerApi, TARGET_POST_ID);
+    await ensureUnfollow(viewerApi, owner.userId);
 
     // Case 2: owner in English
     await updateLanguage(ownerApi, "en");
     const beforeEn = findMaxNotificationId(await readNotifications(ownerApi, 30));
-    await savePost(viewerApi, TARGET_POST_ID);
+    await followUser(viewerApi, owner.userId);
 
-    const enNotification = await waitForLikeNotification(ownerApi, {
+    const enNotification = await waitForNotificationByType(ownerApi, {
       afterId: beforeEn,
       interactorId: viewer.userId,
+      type: "follow",
     });
-    assert(enNotification, "No new English like notification found");
+    assert(enNotification, "No new English follow notification found");
 
     const enMessage = String(enNotification?.message || "");
     assert(
-      enMessage.includes("Has saved your post."),
+      enMessage.includes("started following you"),
       `Expected English message, received: ${JSON.stringify(enMessage)}`
     );
     console.log(`[pass] locale=en notification message=${JSON.stringify(enMessage)}`);
 
-    await unsavePost(viewerApi, TARGET_POST_ID);
+    await ensureUnfollow(viewerApi, owner.userId);
     console.log("[ok] notification locale routing checks passed");
   } finally {
     try {
@@ -248,11 +260,7 @@ async function main() {
       );
     }
 
-    try {
-      await unsavePost(viewerApi, TARGET_POST_ID);
-    } catch (_) {
-      // ignore cleanup failure
-    }
+    await ensureUnfollow(viewerApi, owner.userId).catch(() => {});
   }
 }
 
