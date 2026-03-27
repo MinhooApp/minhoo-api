@@ -56,8 +56,14 @@ const VIEWER_LOGIN_UUID = String(
 
 const EXTRA_RETRIES = argv.has("--ci") ? 1 : 0;
 const BAIL = argv.has("--bail");
+const TEST_FILTER = new Set(
+  String(process.env.SUITE_TESTS || "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+);
 
-const tests = [
+const testsAll = [
   { script: "test:profile:follow-realtime", retries: 0 },
   { script: "test:profile:follow-summary", retries: 0 },
   { script: "test:bootstrap:home", retries: 0 },
@@ -76,6 +82,10 @@ const tests = [
   { script: "test:notification:locale", retries: 0 },
   { script: "test:orbit:find:no-consecutive-creator", retries: 0 },
 ];
+const tests =
+  TEST_FILTER.size > 0
+    ? testsAll.filter((entry) => TEST_FILTER.has(entry.script))
+    : testsAll;
 
 function log(message) {
   console.log(`[suite] ${message}`);
@@ -115,32 +125,67 @@ function looksLikeJwt(token) {
   return parts.length === 3 && parts.every((part) => part.length > 0);
 }
 
-async function login(email, password, uuid) {
-  assert(email, "Missing email for suite login");
-  assert(password, `Missing password for ${email}`);
+function parsePasswordCandidates(primaryPassword, fallbackRaw) {
+  const candidates = [
+    String(primaryPassword ?? "").trim(),
+    ...String(fallbackRaw ?? "")
+      .split(",")
+      .map((value) => String(value ?? "").trim())
+      .filter(Boolean),
+  ].filter(Boolean);
 
-  const body = { email, password };
-  if (String(uuid || "").trim().length >= 20) {
-    body.uuid = String(uuid).trim();
+  return Array.from(new Set(candidates));
+}
+
+function isInvalidPasswordResponse(response) {
+  const status = Number(response?.status ?? 0);
+  if (status !== 409 && status !== 401) return false;
+
+  const messages = response?.data?.header?.messages;
+  const text = Array.isArray(messages) ? messages.join(" ") : String(messages ?? "");
+  return /password|not valid|invalid/i.test(text);
+}
+
+async function login(email, passwordCandidates, uuid) {
+  assert(email, "Missing email for suite login");
+  const candidates = Array.isArray(passwordCandidates)
+    ? passwordCandidates.map((value) => String(value ?? "").trim()).filter(Boolean)
+    : [String(passwordCandidates ?? "").trim()].filter(Boolean);
+  assert(candidates.length > 0, `Missing password for ${email}`);
+
+  let lastResponse = null;
+  for (let index = 0; index < candidates.length; index += 1) {
+    const password = candidates[index];
+    const body = { email, password };
+    if (String(uuid || "").trim().length >= 20) {
+      body.uuid = String(uuid).trim();
+    }
+
+    const response = await axios.post(`${API_BASE_URL}/auth/login`, body, {
+      timeout: TEST_TIMEOUT_MS,
+      validateStatus: () => true,
+      headers: { "Content-Type": "application/json" },
+    });
+    lastResponse = response;
+
+    if (response.status >= 200 && response.status < 300) {
+      const token = pickToken(response.data);
+      const userId = pickUserId(response.data);
+      assert(looksLikeJwt(token), `Invalid token for ${email}`);
+      assert(userId > 0, `Invalid user id for ${email}`);
+      return { token, userId, password };
+    }
+
+    const canRetry = index < candidates.length - 1 && isInvalidPasswordResponse(response);
+    if (!canRetry) break;
   }
 
-  const response = await axios.post(`${API_BASE_URL}/auth/login`, body, {
-    timeout: TEST_TIMEOUT_MS,
-    validateStatus: () => true,
-    headers: { "Content-Type": "application/json" },
-  });
-
   assert(
-    response.status >= 200 && response.status < 300,
-    `Login failed ${email}. status=${response.status} body=${JSON.stringify(response.data)}`
+    false,
+    `Login failed ${email}. status=${Number(lastResponse?.status ?? 0)} body=${JSON.stringify(
+      lastResponse?.data
+    )}`
   );
-
-  const token = pickToken(response.data);
-  const userId = pickUserId(response.data);
-  assert(looksLikeJwt(token), `Invalid token for ${email}`);
-  assert(userId > 0, `Invalid user id for ${email}`);
-
-  return { token, userId };
 }
 
 function runScript(script, env) {
@@ -173,9 +218,26 @@ function runScript(script, env) {
 }
 
 async function buildRuntimeEnv() {
+  const ownerPasswordCandidates = parsePasswordCandidates(
+    OWNER_PASSWORD,
+    process.env.SUITE_OWNER_PASSWORD_FALLBACKS ||
+      process.env.OWNER_PASSWORD_FALLBACKS ||
+      process.env.SUITE_LOGIN_PASSWORD_FALLBACKS ||
+      process.env.LOGIN_PASSWORD_FALLBACKS ||
+      ""
+  );
+  const viewerPasswordCandidates = parsePasswordCandidates(
+    VIEWER_PASSWORD,
+    process.env.SUITE_VIEWER_PASSWORD_FALLBACKS ||
+      process.env.VIEWER_PASSWORD_FALLBACKS ||
+      process.env.SUITE_LOGIN_PASSWORD_FALLBACKS ||
+      process.env.LOGIN_PASSWORD_FALLBACKS ||
+      "Eder2010#,Eder2013#"
+  );
+
   const [owner, viewer] = await Promise.all([
-    login(OWNER_EMAIL, OWNER_PASSWORD, OWNER_LOGIN_UUID),
-    login(VIEWER_EMAIL, VIEWER_PASSWORD, VIEWER_LOGIN_UUID),
+    login(OWNER_EMAIL, ownerPasswordCandidates, OWNER_LOGIN_UUID),
+    login(VIEWER_EMAIL, viewerPasswordCandidates, VIEWER_LOGIN_UUID),
   ]);
 
   assert(owner.userId !== viewer.userId, "Suite owner and viewer must be different users");
@@ -190,19 +252,19 @@ async function buildRuntimeEnv() {
     OWNER_TOKEN: owner.token,
     VIEWER_TOKEN: viewer.token,
     OWNER_EMAIL,
-    OWNER_PASSWORD,
+    OWNER_PASSWORD: owner.password,
     OWNER_LOGIN_UUID,
     TARGET_EMAIL: OWNER_EMAIL,
-    TARGET_PASSWORD: OWNER_PASSWORD,
+    TARGET_PASSWORD: owner.password,
     TARGET_LOGIN_UUID: OWNER_LOGIN_UUID,
     EMAIL: OWNER_EMAIL,
-    PASSWORD: OWNER_PASSWORD,
+    PASSWORD: owner.password,
     LOGIN_UUID: OWNER_LOGIN_UUID,
     VIEWER_EMAIL,
-    VIEWER_PASSWORD,
+    VIEWER_PASSWORD: viewer.password,
     VIEWER_LOGIN_UUID,
     COMMENTER_EMAIL: VIEWER_EMAIL,
-    COMMENTER_PASSWORD: VIEWER_PASSWORD,
+    COMMENTER_PASSWORD: viewer.password,
     COMMENTER_LOGIN_UUID: VIEWER_LOGIN_UUID,
   };
 }
