@@ -8,6 +8,8 @@ type ResponseMetricsSample = {
   response_time_ms: number;
   response_size_bytes: number;
   content_encoding: string;
+  bootstrap_cache?: string;
+  bootstrap_notifications_cache?: string;
 };
 
 const MAX_RECENT_SAMPLES = 500;
@@ -173,6 +175,189 @@ const evaluateRouteBudgetWarnings = (sample: ResponseMetricsSample) => {
 
 export const getRecentResponseMetricsSamples = () => recentSamples.slice();
 
+const average = (values: number[]) => {
+  if (!values.length) return 0;
+  return values.reduce((acc, value) => acc + value, 0) / values.length;
+};
+
+const statusBucket = (statusCodeRaw: any) => {
+  const statusCode = Number(statusCodeRaw);
+  if (!Number.isFinite(statusCode) || statusCode <= 0) return "unknown";
+  if (statusCode >= 500) return "5xx";
+  if (statusCode >= 400) return "4xx";
+  if (statusCode >= 300) return "3xx";
+  if (statusCode >= 200) return "2xx";
+  return "1xx";
+};
+
+export const getResponseMetricsOverview = (windowSizeRaw?: any) => {
+  const windowSize = Math.max(
+    20,
+    Math.min(MAX_RECENT_SAMPLES, Number(windowSizeRaw) || MAX_RECENT_SAMPLES)
+  );
+  const samples = recentSamples.slice(-windowSize);
+  const total = samples.length;
+
+  const status_breakdown = {
+    "1xx": 0,
+    "2xx": 0,
+    "3xx": 0,
+    "4xx": 0,
+    "5xx": 0,
+    unknown: 0,
+  };
+
+  const routeMap = new Map<
+    string,
+    {
+      method: string;
+      route: string;
+      summary: boolean;
+      count: number;
+      errors: number;
+      throttled429: number;
+      timesMs: number[];
+      sizesBytes: number[];
+    }
+  >();
+
+  const bootstrapCacheStats = {
+    hit: 0,
+    miss: 0,
+    coalesced: 0,
+    bypass: 0,
+    other: 0,
+  };
+  const bootstrapNotificationsCacheStats = {
+    hit: 0,
+    miss: 0,
+    coalesced: 0,
+    bypass: 0,
+    other: 0,
+  };
+
+  for (const sample of samples) {
+    const bucket = statusBucket(sample.status_code);
+    if ((status_breakdown as any)[bucket] === undefined) {
+      (status_breakdown as any)[bucket] = 0;
+    }
+    (status_breakdown as any)[bucket] += 1;
+
+    const key = `${sample.method}:${sample.route}:${sample.summary ? "summary" : "full"}`;
+    const routeEntry =
+      routeMap.get(key) ??
+      {
+        method: sample.method,
+        route: sample.route,
+        summary: sample.summary,
+        count: 0,
+        errors: 0,
+        throttled429: 0,
+        timesMs: [],
+        sizesBytes: [],
+      };
+
+    routeEntry.count += 1;
+    if (sample.status_code >= 500) routeEntry.errors += 1;
+    if (sample.status_code === 429) routeEntry.throttled429 += 1;
+    routeEntry.timesMs.push(sample.response_time_ms);
+    routeEntry.sizesBytes.push(sample.response_size_bytes);
+    routeMap.set(key, routeEntry);
+
+    if (sample.route === "/api/v1/bootstrap/home") {
+      const cacheValue = String(sample.bootstrap_cache ?? "").trim().toLowerCase();
+      if (cacheValue === "hit") bootstrapCacheStats.hit += 1;
+      else if (cacheValue === "miss") bootstrapCacheStats.miss += 1;
+      else if (cacheValue === "coalesced") bootstrapCacheStats.coalesced += 1;
+      else if (cacheValue === "bypass") bootstrapCacheStats.bypass += 1;
+      else bootstrapCacheStats.other += 1;
+
+      const notificationsCacheValue = String(sample.bootstrap_notifications_cache ?? "")
+        .trim()
+        .toLowerCase();
+      if (notificationsCacheValue === "hit") bootstrapNotificationsCacheStats.hit += 1;
+      else if (notificationsCacheValue === "miss") bootstrapNotificationsCacheStats.miss += 1;
+      else if (notificationsCacheValue === "coalesced")
+        bootstrapNotificationsCacheStats.coalesced += 1;
+      else if (notificationsCacheValue === "bypass")
+        bootstrapNotificationsCacheStats.bypass += 1;
+      else bootstrapNotificationsCacheStats.other += 1;
+    }
+  }
+
+  const hotspots = Array.from(routeMap.values())
+    .map((entry) => {
+      const p50Ms = percentile(entry.timesMs, 50);
+      const p95Ms = percentile(entry.timesMs, 95);
+      const p99Ms = percentile(entry.timesMs, 99);
+      const p95Bytes = percentile(entry.sizesBytes, 95);
+      const avgMs = average(entry.timesMs);
+      const errorRate = entry.count ? (entry.errors / entry.count) * 100 : 0;
+      const throttled429Rate = entry.count ? (entry.throttled429 / entry.count) * 100 : 0;
+      return {
+        method: entry.method,
+        route: entry.route,
+        summary: entry.summary,
+        count: entry.count,
+        p50_ms: round2(p50Ms),
+        p95_ms: round2(p95Ms),
+        p99_ms: round2(p99Ms),
+        avg_ms: round2(avgMs),
+        p95_bytes: Math.round(p95Bytes),
+        error_rate_percent: round2(errorRate),
+        throttled_429_rate_percent: round2(throttled429Rate),
+      };
+    })
+    .sort((a, b) => {
+      if (b.p95_ms !== a.p95_ms) return b.p95_ms - a.p95_ms;
+      return b.count - a.count;
+    });
+
+  const globalTimes = samples.map((sample) => sample.response_time_ms);
+  const totalErrors = status_breakdown["5xx"];
+  const total429 = samples.filter((sample) => sample.status_code === 429).length;
+  const totalBootstrapCache =
+    bootstrapCacheStats.hit +
+    bootstrapCacheStats.miss +
+    bootstrapCacheStats.coalesced +
+    bootstrapCacheStats.bypass +
+    bootstrapCacheStats.other;
+  const totalBootstrapNotificationsCache =
+    bootstrapNotificationsCacheStats.hit +
+    bootstrapNotificationsCacheStats.miss +
+    bootstrapNotificationsCacheStats.coalesced +
+    bootstrapNotificationsCacheStats.bypass +
+    bootstrapNotificationsCacheStats.other;
+
+  return {
+    window_size: windowSize,
+    generated_at: new Date().toISOString(),
+    totals: {
+      requests: total,
+      status_breakdown,
+      error_rate_percent: total > 0 ? round2((totalErrors / total) * 100) : 0,
+      throttled_429_rate_percent: total > 0 ? round2((total429 / total) * 100) : 0,
+      p50_ms: round2(percentile(globalTimes, 50)),
+      p95_ms: round2(percentile(globalTimes, 95)),
+      p99_ms: round2(percentile(globalTimes, 99)),
+      avg_ms: round2(average(globalTimes)),
+    },
+    bootstrap_cache: {
+      ...bootstrapCacheStats,
+      hit_rate_percent:
+        totalBootstrapCache > 0 ? round2((bootstrapCacheStats.hit / totalBootstrapCache) * 100) : 0,
+    },
+    bootstrap_notifications_cache: {
+      ...bootstrapNotificationsCacheStats,
+      hit_rate_percent:
+        totalBootstrapNotificationsCache > 0
+          ? round2((bootstrapNotificationsCacheStats.hit / totalBootstrapNotificationsCache) * 100)
+          : 0,
+    },
+    hotspots: hotspots.slice(0, 20),
+  };
+};
+
 export const responseMetricsMiddleware = (
   req: Request,
   res: Response,
@@ -218,6 +403,10 @@ export const responseMetricsMiddleware = (
       response_time_ms: round2(nowMs() - startedAt),
       response_size_bytes: finalSizeBytes,
       content_encoding: String(res.getHeader("content-encoding") ?? "identity"),
+      bootstrap_cache: String(res.getHeader("x-bootstrap-cache") ?? ""),
+      bootstrap_notifications_cache: String(
+        res.getHeader("x-bootstrap-notifications-cache") ?? ""
+      ),
     };
     const routeKey = `${sample.method}:${sample.route}`;
 

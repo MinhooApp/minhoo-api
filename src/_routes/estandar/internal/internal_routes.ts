@@ -3,6 +3,7 @@ import { InternalDebugGuard } from "../../../libs/middlewares/internal_debug_gua
 import { createRequestRateLimiter } from "../../../libs/middlewares/request_rate_limiter";
 import {
   debugSummaryRoutes,
+  observabilityOverview,
   perfCheck,
 } from "../../../useCases/internal/_controller/controller";
 
@@ -28,5 +29,6 @@ router.use(InternalDebugGuard());
 router.use(internalLimiter);
 router.get("/perf-check", perfCheck);
 router.get("/debug/summary-routes", debugSummaryRoutes);
+router.get("/observability/overview", observabilityOverview);
 
 export default router;

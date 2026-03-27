@@ -1,4 +1,6 @@
 import { axios, Request, Response, formatResponse } from "../_module/module";
+import { getResponseMetricsOverview } from "../../../_server/middleware/response_metrics";
+import { getFindSessionStoreInfo } from "../../../libs/cache/find_session_store";
 
 const nowMs = () => Number(process.hrtime.bigint()) / 1_000_000;
 const round2 = (value: number) => Math.round(value * 100) / 100;
@@ -23,6 +25,11 @@ const toByteLength = (value: any): number => {
   if (typeof value === "string") return Buffer.byteLength(value);
   if (value == null) return 0;
   return Buffer.byteLength(JSON.stringify(value));
+};
+const normalizeWindowSize = (value: any, fallback = 300, max = 500) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(max, Math.max(20, Math.floor(parsed)));
 };
 const getInternalBaseUrl = (req: Request) => {
   const localPort = Number((req.socket as any)?.localPort);
@@ -189,6 +196,37 @@ export const perfCheck = async (req: Request, res: Response) => {
         meta: {
           base_url: baseUrl,
           chat_requires_auth: !authHeader,
+        },
+      },
+    });
+  } catch (error) {
+    console.log(error);
+    return formatResponse({ res, success: false, message: error });
+  }
+};
+
+export const observabilityOverview = async (req: Request, res: Response) => {
+  try {
+    const windowSize = normalizeWindowSize((req.query as any)?.window, 300, 500);
+    const metrics = getResponseMetricsOverview(windowSize);
+    const memoryUsage = process.memoryUsage();
+
+    return formatResponse({
+      res,
+      success: true,
+      body: {
+        observability: {
+          generated_at: new Date().toISOString(),
+          response_metrics: metrics,
+          cache_store: getFindSessionStoreInfo(),
+          process: {
+            pid: process.pid,
+            uptime_seconds: round2(process.uptime()),
+            rss_mb: round2(memoryUsage.rss / (1024 * 1024)),
+            heap_used_mb: round2(memoryUsage.heapUsed / (1024 * 1024)),
+            heap_total_mb: round2(memoryUsage.heapTotal / (1024 * 1024)),
+            external_mb: round2(memoryUsage.external / (1024 * 1024)),
+          },
         },
       },
     });

@@ -1,3 +1,3 @@
-import { debugSummaryRoutes, perfCheck } from "../get/get";
+import { debugSummaryRoutes, observabilityOverview, perfCheck } from "../get/get";
 
-export { perfCheck, debugSummaryRoutes };
+export { perfCheck, debugSummaryRoutes, observabilityOverview };
