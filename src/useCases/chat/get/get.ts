@@ -84,6 +84,180 @@ const applyRelativeToLegacyChats = (rows: any[], locale: AppLocale) => {
   return rows;
 };
 
+const CHAT_LOCALE_CACHE_TTL_MS = Math.max(
+  10_000,
+  Number(process.env.CHAT_LOCALE_CACHE_TTL_MS ?? 300_000) || 300_000
+);
+const CHAT_SUMMARY_CACHE_ENABLED =
+  String(process.env.CHAT_SUMMARY_CACHE_ENABLED ?? "1")
+    .trim()
+    .toLowerCase() !== "0";
+const CHAT_SUMMARY_CACHE_TTL_MS = Math.max(
+  1_000,
+  Number(process.env.CHAT_SUMMARY_CACHE_TTL_MS ?? 8_000) || 8_000
+);
+const CHAT_SUMMARY_CACHE_MAX_ENTRIES = Math.max(
+  100,
+  Number(process.env.CHAT_SUMMARY_CACHE_MAX_ENTRIES ?? 3_000) || 3_000
+);
+
+type LocaleCacheEntry = {
+  expiresAtMs: number;
+  value: {
+    language: string | null;
+    language_codes: string[];
+    language_names: string[];
+  };
+};
+
+type ChatSummaryCacheValue = {
+  body: any;
+  etag: string;
+};
+
+type ChatSummaryCacheEntry = {
+  expiresAtMs: number;
+  value: ChatSummaryCacheValue;
+};
+
+const localeByUserIdCache = new Map<number, LocaleCacheEntry>();
+const chatSummaryCache = new Map<string, ChatSummaryCacheEntry>();
+const chatSummaryInFlight = new Map<string, Promise<ChatSummaryCacheValue>>();
+
+const cloneCacheValue = <T>(value: T): T => {
+  if (value == null) return value;
+  return JSON.parse(JSON.stringify(value));
+};
+
+const readLocaleCache = (userIdRaw: any) => {
+  const userId = Number(userIdRaw);
+  if (!Number.isFinite(userId) || userId <= 0) return null;
+  const key = Math.trunc(userId);
+  const entry = localeByUserIdCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAtMs <= Date.now()) {
+    localeByUserIdCache.delete(key);
+    return null;
+  }
+  return entry.value;
+};
+
+const writeLocaleCache = (
+  userIdRaw: any,
+  value: { language: string | null; language_codes: string[]; language_names: string[] }
+) => {
+  const userId = Number(userIdRaw);
+  if (!Number.isFinite(userId) || userId <= 0) return;
+  const key = Math.trunc(userId);
+  localeByUserIdCache.set(key, {
+    expiresAtMs: Date.now() + CHAT_LOCALE_CACHE_TTL_MS,
+    value: {
+      language: value.language ?? null,
+      language_codes: Array.isArray(value.language_codes) ? [...value.language_codes] : [],
+      language_names: Array.isArray(value.language_names) ? [...value.language_names] : [],
+    },
+  });
+};
+
+const pruneChatSummaryCache = () => {
+  const now = Date.now();
+  for (const [key, entry] of chatSummaryCache.entries()) {
+    if (entry.expiresAtMs <= now) {
+      chatSummaryCache.delete(key);
+    }
+  }
+
+  while (chatSummaryCache.size > CHAT_SUMMARY_CACHE_MAX_ENTRIES) {
+    const firstKey = chatSummaryCache.keys().next().value;
+    if (!firstKey) break;
+    chatSummaryCache.delete(firstKey);
+  }
+};
+
+const readChatSummaryCache = (key: string): ChatSummaryCacheValue | null => {
+  if (!CHAT_SUMMARY_CACHE_ENABLED || !key) return null;
+  pruneChatSummaryCache();
+  const entry = chatSummaryCache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAtMs <= Date.now()) {
+    chatSummaryCache.delete(key);
+    return null;
+  }
+
+  return {
+    etag: String(entry.value.etag ?? ""),
+    body: cloneCacheValue(entry.value.body),
+  };
+};
+
+const writeChatSummaryCache = (key: string, value: ChatSummaryCacheValue) => {
+  if (!CHAT_SUMMARY_CACHE_ENABLED || !key || !value) return;
+  pruneChatSummaryCache();
+  chatSummaryCache.set(key, {
+    expiresAtMs: Date.now() + CHAT_SUMMARY_CACHE_TTL_MS,
+    value: {
+      etag: String(value.etag ?? ""),
+      body: cloneCacheValue(value.body),
+    },
+  });
+};
+
+const withSummarySingleFlight = async (
+  key: string,
+  task: () => Promise<ChatSummaryCacheValue>
+): Promise<{ value: ChatSummaryCacheValue; shared: boolean }> => {
+  if (!CHAT_SUMMARY_CACHE_ENABLED || !key) {
+    return { value: await task(), shared: false };
+  }
+
+  const current = chatSummaryInFlight.get(key);
+  if (current) {
+    return { value: await current, shared: true };
+  }
+
+  const promise = (async () => task())();
+  chatSummaryInFlight.set(key, promise);
+  try {
+    return { value: await promise, shared: false };
+  } finally {
+    if (chatSummaryInFlight.get(key) === promise) {
+      chatSummaryInFlight.delete(key);
+    }
+  }
+};
+
+const buildChatSummaryCacheKey = (params: {
+  userId: number;
+  locale: AppLocale;
+  limit: number | null;
+  cursor: string | null;
+}) => {
+  const normalizedUserId = Number.isFinite(Number(params.userId))
+    ? Math.trunc(Number(params.userId))
+    : 0;
+  const limitPart = Number.isFinite(Number(params.limit)) ? Math.trunc(Number(params.limit)) : 0;
+  const cursorPart = String(params.cursor ?? "").trim() || "-";
+  return `chat:summary:u:${normalizedUserId}:l:${params.locale}:n:${limitPart}:c:${cursorPart}`;
+};
+
+export const invalidateChatSummaryCacheByUser = (userIdRaw: any) => {
+  const userId = Number(userIdRaw);
+  if (!Number.isFinite(userId) || userId <= 0) return;
+  const safeUserId = Math.trunc(userId);
+  const prefix = `chat:summary:u:${safeUserId}:`;
+
+  for (const key of chatSummaryCache.keys()) {
+    if (key.startsWith(prefix)) {
+      chatSummaryCache.delete(key);
+    }
+  }
+  for (const key of chatSummaryInFlight.keys()) {
+    if (key.startsWith(prefix)) {
+      chatSummaryInFlight.delete(key);
+    }
+  }
+};
+
 const resolveRequestLocale = async (req: Request): Promise<AppLocale> => {
   const preferredLanguage =
     (req.query as any)?.language ??
@@ -94,6 +268,13 @@ const resolveRequestLocale = async (req: Request): Promise<AppLocale> => {
   const acceptLanguage = req.header("accept-language");
   const userId = Number((req as any)?.userId ?? 0);
 
+  if (String(preferredLanguage ?? "").trim()) {
+    return resolveLocale({
+      preferredLanguage,
+      acceptLanguage,
+    });
+  }
+
   if (!Number.isFinite(userId) || userId <= 0) {
     return resolveLocale({
       preferredLanguage,
@@ -102,13 +283,26 @@ const resolveRequestLocale = async (req: Request): Promise<AppLocale> => {
   }
 
   try {
-    const pushSettings = await userRepository.getPushSettings(userId);
+    const cached = readLocaleCache(userId);
+    if (cached) {
+      return resolveLocale({
+        preferredLanguage,
+        acceptLanguage,
+        storedLanguage: cached.language,
+        storedLanguageCodes: cached.language_codes,
+        storedLanguageNames: cached.language_names,
+      });
+    }
+
+    const localeSettings = await userRepository.getUserLocaleSettings(userId);
+    writeLocaleCache(userId, localeSettings);
+
     return resolveLocale({
       preferredLanguage,
       acceptLanguage,
-      storedLanguage: pushSettings?.language,
-      storedLanguageCodes: pushSettings?.language_codes,
-      storedLanguageNames: pushSettings?.language_names,
+      storedLanguage: localeSettings?.language,
+      storedLanguageCodes: localeSettings?.language_codes,
+      storedLanguageNames: localeSettings?.language_names,
     });
   } catch {
     return resolveLocale({
@@ -203,10 +397,80 @@ export const myChats = async (req: Request, res: Response) => {
     const locale = await resolveRequestLocale(req);
     const limit = parseChatListLimit((req.query as any)?.limit);
     const cursor = decodeChatListCursor((req.query as any)?.cursor);
+    const cacheCursor = encodeChatListCursor(cursor);
+    const summaryCacheKey =
+      summary && CHAT_SUMMARY_CACHE_ENABLED
+        ? buildChatSummaryCacheKey({
+            userId: Number((req as any)?.userId ?? 0),
+            locale,
+            limit,
+            cursor: cacheCursor,
+          })
+        : "";
 
-    const response = summary
-      ? await repository.getUserChatsSummary(req.userId, req.userId, { limit, cursor })
-      : await repository.getUserChats(req.userId, req.userId, { limit, cursor });
+    if (summaryCacheKey) {
+      const cached = readChatSummaryCache(summaryCacheKey);
+      if (cached) {
+        res.set("X-Chat-Summary-Cache", "hit");
+        res.set("ETag", cached.etag);
+        if (isEtagFresh(req, cached.etag)) {
+          res.status(304).end();
+          return;
+        }
+        return formatResponse({
+          res,
+          success: true,
+          body: cached.body,
+        });
+      }
+    }
+
+    if (summary && summaryCacheKey) {
+      const { value, shared } = await withSummarySingleFlight(summaryCacheKey, async () => {
+        const response = await repository.getUserChatsSummary(req.userId, req.userId, {
+          limit,
+          cursor,
+        });
+        const chats = Array.isArray((response as any)?.chats) ? (response as any).chats : [];
+        const nextCursor = encodeChatListCursor((response as any)?.paging?.nextCursor ?? null);
+        const body: any = {
+          chatsByUser: (chats ?? []).map((chat: any) => toChatSummary(chat, locale)),
+        };
+        if ((response as any)?.paging?.limit != null || nextCursor) {
+          body.paging = {
+            limit: (response as any)?.paging?.limit ?? null,
+            next_cursor: nextCursor,
+            nextCursor,
+          };
+        }
+        return {
+          body,
+          etag: buildWeakEtag(body),
+        };
+      });
+
+      writeChatSummaryCache(summaryCacheKey, value);
+      console.log(
+        `[perf][myChats] userId=${req.userId} chats=${
+          Array.isArray((value as any)?.body?.chatsByUser)
+            ? (value as any).body.chatsByUser.length
+            : 0
+        } totalMs=${Date.now() - startedAt}`
+      );
+      res.set("X-Chat-Summary-Cache", shared ? "coalesced" : "miss");
+      res.set("ETag", value.etag);
+      if (isEtagFresh(req, value.etag)) {
+        res.status(304).end();
+        return;
+      }
+      return formatResponse({
+        res,
+        success: true,
+        body: value.body,
+      });
+    }
+
+    const response = await repository.getUserChats(req.userId, req.userId, { limit, cursor });
     const chats = Array.isArray((response as any)?.chats) ? (response as any).chats : [];
     console.log(
       `[perf][myChats] userId=${req.userId} chats=${Array.isArray(chats) ? chats.length : 0} totalMs=${Date.now() - startedAt}`
@@ -214,9 +478,7 @@ export const myChats = async (req: Request, res: Response) => {
 
     const nextCursor = encodeChatListCursor((response as any)?.paging?.nextCursor ?? null);
     const body: any = {
-      chatsByUser: summary
-        ? (chats ?? []).map((chat: any) => toChatSummary(chat, locale))
-        : applyRelativeToLegacyChats(chats ?? [], locale),
+      chatsByUser: applyRelativeToLegacyChats(chats ?? [], locale),
     };
     if ((response as any)?.paging?.limit != null || nextCursor) {
       body.paging = {
@@ -386,8 +648,10 @@ export const messages = async (req: Request, res: Response) => {
 
       if (Number.isFinite(otherUserId) && otherUserId > 0) {
         emitChatsRefreshRealtime(otherUserId);
+        invalidateChatSummaryCacheByUser(otherUserId);
       }
       emitChatsRefreshRealtime(req.userId);
+      invalidateChatSummaryCacheByUser(req.userId);
     }
 
     const nextBeforeMessageId = resolveNextBeforeMessageId(messageRows as any[], limit);

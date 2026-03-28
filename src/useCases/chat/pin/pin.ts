@@ -1,4 +1,5 @@
 import { Request, Response, formatResponse, repository } from "../_module/module";
+import { invalidateChatSummaryCacheByUser } from "../get/get";
 
 const toBool = (v: any): boolean | null => {
   if (typeof v === "boolean") return v;
@@ -64,6 +65,7 @@ const updateChatStarState = async (
       pinnedAt: row.pinnedAt,
       source,
     });
+    invalidateChatSummaryCacheByUser(req.userId);
     return formatResponse({
       res,
       success: true,

@@ -10,6 +10,7 @@ const EMAIL = String(process.env.BENCH_EMAIL || "info@minhoo.app").trim();
 const PASSWORD = String(process.env.BENCH_PASSWORD || "Eder2010#").trim();
 const LOGIN_UUID = String(process.env.BENCH_LOGIN_UUID || "").trim();
 const DURATION_SEC = Math.max(8, Number(process.env.BENCH_DURATION_SEC || 15));
+const TOKEN_POOL_SIZE = Math.max(1, Math.min(100, Number(process.env.BENCH_TOKEN_POOL_SIZE || 1)));
 const CONCURRENCY_LEVELS = String(process.env.BENCH_CONCURRENCY || "10,25,50")
   .split(",")
   .map((v) => Number(v.trim()))
@@ -76,7 +77,7 @@ function makeWorkerIp(workerId, iteration) {
   return `${a}.${b}.${c}.${d}`;
 }
 
-async function login() {
+async function loginOnce() {
   const baseHeaders = {};
   if (HOST_HEADER) baseHeaders.Host = HOST_HEADER;
   const client = axios.create({
@@ -102,7 +103,20 @@ async function login() {
   return token;
 }
 
-async function runScenario({ scenario, concurrency, durationSec, authToken }) {
+async function loginTokenPool() {
+  const tokens = [];
+  for (let i = 0; i < TOKEN_POOL_SIZE; i += 1) {
+    const token = await loginOnce();
+    if (token) tokens.push(token);
+  }
+  const unique = Array.from(new Set(tokens.filter(Boolean)));
+  if (!unique.length) {
+    throw new Error("unable to create auth token pool");
+  }
+  return unique;
+}
+
+async function runScenario({ scenario, concurrency, durationSec, authTokens }) {
   const endAt = Date.now() + durationSec * 1000;
   const started = nowMs();
 
@@ -130,7 +144,10 @@ async function runScenario({ scenario, concurrency, durationSec, authToken }) {
         "x-forwarded-for": makeWorkerIp(workerId, i),
       };
       if (HOST_HEADER) headers.Host = HOST_HEADER;
-      if (scenario.auth && authToken) headers.Authorization = `Bearer ${authToken}`;
+      if (scenario.auth && Array.isArray(authTokens) && authTokens.length > 0) {
+        const token = authTokens[(workerId + i) % authTokens.length];
+        if (token) headers.Authorization = `Bearer ${token}`;
+      }
 
       const t0 = nowMs();
       let status = 0;
@@ -184,10 +201,34 @@ async function runScenario({ scenario, concurrency, durationSec, authToken }) {
 }
 
 (async () => {
-  console.log(JSON.stringify({ phase: "config", API_BASE_URL, DURATION_SEC, CONCURRENCY_LEVELS, scenarios: scenarios.map(s => s.name) }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        phase: "config",
+        API_BASE_URL,
+        DURATION_SEC,
+        TOKEN_POOL_SIZE,
+        CONCURRENCY_LEVELS,
+        scenarios: scenarios.map((s) => s.name),
+      },
+      null,
+      2
+    )
+  );
 
-  const token = await login();
-  console.log(JSON.stringify({ phase: "auth", login: "ok", token_len: token.length }, null, 2));
+  const authTokens = await loginTokenPool();
+  console.log(
+    JSON.stringify(
+      {
+        phase: "auth",
+        login: "ok",
+        token_pool_size_requested: TOKEN_POOL_SIZE,
+        token_pool_size_actual: authTokens.length,
+      },
+      null,
+      2
+    )
+  );
 
   const all = [];
   for (const scenario of scenarios) {
@@ -196,7 +237,7 @@ async function runScenario({ scenario, concurrency, durationSec, authToken }) {
         scenario,
         concurrency: c,
         durationSec: DURATION_SEC,
-        authToken: token,
+        authTokens,
       });
       all.push(result);
       console.log(JSON.stringify({ phase: "result", ...result }));

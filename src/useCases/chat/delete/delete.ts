@@ -9,6 +9,7 @@ import {
     emitChatStatusRealtime,
     emitChatsRefreshRealtime,
 } from '../../../libs/helper/realtime_dispatch';
+import { invalidateChatSummaryCacheByUser } from "../get/get";
 
 const toPositiveInt = (value: any): number | null => {
     const parsed = Number(value);
@@ -22,6 +23,7 @@ export const deleteChat = async (req: Request, res: Response) => {
     const { id } = req.params
     try {
         await repository.deleteChat(id, req.userId)
+        invalidateChatSummaryCacheByUser(req.userId);
         return formatResponse({ res: res, success: true, body: true });
     } catch (error) {
         console.log(error);
@@ -123,6 +125,7 @@ export const deleteMessage = async (req: Request, res: Response) => {
         );
         for (const uid of participantUserIds) {
             emitChatsRefreshRealtime(uid);
+            invalidateChatSummaryCacheByUser(uid);
         }
 
         return formatResponse({

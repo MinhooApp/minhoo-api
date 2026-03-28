@@ -1074,6 +1074,13 @@ const buildNextChatListCursor = (row: any): ChatListCursorPayload | null => {
   };
 };
 
+const normalizeSafeSqlColumn = (value: any): string | null => {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(normalized)) return null;
+  return normalized;
+};
+
 const getLatestMessagesByChatIds = async ({
   chatIds,
   currentUserId,
@@ -1093,35 +1100,41 @@ const getLatestMessagesByChatIds = async ({
   const latestMessageByChatId = new Map<number, any>();
   if (!uniqueChatIds.length) return latestMessageByChatId;
 
-  const latestMessageIdRows = await Message.findAll({
-    where: {
-      chatId: { [Op.in]: uniqueChatIds },
-      deletedBy: { [Op.in]: [0, uid] },
-    },
-    attributes: ["chatId", [sequelize.fn("MAX", sequelize.col("id")), "latestMessageId"]],
-    group: ["chatId"],
-    raw: true,
-  });
+  const requestedColumns = Array.from(
+    new Set(["id", "chatId", ...(attributes ?? [])])
+  )
+    .map((column) => normalizeSafeSqlColumn(column))
+    .filter(Boolean) as string[];
 
-  const latestMessageIds = Array.from(
-    new Set(
-      (latestMessageIdRows as any[])
-        .map((row: any) => Number(row.latestMessageId))
-        .filter((id: number) => Number.isFinite(id) && id > 0)
-    )
-  );
+  if (!requestedColumns.includes("id")) requestedColumns.push("id");
+  if (!requestedColumns.includes("chatId")) requestedColumns.push("chatId");
 
-  if (!latestMessageIds.length) return latestMessageByChatId;
+  const selectClause = requestedColumns
+    .map((column) => `m.\`${column}\` AS \`${column}\``)
+    .join(", ");
 
-  const resolvedAttributes = Array.from(new Set(["chatId", ...(attributes ?? [])]));
-  const latestMessages = await Message.findAll({
-    where: {
-      id: { [Op.in]: latestMessageIds },
-      deletedBy: { [Op.in]: [0, uid] },
-    },
-    attributes: resolvedAttributes,
-    raw: true,
-  });
+  const latestMessages = (await sequelize.query(
+    `
+      SELECT ${selectClause}
+      FROM messages m
+      INNER JOIN (
+        SELECT chatId, MAX(id) AS latestMessageId
+        FROM messages
+        WHERE chatId IN (:chatIds)
+          AND deletedBy IN (0, :userId)
+        GROUP BY chatId
+      ) latest
+        ON latest.latestMessageId = m.id
+      WHERE m.deletedBy IN (0, :userId)
+    `,
+    {
+      replacements: {
+        chatIds: uniqueChatIds,
+        userId: uid,
+      },
+      type: QueryTypes.SELECT,
+    }
+  )) as any[];
 
   for (const row of latestMessages as any[]) {
     const chatId = Number((row as any)?.chatId);
@@ -1151,34 +1164,20 @@ export const getUserChats = async (
   const me = Number(meId);
   const uid = Number(currentUserId);
   const groupChatIds = await getActiveGroupChatIds();
+  const blockedUserIds =
+    Number.isFinite(me) && me > 0 ? await getBlockedUserIdsForUser(me) : [];
   const parsedLimit = Number(opts?.limit);
   const safeLimit = Number.isFinite(parsedLimit)
     ? Math.max(1, Math.min(Math.trunc(parsedLimit), CHAT_LIST_MAX_LIMIT))
     : null;
   const cursorWhere = buildChatListCursorWhere(opts?.cursor ?? null);
-
-  const useBlockFilter = Number.isFinite(me) && me > 0;
-
-  // Este where se aplica al â€œotro usuarioâ€ dentro del chat
   const userWhere: any = {
-    id: { [Op.ne]: uid },
+    id: {
+      [Op.ne]: uid,
+      ...(blockedUserIds.length ? { [Op.notIn]: blockedUserIds } : {}),
+    },
     is_deleted: false,
   };
-
-  if (useBlockFilter) {
-    userWhere[Op.and] = [
-      Sequelize.literal(`
-        NOT EXISTS (
-          SELECT 1
-          FROM user_blocks ub
-          WHERE
-            (ub.blocker_id = :me AND ub.blocked_id = \`Chat->users\`.\`id\`)
-            OR
-            (ub.blocker_id = \`Chat->users\`.\`id\` AND ub.blocked_id = :me)
-        )
-      `),
-    ];
-  }
 
   const chatUserWhere: any = { userId: uid };
   if (cursorWhere) {
@@ -1223,8 +1222,6 @@ export const getUserChats = async (
         ],
       },
     ],
-    // âœ… replacements solo si usamos filtro
-    ...(useBlockFilter ? { replacements: { me } } : {}),
     order: [
       ["pinnedAt", "DESC"],
       ["updatedAt", "DESC"],
@@ -1337,7 +1334,8 @@ export const getUserChatsSummary = async (
   const me = Number(meId);
   const uid = Number(currentUserId);
   const groupChatIds = await getActiveGroupChatIds();
-  const useBlockFilter = Number.isFinite(me) && me > 0;
+  const blockedUserIds =
+    Number.isFinite(me) && me > 0 ? await getBlockedUserIdsForUser(me) : [];
   const parsedLimit = Number(opts?.limit);
   const safeLimit = Number.isFinite(parsedLimit)
     ? Math.max(1, Math.min(Math.trunc(parsedLimit), CHAT_LIST_MAX_LIMIT))
@@ -1345,24 +1343,12 @@ export const getUserChatsSummary = async (
   const cursorWhere = buildChatListCursorWhere(opts?.cursor ?? null);
 
   const userWhere: any = {
-    id: { [Op.ne]: uid },
+    id: {
+      [Op.ne]: uid,
+      ...(blockedUserIds.length ? { [Op.notIn]: blockedUserIds } : {}),
+    },
     is_deleted: false,
   };
-
-  if (useBlockFilter) {
-    userWhere[Op.and] = [
-      Sequelize.literal(`
-        NOT EXISTS (
-          SELECT 1
-          FROM user_blocks ub
-          WHERE
-            (ub.blocker_id = :me AND ub.blocked_id = \`Chat->users\`.\`id\`)
-            OR
-            (ub.blocker_id = \`Chat->users\`.\`id\` AND ub.blocked_id = :me)
-        )
-      `),
-    ];
-  }
 
   const chatUserWhere: any = { userId: uid };
   if (cursorWhere) {
@@ -1398,7 +1384,6 @@ export const getUserChatsSummary = async (
         ],
       },
     ],
-    ...(useBlockFilter ? { replacements: { me } } : {}),
     order: [
       ["pinnedAt", "DESC"],
       ["updatedAt", "DESC"],

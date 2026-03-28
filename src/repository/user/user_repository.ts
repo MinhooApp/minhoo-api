@@ -521,6 +521,12 @@ type PushSettings = {
   language_names: string[];
 };
 
+export type UserLocaleSettings = {
+  language: string | null;
+  language_codes: string[];
+  language_names: string[];
+};
+
 const toStringArray = (value: any): string[] => {
   if (!Array.isArray(value)) return [];
   return value.map((item: any) => String(item ?? "").trim()).filter(Boolean);
@@ -573,23 +579,51 @@ export const getPushSettings = async (id: number): Promise<PushSettings> => {
   const user = await User.findOne({
     where: {
       id,
-      alert: true,
       available: true,
       disabled: false,
       is_deleted: false,
-      uuid: { [Op.and]: [{ [Op.ne]: null }, { [Op.ne]: "" }] },
     },
-    attributes: ["uuid", "language", "language_codes", "language_names"],
+    attributes: ["uuid", "alert", "language", "language_codes", "language_names"],
     raw: true,
   });
 
-  const legacyUuid = String((user as any)?.uuid ?? "").trim();
-  const sessionUuids = await getPushTokensFromActiveAuthSessions(id);
+  const alertsEnabled = Boolean((user as any)?.alert);
+  const legacyUuidRaw = String((user as any)?.uuid ?? "").trim();
+  const legacyUuid = alertsEnabled ? legacyUuidRaw : "";
+  const sessionUuids = alertsEnabled ? await getPushTokensFromActiveAuthSessions(id) : [];
   const uuids = normalizeDistinctPushTokens([legacyUuid, ...sessionUuids]);
 
   return {
     uuid: legacyUuid,
     uuids,
+    language: ((user as any)?.language ?? null) as string | null,
+    language_codes: toStringArray((user as any)?.language_codes),
+    language_names: toStringArray((user as any)?.language_names),
+  };
+};
+
+export const getUserLocaleSettings = async (id: number): Promise<UserLocaleSettings> => {
+  const userId = Number(id);
+  if (!Number.isFinite(userId) || userId <= 0) {
+    return {
+      language: null,
+      language_codes: [],
+      language_names: [],
+    };
+  }
+
+  const user = await User.findOne({
+    where: {
+      id: userId,
+      available: true,
+      disabled: false,
+      is_deleted: false,
+    },
+    attributes: ["language", "language_codes", "language_names"],
+    raw: true,
+  });
+
+  return {
     language: ((user as any)?.language ?? null) as string | null,
     language_codes: toStringArray((user as any)?.language_codes),
     language_names: toStringArray((user as any)?.language_names),

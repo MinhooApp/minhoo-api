@@ -19,6 +19,7 @@ import {
   serializeMessagesToCanonical,
 } from "../_shared/message_contract";
 import { createInMemoryRateLimiter } from "../../../libs/security/inmemory_rate_limiter";
+import { invalidateChatSummaryCacheByUser } from "../get/get";
 
 type ChatMessageType =
   | "text"
@@ -1104,6 +1105,8 @@ export const sendMessage = async (req: Request, res: Response) => {
       emitChatMessageRealtime(chatId, serializedMessage, [req.userId, receiverUserId]);
       emitChatsRefreshRealtime(receiverUserId);
       emitChatsRefreshRealtime(req.userId);
+      invalidateChatSummaryCacheByUser(req.userId);
+      invalidateChatSummaryCacheByUser(receiverUserId);
     }
 
     const senderId = req.userId;
