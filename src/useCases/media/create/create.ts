@@ -4,9 +4,11 @@ import {
   formatResponse,
   axios,
 } from "../_module/module";
-import { createHash, createHmac, randomBytes } from "crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
+const IS_PRODUCTION =
+  String(process.env.NODE_ENV ?? "").trim().toLowerCase() === "production";
 
 const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const IMAGE_MAX_RESOLUTION = 2048;
@@ -200,6 +202,14 @@ const AUDIO_UPLOAD_TTL_SECONDS = 60 * 15;
 const AUDIO_PLAY_TTL_SECONDS = 60 * 10;
 const DOCUMENT_UPLOAD_TTL_SECONDS = 60 * 15;
 const DOCUMENT_DOWNLOAD_TTL_SECONDS = 60 * 10;
+const MEDIA_ACCESS_TOKEN_QUERY_KEY = "sat";
+const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
+  30,
+  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 10 * 60) || 10 * 60
+);
+const MEDIA_ACCESS_TOKEN_ENFORCE =
+  String(process.env.MEDIA_ACCESS_TOKEN_ENFORCE ?? (IS_PRODUCTION ? "1" : "0"))
+    .trim() === "1";
 
 const getR2Bucket = () =>
   String(
@@ -407,6 +417,118 @@ const normalizeVideoStorageKey = normalizeObjectKey;
 const normalizeAudioKey = normalizeObjectKey;
 const normalizeDocumentKey = normalizeObjectKey;
 
+type SignedMediaKind =
+  | "audio"
+  | "document"
+  | "video_key"
+  | "video_uid"
+  | "image_id";
+
+const getMediaAccessSigningSecret = () =>
+  String(
+    process.env.MEDIA_ACCESS_SIGNING_SECRET ??
+      process.env.JWT_SECRET ??
+      process.env.SECRETORPRIVATEKEY ??
+      ""
+  ).trim();
+
+const hasMediaAccessSigningSecret = (): boolean => getMediaAccessSigningSecret().length > 0;
+
+const bufferFromBase64Url = (value: string): Buffer | null => {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  if (!normalized) return null;
+  const padded = normalized + "=".repeat((4 - (normalized.length % 4 || 4)) % 4);
+  try {
+    return Buffer.from(padded, "base64");
+  } catch {
+    return null;
+  }
+};
+
+const toBase64Url = (value: Buffer | string) =>
+  Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+
+const buildMediaAccessToken = (kind: SignedMediaKind, resourceKey: string): string | null => {
+  const secret = getMediaAccessSigningSecret();
+  if (!secret) return null;
+  const key = String(resourceKey ?? "").trim();
+  if (!key) return null;
+  const exp = Math.floor(Date.now() / 1000) + MEDIA_ACCESS_TOKEN_TTL_SECONDS;
+  const payload = `${kind}:${key}:${exp}`;
+  const signature = createHmac("sha256", secret).update(payload).digest();
+  return `${exp}.${toBase64Url(signature)}`;
+};
+
+const validateMediaAccessToken = (
+  tokenRaw: any,
+  kind: SignedMediaKind,
+  resourceKey: string
+): boolean => {
+  const secret = getMediaAccessSigningSecret();
+  if (!secret) return false;
+  const token = String(tokenRaw ?? "").trim();
+  const key = String(resourceKey ?? "").trim();
+  if (!token || !key) return false;
+  const [expRaw, signatureRaw] = token.split(".");
+  const exp = Number(expRaw);
+  if (!Number.isFinite(exp) || exp <= 0) return false;
+  if (Math.floor(Date.now() / 1000) > exp) return false;
+  const providedSignature = bufferFromBase64Url(signatureRaw ?? "");
+  if (!providedSignature) return false;
+  const payload = `${kind}:${key}:${exp}`;
+  const expectedSignature = createHmac("sha256", secret).update(payload).digest();
+  if (expectedSignature.length !== providedSignature.length) return false;
+  return timingSafeEqual(expectedSignature, providedSignature);
+};
+
+const appendMediaAccessToken = (
+  path: string,
+  kind: SignedMediaKind,
+  resourceKey: string
+): string => {
+  const token = buildMediaAccessToken(kind, resourceKey);
+  if (!token) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}${MEDIA_ACCESS_TOKEN_QUERY_KEY}=${encodeURIComponent(token)}`;
+};
+
+const enforceSignedMediaAccess = (
+  req: Request,
+  res: Response,
+  kind: SignedMediaKind,
+  resourceKey: string
+): boolean => {
+  if (!hasMediaAccessSigningSecret()) {
+    if (!MEDIA_ACCESS_TOKEN_ENFORCE) return true;
+    formatResponse({
+      res,
+      success: false,
+      code: 500,
+      message: "MEDIA_ACCESS_SIGNING_SECRET is not configured",
+    });
+    return false;
+  }
+  const tokenRaw = (req.query as any)?.[MEDIA_ACCESS_TOKEN_QUERY_KEY];
+  const hasToken = String(tokenRaw ?? "").trim().length > 0;
+  if (!hasToken && !MEDIA_ACCESS_TOKEN_ENFORCE) return true;
+  const valid = validateMediaAccessToken(tokenRaw, kind, resourceKey);
+  if (valid) return true;
+  formatResponse({
+    res,
+    success: false,
+    code: 403,
+    message: "invalid or expired media access token",
+  });
+  return false;
+};
+
 const pickVideoExt = (contentType: string): string => {
   const lower = contentType.toLowerCase();
   if (lower.includes("quicktime")) return ".mov";
@@ -477,19 +599,47 @@ const buildDocumentObjectKey = (userId: any, contentType: string) => {
 };
 
 const buildAudioPlaybackPath = (key: string) =>
-  `/api/v1/media/audio/play?key=${encodeURIComponent(key)}`;
+  appendMediaAccessToken(
+    `/api/v1/media/audio/play?key=${encodeURIComponent(key)}`,
+    "audio",
+    key
+  );
 const buildDocumentDownloadPath = (key: string) =>
-  `/api/v1/media/document/download?key=${encodeURIComponent(key)}`;
+  appendMediaAccessToken(
+    `/api/v1/media/document/download?key=${encodeURIComponent(key)}`,
+    "document",
+    key
+  );
 const buildImagePlaybackPath = (imageId: string) =>
-  `/api/v1/media/image/play?id=${encodeURIComponent(imageId)}`;
+  appendMediaAccessToken(
+    `/api/v1/media/image/play?id=${encodeURIComponent(imageId)}`,
+    "image_id",
+    imageId
+  );
 const buildVideoPlaybackPath = (uid: string) =>
-  `/api/v1/media/video/play?uid=${encodeURIComponent(uid)}`;
+  appendMediaAccessToken(
+    `/api/v1/media/video/play?uid=${encodeURIComponent(uid)}`,
+    "video_uid",
+    uid
+  );
 const buildVideoDownloadPath = (uid: string) =>
-  `/api/v1/media/video/download?uid=${encodeURIComponent(uid)}`;
+  appendMediaAccessToken(
+    `/api/v1/media/video/download?uid=${encodeURIComponent(uid)}`,
+    "video_uid",
+    uid
+  );
 const buildR2VideoPlaybackPath = (key: string) =>
-  `/api/v1/media/video/play?key=${encodeURIComponent(key)}`;
+  appendMediaAccessToken(
+    `/api/v1/media/video/play?key=${encodeURIComponent(key)}`,
+    "video_key",
+    key
+  );
 const buildR2VideoDownloadPath = (key: string) =>
-  `/api/v1/media/video/download?key=${encodeURIComponent(key)}`;
+  appendMediaAccessToken(
+    `/api/v1/media/video/download?key=${encodeURIComponent(key)}`,
+    "video_key",
+    key
+  );
 
 const normalizeMediaContext = (value: any): string => String(value ?? "feed").trim().toLowerCase();
 const shouldUseR2ForVideoContext = (context: string) =>
@@ -1825,6 +1975,7 @@ export const audio_playback = async (req: Request, res: Response) => {
       message: "key is required",
     });
   }
+  if (!enforceSignedMediaAccess(req, res, "audio", objectKey)) return;
 
   try {
     const getUrl = buildR2PresignedUrl({
@@ -1872,6 +2023,7 @@ export const document_download = async (req: Request, res: Response) => {
       message: "key (or uid) is required",
     });
   }
+  if (!enforceSignedMediaAccess(req, res, "document", objectKey)) return;
 
   try {
     const getUrl = buildR2PresignedUrl({
@@ -1917,6 +2069,7 @@ export const image_playback = async (req: Request, res: Response) => {
       message: "id is required",
     });
   }
+  if (!enforceSignedMediaAccess(req, res, "image_id", imageId)) return;
 
   const cachedRedirectTarget = getCachedImagePlaybackRedirect(imageId);
   if (cachedRedirectTarget) {
@@ -1973,6 +2126,7 @@ export const video_playback = async (req: Request, res: Response) => {
   const objectKey = explicitKey ?? (!uid ? normalizeVideoStorageKey(rawUid) : null);
 
   if (objectKey) {
+    if (!enforceSignedMediaAccess(req, res, "video_key", objectKey)) return;
     const config = ensureR2Config();
     if (!config.ok) {
       return formatResponse({
@@ -2029,6 +2183,7 @@ export const video_playback = async (req: Request, res: Response) => {
       message: "uid is required",
     });
   }
+  if (!enforceSignedMediaAccess(req, res, "video_uid", uid)) return;
 
   try {
     const response = await axios.get(
@@ -2077,6 +2232,7 @@ export const video_download = async (req: Request, res: Response) => {
   const objectKey = explicitKey ?? (!uid ? normalizeVideoStorageKey(rawUid) : null);
 
   if (objectKey) {
+    if (!enforceSignedMediaAccess(req, res, "video_key", objectKey)) return;
     const config = ensureR2Config();
     if (!config.ok) {
       return formatResponse({
@@ -2127,6 +2283,7 @@ export const video_download = async (req: Request, res: Response) => {
       message: "uid is required",
     });
   }
+  if (!enforceSignedMediaAccess(req, res, "video_uid", uid)) return;
 
   try {
     const info = await ensureVideoDownloadReady({

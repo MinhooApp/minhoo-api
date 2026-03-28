@@ -20,9 +20,10 @@ import {
 } from "../../../useCases/service/_controller/controller";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
 import TokenOptional from "../../../libs/middlewares/optional_jwt";
+import EnsureAdmin from "../../../libs/middlewares/ensure_admin";
 const router = Router();
 router.post("/", TokenValidation(), add);
-router.post("/send", sendTestNotification);
+router.post("/send", TokenValidation(), EnsureAdmin(), sendTestNotification);
 router.put("/:id/finalize", TokenValidation(), finalized);
 router.put("/:id", TokenValidation(), update);
 router.get("/myonGoing", TokenValidation(), myonGoing);

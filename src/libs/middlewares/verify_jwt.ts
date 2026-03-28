@@ -18,6 +18,33 @@ export interface IPayload {
   iat?: number;
 }
 
+const IS_PRODUCTION =
+  String(process.env.NODE_ENV ?? "").trim().toLowerCase() === "production";
+
+const isTruthy = (value: any): boolean => {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  );
+};
+
+const ALLOW_LEGACY_TOKEN_TRANSPORT = (() => {
+  const configured = process.env.AUTH_ALLOW_TOKEN_IN_QUERY_BODY;
+  if (configured === undefined) return !IS_PRODUCTION;
+  return isTruthy(configured);
+})();
+
+const AUTH_DB_FAIL_OPEN = (() => {
+  const configured = process.env.AUTH_DB_FAIL_OPEN;
+  if (configured === undefined) return !IS_PRODUCTION;
+  return isTruthy(configured);
+})();
+
 const getJwtSecrets = (): string[] => {
   const secrets = [
     (process.env.SECRETORPRIVATEKEY ?? "").trim(),
@@ -60,6 +87,10 @@ const extractAuthToken = (req: Request): string => {
   for (const candidate of headerCandidates) {
     const token = normalizeTokenCandidate(candidate);
     if (token) return token;
+  }
+
+  if (!ALLOW_LEGACY_TOKEN_TRANSPORT) {
+    return "";
   }
 
   const queryCandidates = [
@@ -192,8 +223,15 @@ export const TokenValidation = (
         // Campo legacy opcional; el control principal usa req.roles desde JWT verificado.
         (req as any).userRole = undefined;
       } catch (_dbErr) {
-        // DB caída / intermitente → no romper sesión
-        (req as any).authDegraded = true;
+        if (AUTH_DB_FAIL_OPEN) {
+          // Modo degradado controlado por env (solo recomendado fuera de producción)
+          (req as any).authDegraded = true;
+        } else {
+          return res.status(503).json({
+            header: { success: false, authenticated: false },
+            messages: ["Authentication backend unavailable"],
+          });
+        }
       }
 
       // 3) Filtro de roles si la ruta lo pidió

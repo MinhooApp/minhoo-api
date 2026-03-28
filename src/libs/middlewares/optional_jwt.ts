@@ -25,6 +25,77 @@ const getJwtSecrets = (): string[] => {
   return Array.from(new Set(secrets));
 };
 
+const IS_PRODUCTION =
+  String(process.env.NODE_ENV ?? "").trim().toLowerCase() === "production";
+
+const isTruthy = (value: any): boolean => {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  return (
+    normalized === "1" ||
+    normalized === "true" ||
+    normalized === "yes" ||
+    normalized === "on"
+  );
+};
+
+const ALLOW_LEGACY_TOKEN_TRANSPORT = (() => {
+  const configured = process.env.AUTH_ALLOW_TOKEN_IN_QUERY_BODY;
+  if (configured === undefined) return !IS_PRODUCTION;
+  return isTruthy(configured);
+})();
+
+const normalizeTokenCandidate = (raw: any): string => {
+  const value = String(raw ?? "").trim();
+  if (!value) return "";
+  if (value.toLowerCase().startsWith("bearer ")) {
+    return value.slice(7).trim();
+  }
+  return value;
+};
+
+const extractOptionalAuthToken = (req: Request): string => {
+  const headerCandidates = [
+    req.header("Authorization"),
+    req.header("x-auth-token"),
+    req.header("x-access-token"),
+    req.header("auth_token"),
+  ];
+  for (const candidate of headerCandidates) {
+    const token = normalizeTokenCandidate(candidate);
+    if (token) return token;
+  }
+
+  if (!ALLOW_LEGACY_TOKEN_TRANSPORT) return "";
+
+  const queryCandidates = [
+    (req.query as any)?.urlToken,
+    (req.query as any)?.auth_token,
+    (req.query as any)?.authToken,
+    (req.query as any)?.token,
+  ];
+  for (const candidate of queryCandidates) {
+    const token = normalizeTokenCandidate(candidate);
+    if (token) return token;
+  }
+
+  const body: any = (req as any)?.body ?? {};
+  const bodyCandidates = [
+    body?.auth_token,
+    body?.authToken,
+    body?.token,
+    body?.access_token,
+    body?.accessToken,
+  ];
+  for (const candidate of bodyCandidates) {
+    const token = normalizeTokenCandidate(candidate);
+    if (token) return token;
+  }
+
+  return "";
+};
+
 const verifyTokenWithKnownSecrets = (token: string): IPayload | null => {
   for (const secret of getJwtSecrets()) {
     try {
@@ -49,17 +120,8 @@ export const TokenOptional = (allowedRoles?: number[]): RequestHandler => {
   return async (req: Request, res: Response, next: NextFunction) => {
     req.authenticated = false; // por defecto anónimo
 
-    // 1) Obtener token desde Authorization o ?urlToken=
-    let token: string | undefined = req.header("Authorization");
-    const urlToken = req.query.urlToken
-      ? String(req.query.urlToken)
-      : undefined;
-
-    if (!token || !token.startsWith("Bearer ")) {
-      token = urlToken; // si viene por query
-    } else {
-      token = token.split(" ")[1];
-    }
+    // 1) Obtener token (headers por defecto; query/body solo si está habilitado)
+    const token = extractOptionalAuthToken(req);
 
     // 2) Si no hay token -> anónimo (salvo que allowedRoles obligue auth)
     if (!token) {

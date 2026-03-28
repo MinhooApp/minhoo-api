@@ -190,12 +190,11 @@ const checkDisabledBeforeLogin = async (req: any, res: any, next: any) => {
           phone: String(phone ?? "").trim() || undefined,
         },
       });
-      return res.status(403).json({
+      return res.status(401).json({
         header: { success: false },
         body: {
-          message: isDeleted
-            ? "Tu cuenta ha sido eliminada."
-            : "Tu cuenta ha sido bloqueada por el administrador.",
+          // Evita enumeración de cuentas (mismo mensaje que credenciales inválidas)
+          message: "User and/or Password not valid.",
         },
       });
     }

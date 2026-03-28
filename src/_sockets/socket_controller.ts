@@ -74,6 +74,14 @@ const ALLOW_SOCKET_USERID_FALLBACK = (() => {
     .toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 })();
+const ALLOW_SOCKET_QUERY_TOKEN = (() => {
+  const raw = String(
+    process.env.SOCKET_ALLOW_QUERY_TOKEN ?? (IS_PRODUCTION ? "0" : "1")
+  )
+    .trim()
+    .toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+})();
 const SESSION_VALIDATION_TTL_MS = 15 * 1000;
 const EMIT_REELS_EVENT_ON_REEL_DELETE =
   String(process.env.EMIT_REELS_EVENT_ON_REEL_DELETE ?? "1").trim() === "1";
@@ -1172,7 +1180,9 @@ function resolveUserIdFromHandshake(socket: Socket): number {
         headers?.["x-userid"],
     });
 
-  const token = resolveTokenFromSources(auth, query, headers);
+  const token = ALLOW_SOCKET_QUERY_TOKEN
+    ? resolveTokenFromSources(auth, query, headers)
+    : resolveTokenFromSources(auth, headers);
   const tokenUserId = resolveUserIdFromToken(token);
   if (tokenUserId > 0) {
     if (directUserId > 0 && directUserId !== tokenUserId) {
@@ -1344,7 +1354,9 @@ export const socketController = (socket: Socket) => {
   const auth: any = socket.handshake?.auth ?? {};
   const query: any = socket.handshake?.query ?? {};
   const headers: any = socket.handshake?.headers ?? {};
-  const handshakeToken = resolveTokenFromSources(auth, query, headers);
+  const handshakeToken = ALLOW_SOCKET_QUERY_TOKEN
+    ? resolveTokenFromSources(auth, query, headers)
+    : resolveTokenFromSources(auth, headers);
   const handshakeAuthToken = normalizeToken(handshakeToken);
   const handshakeTokenUserId = resolveUserIdFromToken(handshakeToken);
 
