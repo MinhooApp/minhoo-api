@@ -159,6 +159,37 @@ const enrichUserFollowCounts = async (user: any) => {
   return counts;
 };
 
+const normalizeRelationship = (relationship: any) => {
+  const isFollowing = Boolean(relationship?.isFollowing);
+  const isFollowedBy = Boolean(relationship?.isFollowedBy);
+  return {
+    isFollowing,
+    isFollowedBy,
+    isMutual: isFollowing && isFollowedBy,
+  };
+};
+
+const attachRelationshipAliasesToUser = (user: any, relationship: any) => {
+  if (!user) return;
+  const normalized = normalizeRelationship(relationship);
+  const fields = {
+    isFollowing: normalized.isFollowing,
+    is_following: normalized.isFollowing,
+    isFollowedBy: normalized.isFollowedBy,
+    is_followed_by: normalized.isFollowedBy,
+    isMutual: normalized.isMutual,
+    is_mutual: normalized.isMutual,
+  };
+
+  if (typeof (user as any).setDataValue === "function") {
+    Object.entries(fields).forEach(([key, value]) => {
+      (user as any).setDataValue(key, value);
+    });
+  } else {
+    Object.assign(user, fields);
+  }
+};
+
 export const gets = async (req: Request, res: Response) => {
   try {
     const page = Math.max(0, Number(req.query.page ?? 0) || 0);
@@ -225,6 +256,17 @@ export const get = async (req: Request, res: Response) => {
     });
     await attachSavedStateToUserPosts(req.userId, user);
     const counts = await enrichUserFollowCounts(user);
+    const viewerId = Number(req.userId);
+    const targetId = Number((user as any)?.id ?? id);
+    const relationship =
+      Number.isFinite(viewerId) &&
+      viewerId > 0 &&
+      Number.isFinite(targetId) &&
+      targetId > 0 &&
+      viewerId !== targetId
+        ? normalizeRelationship(await followerRepo.getRelationship(viewerId, targetId))
+        : normalizeRelationship(null);
+    attachRelationshipAliasesToUser(user, relationship);
     const breakdown = {
       name: !!user?.name,
       last_name: !!user?.last_name,
@@ -268,6 +310,13 @@ export const get = async (req: Request, res: Response) => {
               following_count: counts.followingCount,
             }
           : null,
+        relationship,
+        isFollowing: relationship.isFollowing,
+        isFollowedBy: relationship.isFollowedBy,
+        isMutual: relationship.isMutual,
+        is_following: relationship.isFollowing,
+        is_followed_by: relationship.isFollowedBy,
+        is_mutual: relationship.isMutual,
         profile_completion: {
           percent,
           breakdown,
@@ -401,6 +450,7 @@ export const follows = async (req: Request, res: Response) => {
       });
     }
     const targetId = targetResolution.id;
+    const targetCountsPromise = followerRepo.getCounts(targetId);
     const summary = isSummaryMode((req.query as any)?.summary);
     if (summary) {
       const cursorRaw = (req.query as any)?.cursor;
@@ -412,6 +462,7 @@ export const follows = async (req: Request, res: Response) => {
         limit,
       });
       await enrichFollowUsersWithOrbitState(items, req.userId);
+      const targetCounts = await targetCountsPromise;
       const nextCursor =
         items.length >= limit
           ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
@@ -424,14 +475,54 @@ export const follows = async (req: Request, res: Response) => {
         success: true,
         body: {
           following: items.map((entry: any) => toFollowSummary(entry)),
+          follows: items.map((entry: any) => toFollowSummary(entry)),
+          followersCount: targetCounts.followersCount,
+          followingCount: targetCounts.followingCount,
+          followingsCount: targetCounts.followingCount,
+          followers_count: targetCounts.followersCount,
+          following_count: targetCounts.followingCount,
+          followings_count: targetCounts.followingCount,
+          counts: {
+            followersCount: targetCounts.followersCount,
+            followingCount: targetCounts.followingCount,
+            followingsCount: targetCounts.followingCount,
+            followers_count: targetCounts.followersCount,
+            following_count: targetCounts.followingCount,
+            followings_count: targetCounts.followingCount,
+          },
+          nextCursor,
           paging: { next_cursor: nextCursor, limit },
         },
       });
     }
     const follows = await repository.follows(targetId, req.userId);
     await enrichFollowUsersWithOrbitState(follows, req.userId);
+    const targetCounts = await targetCountsPromise;
 
-    return formatResponse({ res: res, success: true, body: { follows } });
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        follows,
+        following: follows,
+        followersCount: targetCounts.followersCount,
+        followingCount: targetCounts.followingCount,
+        followingsCount: targetCounts.followingCount,
+        followers_count: targetCounts.followersCount,
+        following_count: targetCounts.followingCount,
+        followings_count: targetCounts.followingCount,
+        counts: {
+          followersCount: targetCounts.followersCount,
+          followingCount: targetCounts.followingCount,
+          followingsCount: targetCounts.followingCount,
+          followers_count: targetCounts.followersCount,
+          following_count: targetCounts.followingCount,
+          followings_count: targetCounts.followingCount,
+        },
+        nextCursor: null,
+        paging: { next_cursor: null, limit: null },
+      },
+    });
   } catch (error) {
     console.error("[user/follows] failed", error);
     return formatResponse({
@@ -456,6 +547,7 @@ export const followers = async (req: Request, res: Response) => {
       });
     }
     const targetId = targetResolution.id;
+    const targetCountsPromise = followerRepo.getCounts(targetId);
     const summary = isSummaryMode((req.query as any)?.summary);
     if (summary) {
       const cursorRaw = (req.query as any)?.cursor;
@@ -467,6 +559,7 @@ export const followers = async (req: Request, res: Response) => {
         limit,
       });
       await enrichFollowUsersWithOrbitState(items, req.userId);
+      const targetCounts = await targetCountsPromise;
       const nextCursor =
         items.length >= limit
           ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
@@ -479,13 +572,51 @@ export const followers = async (req: Request, res: Response) => {
         success: true,
         body: {
           followers: items.map((entry: any) => toFollowSummary(entry)),
+          followersCount: targetCounts.followersCount,
+          followingCount: targetCounts.followingCount,
+          followingsCount: targetCounts.followingCount,
+          followers_count: targetCounts.followersCount,
+          following_count: targetCounts.followingCount,
+          followings_count: targetCounts.followingCount,
+          counts: {
+            followersCount: targetCounts.followersCount,
+            followingCount: targetCounts.followingCount,
+            followingsCount: targetCounts.followingCount,
+            followers_count: targetCounts.followersCount,
+            following_count: targetCounts.followingCount,
+            followings_count: targetCounts.followingCount,
+          },
+          nextCursor,
           paging: { next_cursor: nextCursor, limit },
         },
       });
     }
     const followers = await repository.followers(targetId, req.userId);
     await enrichFollowUsersWithOrbitState(followers, req.userId);
-    return formatResponse({ res: res, success: true, body: { followers } });
+    const targetCounts = await targetCountsPromise;
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        followers,
+        followersCount: targetCounts.followersCount,
+        followingCount: targetCounts.followingCount,
+        followingsCount: targetCounts.followingCount,
+        followers_count: targetCounts.followersCount,
+        following_count: targetCounts.followingCount,
+        followings_count: targetCounts.followingCount,
+        counts: {
+          followersCount: targetCounts.followersCount,
+          followingCount: targetCounts.followingCount,
+          followingsCount: targetCounts.followingCount,
+          followers_count: targetCounts.followersCount,
+          following_count: targetCounts.followingCount,
+          followings_count: targetCounts.followingCount,
+        },
+        nextCursor: null,
+        paging: { next_cursor: null, limit: null },
+      },
+    });
   } catch (error) {
     console.error("[user/followers] failed", error);
     return formatResponse({
@@ -632,6 +763,8 @@ export const followers_v2 = async (req: Request, res: Response) => {
     const { id } = req.params;
     const cursorRaw = (req.query as any)?.cursor;
     const limitRaw = (req.query as any)?.limit;
+    const limit = limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : 20;
+    const cursor = cursorRaw ? Number(cursorRaw) : null;
     const targetId = Number(id ?? req.userId);
 
     if (!Number.isFinite(targetId)) {
@@ -642,14 +775,45 @@ export const followers_v2 = async (req: Request, res: Response) => {
         message: "id must be a valid number",
       });
     }
+    const targetCountsPromise = followerRepo.getCounts(targetId);
 
     const items = await followerRepo.listFollowersWithFlags(targetId, req.userId ?? null, {
-      cursor: cursorRaw ? Number(cursorRaw) : null,
-      limit: limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : undefined,
+      cursor,
+      limit,
     });
     await enrichFollowUsersWithOrbitState(items, req.userId);
+    const targetCounts = await targetCountsPromise;
+    const nextCursor =
+      items.length >= limit
+        ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
+        : null;
+    res.set("X-Paging-Limit", String(limit));
+    res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
+    res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
 
-    return formatResponse({ res, success: true, body: { followers: items } });
+    return formatResponse({
+      res,
+      success: true,
+      body: {
+        followers: items,
+        followersCount: targetCounts.followersCount,
+        followingCount: targetCounts.followingCount,
+        followingsCount: targetCounts.followingCount,
+        followers_count: targetCounts.followersCount,
+        following_count: targetCounts.followingCount,
+        followings_count: targetCounts.followingCount,
+        counts: {
+          followersCount: targetCounts.followersCount,
+          followingCount: targetCounts.followingCount,
+          followingsCount: targetCounts.followingCount,
+          followers_count: targetCounts.followersCount,
+          following_count: targetCounts.followingCount,
+          followings_count: targetCounts.followingCount,
+        },
+        nextCursor,
+        paging: { next_cursor: nextCursor, limit },
+      },
+    });
   } catch (error) {
     console.error("[user/followers_v2] failed", error);
     return formatResponse({
@@ -666,6 +830,8 @@ export const following_v2 = async (req: Request, res: Response) => {
     const { id } = req.params;
     const cursorRaw = (req.query as any)?.cursor;
     const limitRaw = (req.query as any)?.limit;
+    const limit = limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : 20;
+    const cursor = cursorRaw ? Number(cursorRaw) : null;
     const targetId = Number(id ?? req.userId);
 
     if (!Number.isFinite(targetId)) {
@@ -676,14 +842,46 @@ export const following_v2 = async (req: Request, res: Response) => {
         message: "id must be a valid number",
       });
     }
+    const targetCountsPromise = followerRepo.getCounts(targetId);
 
     const items = await followerRepo.listFollowingWithFlags(targetId, req.userId ?? null, {
-      cursor: cursorRaw ? Number(cursorRaw) : null,
-      limit: limitRaw ? Math.min(Math.max(Number(limitRaw) || 20, 1), 20) : undefined,
+      cursor,
+      limit,
     });
     await enrichFollowUsersWithOrbitState(items, req.userId);
+    const targetCounts = await targetCountsPromise;
+    const nextCursor =
+      items.length >= limit
+        ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
+        : null;
+    res.set("X-Paging-Limit", String(limit));
+    res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
+    res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
 
-    return formatResponse({ res: res, success: true, body: { following: items } });
+    return formatResponse({
+      res: res,
+      success: true,
+      body: {
+        following: items,
+        follows: items,
+        followersCount: targetCounts.followersCount,
+        followingCount: targetCounts.followingCount,
+        followingsCount: targetCounts.followingCount,
+        followers_count: targetCounts.followersCount,
+        following_count: targetCounts.followingCount,
+        followings_count: targetCounts.followingCount,
+        counts: {
+          followersCount: targetCounts.followersCount,
+          followingCount: targetCounts.followingCount,
+          followingsCount: targetCounts.followingCount,
+          followers_count: targetCounts.followersCount,
+          following_count: targetCounts.followingCount,
+          followings_count: targetCounts.followingCount,
+        },
+        nextCursor,
+        paging: { next_cursor: nextCursor, limit },
+      },
+    });
   } catch (error) {
     console.error("[user/following_v2] failed", error);
     return formatResponse({

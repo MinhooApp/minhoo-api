@@ -99,6 +99,7 @@ export const unblock_user = async (req: Request, res: Response) => {
 export const remove_follower = async (req: Request, res: Response) => {
   try {
     const followerId = parseFollowerId(req);
+    const ownerId = Number(req.userId);
 
     if (followerId === null) {
       return formatResponse({
@@ -134,13 +135,14 @@ export const remove_follower = async (req: Request, res: Response) => {
       });
     }
 
-    const ownerCounts = await followerRepo.getCounts(req.userId);
+    const ownerCounts = await followerRepo.getCounts(ownerId);
     const followerCounts = await followerRepo.getCounts(followerId);
-    const recipientIds = [Number(req.userId), Number(followerId)];
+    const relationship = await followerRepo.getRelationship(ownerId, followerId);
+    const recipientIds = [ownerId, Number(followerId)];
 
     await Promise.all([
       emitProfileUpdatedRealtime({
-        userId: req.userId,
+        userId: ownerId,
         counts: ownerCounts,
         targetUserIds: recipientIds,
         action: "follow_counts_updated",
@@ -158,7 +160,23 @@ export const remove_follower = async (req: Request, res: Response) => {
       success: true,
       body: {
         removed: true,
+        targetId: followerId,
+        viewerId: ownerId,
+        following: relationship.isFollowing,
+        isFollowing: relationship.isFollowing,
+        is_following: relationship.isFollowing,
+        followed_by: relationship.isFollowedBy,
+        isFollowedBy: relationship.isFollowedBy,
+        is_followed_by: relationship.isFollowedBy,
+        mutual: relationship.isMutual,
+        isMutual: relationship.isMutual,
+        is_mutual: relationship.isMutual,
         followersCount: ownerCounts.followersCount,
+        followingCount: ownerCounts.followingCount,
+        followingsCount: ownerCounts.followingCount,
+        followers_count: ownerCounts.followersCount,
+        following_count: ownerCounts.followingCount,
+        followings_count: ownerCounts.followingCount,
       },
       message: "removed",
     });
@@ -170,7 +188,14 @@ export const remove_follower = async (req: Request, res: Response) => {
 
 
 export const unfollow_by_id = async (req: Request, res: Response) => {
-  const rawId = (req.params as any)?.id;
+  const rawId =
+    (req.params as any)?.id ??
+    (req.body as any)?.userId ??
+    (req.body as any)?.id ??
+    (req.body as any)?.targetId ??
+    (req.query as any)?.userId ??
+    (req.query as any)?.id ??
+    (req.query as any)?.targetId;
   const targetId = Number(rawId);
 
   if (!Number.isFinite(targetId)) {
@@ -218,11 +243,27 @@ export const unfollow_by_id = async (req: Request, res: Response) => {
       res,
       success: true,
       body: {
+        following: relationship.isFollowing,
         isFollowing: relationship.isFollowing,
+        is_following: relationship.isFollowing,
+        followed_by: relationship.isFollowedBy,
         isFollowedBy: relationship.isFollowedBy,
+        is_followed_by: relationship.isFollowedBy,
+        mutual: relationship.isMutual,
         isMutual: relationship.isMutual,
+        is_mutual: relationship.isMutual,
+        targetId,
+        viewerId: Number(req.userId),
         followersCount: targetCounts.followersCount,
-        followingCount: viewerCounts.followingCount,
+        followingCount: targetCounts.followingCount,
+        followingsCount: targetCounts.followingCount,
+        followers_count: targetCounts.followersCount,
+        following_count: targetCounts.followingCount,
+        followings_count: targetCounts.followingCount,
+        targetFollowersCount: targetCounts.followersCount,
+        targetFollowingCount: targetCounts.followingCount,
+        viewerFollowersCount: viewerCounts.followersCount,
+        viewerFollowingCount: viewerCounts.followingCount,
       },
     });
   } catch (error) {

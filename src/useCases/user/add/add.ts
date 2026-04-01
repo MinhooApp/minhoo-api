@@ -10,7 +10,13 @@ import { emitProfileUpdatedRealtime } from "../_shared/profile_realtime";
 import { BlockUserRepository } from "../../../repository/user/block_user_repository";
 
 export const follow = async (req: Request, res: Response) => {
-  const targetId = Number((req.body as any)?.userId);
+  const viewerId = Number(req.userId);
+  const targetId = Number(
+    (req.body as any)?.userId ??
+      (req.body as any)?.id ??
+      (req.body as any)?.targetId ??
+      (req.body as any)?.followedId
+  );
 
   try {
     if (!Number.isFinite(targetId) || targetId <= 0) {
@@ -22,7 +28,7 @@ export const follow = async (req: Request, res: Response) => {
       });
     }
 
-    if (Number(req.userId) === targetId) {
+    if (viewerId === targetId) {
       return formatResponse({
         res,
         success: false,
@@ -42,7 +48,7 @@ export const follow = async (req: Request, res: Response) => {
     }
 
     const blockedEitherWay = await BlockUserRepository.isBlockedEitherWay(
-      Number(req.userId),
+      viewerId,
       targetId
     );
     if (blockedEitherWay) {
@@ -54,21 +60,21 @@ export const follow = async (req: Request, res: Response) => {
       });
     }
 
-    const response = await followerRepo.toggleFollow(targetId, req.userId);
-    const myData = await repository.get(req.userId);
-    if (response) {
+    const { created } = await followerRepo.followUser(targetId, viewerId);
+    const myData = await repository.get(viewerId);
+    if (created) {
       await sendNotification({
-        followerId: req.userId,
+        followerId: viewerId,
         userId: targetId,
-        interactorId: req.userId,
+        interactorId: viewerId,
         type: "follow",
         message: `${myData!.name} ${myData!.last_name} started following you`,
       });
     }
 
     const targetCounts = await followerRepo.getCounts(targetId);
-    const viewerCounts = await followerRepo.getCounts(Number(req.userId));
-    const recipientIds = [targetId, Number(req.userId)];
+    const viewerCounts = await followerRepo.getCounts(viewerId);
+    const recipientIds = [targetId, viewerId];
 
     await Promise.all([
       emitProfileUpdatedRealtime({
@@ -78,17 +84,42 @@ export const follow = async (req: Request, res: Response) => {
         action: "follow_counts_updated",
       }),
       emitProfileUpdatedRealtime({
-        userId: req.userId,
+        userId: viewerId,
         counts: viewerCounts,
         targetUserIds: recipientIds,
         action: "follow_counts_updated",
       }),
     ]);
 
+    const relationship = await followerRepo.getRelationship(viewerId, targetId);
+
     return formatResponse({
       res: res,
       success: true,
-      body: { following: response },
+      body: {
+        following: relationship.isFollowing,
+        isFollowing: relationship.isFollowing,
+        is_following: relationship.isFollowing,
+        followed_by: relationship.isFollowedBy,
+        isFollowedBy: relationship.isFollowedBy,
+        is_followed_by: relationship.isFollowedBy,
+        mutual: relationship.isMutual,
+        isMutual: relationship.isMutual,
+        is_mutual: relationship.isMutual,
+        targetId,
+        viewerId,
+        followersCount: targetCounts.followersCount,
+        followingCount: targetCounts.followingCount,
+        followingsCount: targetCounts.followingCount,
+        followers_count: targetCounts.followersCount,
+        following_count: targetCounts.followingCount,
+        followings_count: targetCounts.followingCount,
+        targetFollowersCount: targetCounts.followersCount,
+        targetFollowingCount: targetCounts.followingCount,
+        viewerFollowersCount: viewerCounts.followersCount,
+        viewerFollowingCount: viewerCounts.followingCount,
+        action: created ? "followed" : "already_following",
+      },
     });
   } catch (error) {
     return formatResponse({ res: res, success: false, message: error });
@@ -96,10 +127,11 @@ export const follow = async (req: Request, res: Response) => {
 };
 
 export const follow_by_id = async (req: Request, res: Response) => {
+  const viewerId = Number(req.userId);
   const rawId = (req.params as any)?.id;
   const targetId = Number(rawId);
 
-  if (!Number.isFinite(targetId)) {
+  if (!Number.isFinite(targetId) || targetId <= 0) {
     return formatResponse({
       res,
       success: false,
@@ -108,7 +140,7 @@ export const follow_by_id = async (req: Request, res: Response) => {
     });
   }
 
-  if (Number(req.userId) === targetId) {
+  if (viewerId === targetId) {
     return formatResponse({
       res,
       success: false,
@@ -128,23 +160,36 @@ export const follow_by_id = async (req: Request, res: Response) => {
       });
     }
 
-    const { created } = await followerRepo.followUser(targetId, req.userId);
+    const blockedEitherWay = await BlockUserRepository.isBlockedEitherWay(
+      viewerId,
+      targetId
+    );
+    if (blockedEitherWay) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 403,
+        message: "you cannot follow this user",
+      });
+    }
+
+    const { created } = await followerRepo.followUser(targetId, viewerId);
 
     if (created) {
-      const myData = await repository.get(req.userId);
+      const myData = await repository.get(viewerId);
       await sendNotification({
-        followerId: req.userId,
+        followerId: viewerId,
         userId: targetId,
-        interactorId: req.userId,
+        interactorId: viewerId,
         type: "follow",
         message: `${myData!.name} ${myData!.last_name} started following you`,
       });
     }
 
-    const relationship = await followerRepo.getRelationship(req.userId, targetId);
+    const relationship = await followerRepo.getRelationship(viewerId, targetId);
     const targetCounts = await followerRepo.getCounts(targetId);
-    const viewerCounts = await followerRepo.getCounts(req.userId);
-    const recipientIds = [targetId, Number(req.userId)];
+    const viewerCounts = await followerRepo.getCounts(viewerId);
+    const recipientIds = [targetId, viewerId];
 
     await Promise.all([
       emitProfileUpdatedRealtime({
@@ -154,7 +199,7 @@ export const follow_by_id = async (req: Request, res: Response) => {
         action: "follow_counts_updated",
       }),
       emitProfileUpdatedRealtime({
-        userId: req.userId,
+        userId: viewerId,
         counts: viewerCounts,
         targetUserIds: recipientIds,
         action: "follow_counts_updated",
@@ -165,11 +210,27 @@ export const follow_by_id = async (req: Request, res: Response) => {
       res,
       success: true,
       body: {
+        following: relationship.isFollowing,
         isFollowing: relationship.isFollowing,
+        is_following: relationship.isFollowing,
+        followed_by: relationship.isFollowedBy,
         isFollowedBy: relationship.isFollowedBy,
+        is_followed_by: relationship.isFollowedBy,
+        mutual: relationship.isMutual,
         isMutual: relationship.isMutual,
+        is_mutual: relationship.isMutual,
+        targetId,
+        viewerId,
         followersCount: targetCounts.followersCount,
-        followingCount: viewerCounts.followingCount,
+        followingCount: targetCounts.followingCount,
+        followingsCount: targetCounts.followingCount,
+        followers_count: targetCounts.followersCount,
+        following_count: targetCounts.followingCount,
+        followings_count: targetCounts.followingCount,
+        targetFollowersCount: targetCounts.followersCount,
+        targetFollowingCount: targetCounts.followingCount,
+        viewerFollowersCount: viewerCounts.followersCount,
+        viewerFollowingCount: viewerCounts.followingCount,
       },
     });
   } catch (error) {

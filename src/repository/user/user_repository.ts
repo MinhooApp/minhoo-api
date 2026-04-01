@@ -442,6 +442,7 @@ export const follows = async (id: any, meId: any = -1) => {
         ],
       },
     ],
+    order: [["id", "DESC"]],
     replacements: { meId },
   });
 
@@ -507,6 +508,7 @@ export const followers = async (id: any, meId: any = -1) => {
         ],
       },
     ],
+    order: [["id", "DESC"]],
     replacements: { meId },
   });
 
