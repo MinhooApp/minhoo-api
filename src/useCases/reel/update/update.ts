@@ -59,6 +59,27 @@ const parseBoolOrNull = (value: any): boolean | null => {
   return null;
 };
 
+const toNonNegativeCount = (value: any): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.floor(parsed);
+};
+
+const resolveReelRealtimeAction = (value: any): string => {
+  const normalized = String(value ?? "updated").trim().toLowerCase();
+  const allowed = new Set([
+    "updated",
+    "starred",
+    "unstarred",
+    "saved",
+    "unsaved",
+    "commented",
+    "viewed",
+    "shared",
+  ]);
+  return allowed.has(normalized) ? normalized : "updated";
+};
+
 const normalizeReelFreshnessState = (rawReel: any) => {
   const reel = toPlainObject(rawReel) ?? {};
   const ringUntilIso =
@@ -90,7 +111,8 @@ const normalizeReelFreshnessState = (rawReel: any) => {
 const buildReelUpdatedRealtimePayload = (
   rawReel: any,
   fallbackOwnerIdRaw: any,
-  actorUserIdRaw: any
+  actorUserIdRaw: any,
+  actionRaw: any = "updated"
 ) => {
   const reel = toPlainObject(rawReel) ?? {};
   const reelId = Number(reel?.id ?? reel?.reelId ?? reel?.reel_id ?? 0);
@@ -100,9 +122,53 @@ const buildReelUpdatedRealtimePayload = (
     reel?.user?.id ?? reel?.userId ?? reel?.user_id ?? fallbackOwnerIdRaw ?? 0
   );
   const actorUserId = Number(actorUserIdRaw ?? 0);
+  const action = resolveReelRealtimeAction(actionRaw);
+  const likesCount = toNonNegativeCount(
+    reel?.likes_count ??
+      reel?.likesCount ??
+      reel?.stars_count ??
+      reel?.starsCount ??
+      reel?.star_count ??
+      reel?.starCount
+  );
+  const savesCount = toNonNegativeCount(
+    reel?.saves_count ??
+      reel?.savesCount ??
+      reel?.saved_count ??
+      reel?.savedCount
+  );
+  const commentsCount = toNonNegativeCount(reel?.comments_count ?? reel?.commentsCount);
+  const sharesCount = toNonNegativeCount(reel?.shares_count ?? reel?.sharesCount);
+  const viewsCount = toNonNegativeCount(reel?.views_count ?? reel?.viewsCount);
+  const isStarred = parseBoolOrNull(
+    reel?.is_starred ?? reel?.isStarred ?? reel?.is_liked ?? reel?.isLiked
+  );
+  const isSaved = parseBoolOrNull(reel?.is_saved ?? reel?.isSaved);
   const freshness = normalizeReelFreshnessState(reel);
   const normalizedReel = {
     ...reel,
+    likes_count: likesCount,
+    likesCount,
+    stars_count: likesCount,
+    starsCount: likesCount,
+    star_count: likesCount,
+    starCount: likesCount,
+    saves_count: savesCount,
+    savesCount,
+    saved_count: savesCount,
+    savedCount: savesCount,
+    comments_count: commentsCount,
+    commentsCount,
+    shares_count: sharesCount,
+    sharesCount,
+    views_count: viewsCount,
+    viewsCount,
+    is_starred: isStarred,
+    isStarred: isStarred,
+    is_liked: isStarred,
+    isLiked: isStarred,
+    is_saved: isSaved,
+    isSaved: isSaved,
     ring_active: freshness.ringActive,
     ringActive: freshness.ringActive,
     ring_until: freshness.ringUntil,
@@ -114,13 +180,35 @@ const buildReelUpdatedRealtimePayload = (
   };
 
   return {
-    action: "updated",
+    action,
     reelId,
     reel_id: reelId,
     ownerId: Number.isFinite(ownerId) && ownerId > 0 ? ownerId : 0,
     owner_id: Number.isFinite(ownerId) && ownerId > 0 ? ownerId : 0,
     actorUserId: Number.isFinite(actorUserId) && actorUserId > 0 ? actorUserId : 0,
     actor_user_id: Number.isFinite(actorUserId) && actorUserId > 0 ? actorUserId : 0,
+    likes_count: likesCount,
+    likesCount,
+    stars_count: likesCount,
+    starsCount: likesCount,
+    star_count: likesCount,
+    starCount: likesCount,
+    saves_count: savesCount,
+    savesCount,
+    saved_count: savesCount,
+    savedCount: savesCount,
+    comments_count: commentsCount,
+    commentsCount,
+    shares_count: sharesCount,
+    sharesCount,
+    views_count: viewsCount,
+    viewsCount,
+    is_starred: isStarred,
+    isStarred: isStarred,
+    is_liked: isStarred,
+    isLiked: isStarred,
+    is_saved: isSaved,
+    isSaved: isSaved,
     ring_active: freshness.ringActive,
     ringActive: freshness.ringActive,
     ring_until: freshness.ringUntil,
@@ -136,12 +224,14 @@ const buildReelUpdatedRealtimePayload = (
 const emitReelUpdatedRealtime = (
   rawReel: any,
   fallbackOwnerIdRaw: any,
-  actorUserIdRaw: any
+  actorUserIdRaw: any,
+  actionRaw: any = "updated"
 ) => {
   const payload = buildReelUpdatedRealtimePayload(
     rawReel,
     fallbackOwnerIdRaw,
-    actorUserIdRaw
+    actorUserIdRaw,
+    actionRaw
   );
   if (!payload) return;
   socket.emit("reel/updated", payload);
@@ -192,7 +282,8 @@ export const toggle_reel_star = async (req: Request, res: Response) => {
     emitReelUpdatedRealtime(
       (result as any)?.reel,
       ownerUserId || actorUserId,
-      actorUserId
+      actorUserId,
+      (result as any)?.starred ? "starred" : "unstarred"
     );
     console.log(
       `[reel_star_action] userId=${actorUserId} reelId=${reelId} starred=${Boolean(
@@ -262,7 +353,8 @@ export const save_reel = async (req: Request, res: Response) => {
     emitReelUpdatedRealtime(
       (result as any)?.reel,
       ownerUserId || actorUserId,
-      actorUserId
+      actorUserId,
+      "saved"
     );
     console.log(
       `[reel_save_action] userId=${actorUserId} reelId=${reelId} saved=true savesCount=${Number(
@@ -301,7 +393,7 @@ export const unsave_reel = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
-    emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId);
+    emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId, "unsaved");
     console.log(
       `[reel_unsave_action] userId=${Number(req.userId ?? 0)} reelId=${reelId} saved=false savesCount=${Number(
         (result as any)?.saves_count ?? 0
@@ -340,7 +432,7 @@ export const record_reel_view = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
-    emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId);
+    emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId, "viewed");
 
     return formatResponse({
       res,
@@ -371,7 +463,7 @@ export const share_reel = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
-    emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId);
+    emitReelUpdatedRealtime((result as any)?.reel, req.userId, req.userId, "shared");
 
     return formatResponse({
       res,

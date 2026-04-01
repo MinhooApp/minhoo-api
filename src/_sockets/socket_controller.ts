@@ -58,6 +58,7 @@ type ReactionMap = Record<string, number[]>;
 
 const chatRoom = (chatId: number) => `chat_${chatId}`;
 const userRoom = (userId: number) => `user_${userId}`;
+const AUTHENTICATED_USERS_ROOM = "auth_users";
 const CHAT_ROOM_REGEX = /^chat_\d+$/;
 const parsePositiveIntEnv = (value: any, fallback: number, min = 1): number => {
   const parsed = Number(value);
@@ -82,6 +83,15 @@ const ALLOW_SOCKET_QUERY_TOKEN = (() => {
     .toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 })();
+const SOCKET_JWT_GRACE_DAYS = Math.max(
+  0,
+  Number(
+    process.env.SOCKET_JWT_EXPIRATION_GRACE_DAYS ??
+      process.env.JWT_EXPIRATION_GRACE_DAYS ??
+      0
+  ) || 0
+);
+const SOCKET_JWT_GRACE_MS = SOCKET_JWT_GRACE_DAYS * 24 * 60 * 60 * 1000;
 const SESSION_VALIDATION_TTL_MS = 15 * 1000;
 const EMIT_REELS_EVENT_ON_REEL_DELETE =
   String(process.env.EMIT_REELS_EVENT_ON_REEL_DELETE ?? "1").trim() === "1";
@@ -181,9 +191,15 @@ const emitToAllAuthenticatedUsers = (
   payload: any,
   excludeUserIds?: Array<number | string | null | undefined>
 ) => {
+  const excluded = toUniquePositiveIds(excludeUserIds ?? []);
+  if (!excluded.length) {
+    // Cluster-safe fanout through Redis adapter room (blue/green aware).
+    socket.nsp.to(AUTHENTICATED_USERS_ROOM).emit(event, payload);
+    return;
+  }
   const connectedUserIds = collectConnectedUserIds(socket);
   if (!connectedUserIds.length) return;
-  emitToUserIds(socket, event, payload, connectedUserIds, excludeUserIds);
+  emitToUserIds(socket, event, payload, connectedUserIds, excluded);
 };
 
 const extractOfferTargetUserIds = (normalized: any): number[] => {
@@ -274,7 +290,23 @@ function normalizeReelRealtimePayload(payload: any, fallbackAction: "created" | 
       reelSource?.user_id
   );
   const actionRaw = String(source.action ?? fallbackAction).trim().toLowerCase();
-  const action = actionRaw === "updated" ? "updated" : "created";
+  const action = (
+    [
+      "created",
+      "updated",
+      "starred",
+      "unstarred",
+      "saved",
+      "unsaved",
+      "commented",
+      "viewed",
+      "shared",
+      "liked",
+      "unliked",
+    ] as const
+  ).includes(actionRaw as any)
+    ? actionRaw
+    : fallbackAction;
   const actorUserId = normalizePositiveInt(
     source.actorUserId ??
       source.actor_user_id ??
@@ -283,11 +315,86 @@ function normalizeReelRealtimePayload(payload: any, fallbackAction: "created" | 
       source.interactorId ??
       source.interactor_id
   );
+  const likesCount = normalizePositiveInt(
+    source.likesCount ??
+      source.likes_count ??
+      source.starsCount ??
+      source.stars_count ??
+      source.starCount ??
+      source.star_count ??
+      reelSource?.likes_count ??
+      reelSource?.likesCount ??
+      reelSource?.stars_count ??
+      reelSource?.starsCount ??
+      reelSource?.star_count ??
+      reelSource?.starCount
+  );
+  const savesCount = normalizePositiveInt(
+    source.savesCount ??
+      source.saves_count ??
+      source.savedCount ??
+      source.saved_count ??
+      reelSource?.saves_count ??
+      reelSource?.savesCount ??
+      reelSource?.saved_count ??
+      reelSource?.savedCount
+  );
+  const commentsCount = normalizePositiveInt(
+    source.commentsCount ??
+      source.comments_count ??
+      reelSource?.comments_count ??
+      reelSource?.commentsCount
+  );
+  const sharesCount = normalizePositiveInt(
+    source.sharesCount ?? source.shares_count ?? reelSource?.shares_count ?? reelSource?.sharesCount
+  );
+  const viewsCount = normalizePositiveInt(
+    source.viewsCount ?? source.views_count ?? reelSource?.views_count ?? reelSource?.viewsCount
+  );
+  const isStarred = normalizeBoolOrNull(
+    source.is_starred ??
+      source.isStarred ??
+      source.starred ??
+      source.liked ??
+      reelSource?.is_starred ??
+      reelSource?.isStarred ??
+      reelSource?.is_liked ??
+      reelSource?.isLiked
+  );
+  const isSaved = normalizeBoolOrNull(
+    source.is_saved ??
+      source.isSaved ??
+      source.saved ??
+      reelSource?.is_saved ??
+      reelSource?.isSaved
+  );
   const freshness = normalizeReelFreshnessState(reelSource ?? source);
 
   const normalizedReel = reelSource
     ? {
         ...reelSource,
+        likes_count: likesCount,
+        likesCount,
+        stars_count: likesCount,
+        starsCount: likesCount,
+        star_count: likesCount,
+        starCount: likesCount,
+        saves_count: savesCount,
+        savesCount,
+        saved_count: savesCount,
+        savedCount: savesCount,
+        comments_count: commentsCount,
+        commentsCount,
+        shares_count: sharesCount,
+        sharesCount,
+        views_count: viewsCount,
+        viewsCount,
+        is_starred: isStarred,
+        isStarred: isStarred,
+        is_liked: isStarred,
+        isLiked: isStarred,
+        is_saved: isSaved,
+        isSaved: isSaved,
         ring_active: freshness.ringActive,
         ringActive: freshness.ringActive,
         ring_until: freshness.ringUntil,
@@ -307,6 +414,28 @@ function normalizeReelRealtimePayload(payload: any, fallbackAction: "created" | 
     owner_id: ownerId,
     actorUserId,
     actor_user_id: actorUserId,
+    likes_count: likesCount,
+    likesCount,
+    stars_count: likesCount,
+    starsCount: likesCount,
+    star_count: likesCount,
+    starCount: likesCount,
+    saves_count: savesCount,
+    savesCount,
+    saved_count: savesCount,
+    savedCount: savesCount,
+    comments_count: commentsCount,
+    commentsCount,
+    shares_count: sharesCount,
+    sharesCount,
+    views_count: viewsCount,
+    viewsCount,
+    is_starred: isStarred,
+    isStarred: isStarred,
+    is_liked: isStarred,
+    isLiked: isStarred,
+    is_saved: isSaved,
+    isSaved: isSaved,
     ring_active: freshness.ringActive,
     ringActive: freshness.ringActive,
     ring_until: freshness.ringUntil,
@@ -336,6 +465,15 @@ const buildPublicReelRealtimePayload = (normalizedRaw: any) => {
   const normalized = toPlainRecord(normalizedRaw);
   if (!normalized) return normalizedRaw;
   const clone = { ...normalized };
+  delete (clone as any).is_starred;
+  delete (clone as any).isStarred;
+  delete (clone as any).is_liked;
+  delete (clone as any).isLiked;
+  delete (clone as any).starred;
+  delete (clone as any).liked;
+  delete (clone as any).is_saved;
+  delete (clone as any).isSaved;
+  delete (clone as any).saved;
   if (clone.reel) {
     clone.reel = stripReelViewerFlags(clone.reel);
   }
@@ -609,10 +747,28 @@ function normalizePostUpdatedPayload(payload: any) {
       source.user?.id
   );
   const likesCount = normalizePositiveInt(
-    source.likesCount ?? source.likes_count ?? postSource?.likes_count ?? postSource?.likesCount
+    source.likesCount ??
+      source.likes_count ??
+      source.starsCount ??
+      source.stars_count ??
+      source.starCount ??
+      source.star_count ??
+      postSource?.likes_count ??
+      postSource?.likesCount ??
+      postSource?.stars_count ??
+      postSource?.starsCount ??
+      postSource?.star_count ??
+      postSource?.starCount
   );
   const savesCount = normalizePositiveInt(
-    source.savesCount ?? source.saves_count ?? postSource?.saves_count ?? postSource?.savesCount
+    source.savesCount ??
+      source.saves_count ??
+      source.savedCount ??
+      source.saved_count ??
+      postSource?.saves_count ??
+      postSource?.savesCount ??
+      postSource?.saved_count ??
+      postSource?.savedCount
   );
   const sharesCount = normalizePositiveInt(
     source.sharesCount ?? source.shares_count ?? postSource?.shares_count ?? postSource?.sharesCount
@@ -631,7 +787,8 @@ function normalizePostUpdatedPayload(payload: any) {
     actionRaw === "unsaved" ||
     actionRaw === "shared" ||
     actionRaw === "commented" ||
-    actionRaw === "comment_deleted"
+    actionRaw === "comment_deleted" ||
+    actionRaw === "deleted"
       ? actionRaw
       : "updated";
   const isLiked = normalizeBoolOrNull(
@@ -650,8 +807,14 @@ function normalizePostUpdatedPayload(payload: any) {
         user_id: ownerId || postSource.user_id || postSource.userId || null,
         likes_count: likesCount,
         likesCount,
+        stars_count: likesCount,
+        starsCount: likesCount,
+        star_count: likesCount,
+        starCount: likesCount,
         saves_count: savesCount,
         savesCount,
+        saved_count: savesCount,
+        savedCount: savesCount,
         shares_count: sharesCount,
         sharesCount,
         comments_count: commentsCount,
@@ -673,8 +836,14 @@ function normalizePostUpdatedPayload(payload: any) {
     actor_user_id: actorUserId,
     likesCount,
     likes_count: likesCount,
+    starsCount: likesCount,
+    stars_count: likesCount,
+    starCount: likesCount,
+    star_count: likesCount,
     savesCount,
     saves_count: savesCount,
+    savedCount: savesCount,
+    saved_count: savesCount,
     sharesCount,
     shares_count: sharesCount,
     commentsCount,
@@ -1155,8 +1324,30 @@ function resolveUserIdFromToken(tokenRaw: any): number {
         parseUserId({ userId: payload?.sub }) ||
         parseUserId({ userId: payload?.id });
       if (userId > 0) return userId;
-    } catch (_) {
-      // keep trying with next secret
+    } catch (_strictError) {
+      if (SOCKET_JWT_GRACE_MS <= 0) continue;
+
+      try {
+        const payload = jwt.verify(token, secret, {
+          ignoreExpiration: true,
+        }) as any;
+        const tokenType = String(payload?.tokenType ?? payload?.token_type ?? "")
+          .trim()
+          .toLowerCase();
+        if (tokenType && tokenType !== "access") {
+          continue;
+        }
+        const expMs = Number(payload?.exp ?? 0) * 1000;
+        if (!Number.isFinite(expMs) || expMs <= 0) continue;
+        if (Date.now() - expMs > SOCKET_JWT_GRACE_MS) continue;
+        const userId =
+          parseUserId(payload) ||
+          parseUserId({ userId: payload?.sub }) ||
+          parseUserId({ userId: payload?.id });
+        if (userId > 0) return userId;
+      } catch (_relaxedError) {
+        // keep trying with next secret
+      }
     }
   }
 
@@ -1203,19 +1394,11 @@ function resolveUserIdFromHandshake(socket: Socket): number {
 
 function emitChatsRefresh(socket: Socket, userId: number) {
   if (!Number.isFinite(userId) || userId <= 0) return;
-  let delivered = 0;
-
-  for (const s of socket.nsp.sockets.values()) {
-    const uid = Number((s.data as any)?.userId ?? 0);
-    if (uid !== userId) continue;
-    s.emit(`chats/${userId}`);
-    s.emit("chats", { userId });
-    delivered++;
-  }
-
-  // Seguridad/realtime: nunca hacer broadcast global de refresco de chats.
-  // Si no hay sockets autenticados del usuario, simplemente no se emite.
-  if (delivered === 0) return;
+  const room = userRoom(userId);
+  // Seguridad/realtime: emite sólo al cuarto del usuario (sin broadcast global).
+  // Uso de room => compatible con Redis adapter (blue/green).
+  socket.nsp.to(room).emit(`chats/${userId}`);
+  socket.nsp.to(room).emit("chats", { userId });
 }
 
 function emitChatStatusToUserSockets(
@@ -1227,13 +1410,9 @@ function emitChatStatusToUserSockets(
   if (!Number.isFinite(userId) || userId <= 0) return;
   const roomEvent = `room/chat/status/${chatId}`;
   const legacyEvent = `chat/status/${chatId}`;
-
-  for (const s of socket.nsp.sockets.values()) {
-    const uid = Number((s.data as any)?.userId ?? 0);
-    if (uid !== userId) continue;
-    s.emit(roomEvent, payload);
-    s.emit(legacyEvent, payload);
-  }
+  const room = userRoom(userId);
+  socket.nsp.to(room).emit(roomEvent, payload);
+  socket.nsp.to(room).emit(legacyEvent, payload);
 }
 
 function emitChatStatusWithRetryToSender(
@@ -1368,6 +1547,7 @@ export const socketController = (socket: Socket) => {
     (socket.data as any).sessionValidated = false;
     (socket.data as any).sessionValidatedAt = 0;
     socket.join(userRoom(handshakeUserId));
+    socket.join(AUTHENTICATED_USERS_ROOM);
     console.log(
       `[socket] bind userId=${handshakeUserId} source=handshake tokenAuth=${handshakeTokenUserId > 0} socket=${socket.id}`
     );
@@ -1377,6 +1557,7 @@ export const socketController = (socket: Socket) => {
         if (validSession) return;
 
         socket.leave(userRoom(handshakeUserId));
+        socket.leave(AUTHENTICATED_USERS_ROOM);
         (socket.data as any).userId = 0;
         (socket.data as any).authenticatedByToken = false;
         (socket.data as any).authToken = null;
@@ -1389,6 +1570,7 @@ export const socketController = (socket: Socket) => {
       });
     }
   } else {
+    socket.leave(AUTHENTICATED_USERS_ROOM);
     (socket.data as any).authenticatedByToken = false;
     (socket.data as any).authToken = null;
     (socket.data as any).sessionValidated = false;
@@ -1442,6 +1624,8 @@ export const socketController = (socket: Socket) => {
       if (tokenAuthenticated) {
         const validSession = await validateSocketSession(socket);
         if (!validSession) {
+          socket.leave(userRoom(resolvedUserId));
+          socket.leave(AUTHENTICATED_USERS_ROOM);
           (socket.data as any).userId = 0;
           (socket.data as any).authenticatedByToken = false;
           (socket.data as any).authToken = null;
@@ -1453,6 +1637,7 @@ export const socketController = (socket: Socket) => {
         }
       }
       socket.join(userRoom(resolvedUserId));
+      socket.join(AUTHENTICATED_USERS_ROOM);
       console.log(
         `[socket] bind userId=${resolvedUserId} source=bind-user tokenAuth=${tokenAuthenticated} socket=${socket.id}`
       );
@@ -1510,8 +1695,15 @@ export const socketController = (socket: Socket) => {
     }, eventPayload: any) => {
       target.emit("post/updated", eventPayload);
       target.emit("find/post/updated", eventPayload);
-      if (EMIT_POSTS_EVENT_ON_POST_ACTIVITY) {
+      if (
+        EMIT_POSTS_EVENT_ON_POST_ACTIVITY ||
+        String(eventPayload?.action ?? "").trim().toLowerCase() === "deleted"
+      ) {
         target.emit("posts", eventPayload);
+      }
+      if (String(eventPayload?.action ?? "").trim().toLowerCase() === "deleted") {
+        target.emit("post/deleted", eventPayload);
+        target.emit("find/post/deleted", eventPayload);
       }
       if (
         eventPayload?.action === "liked" ||
@@ -1539,7 +1731,7 @@ export const socketController = (socket: Socket) => {
       emitPostUpdatedEvents(
         {
           emit: (event: string, eventPayload: any) => {
-            emitToAllAuthenticatedUsers(socket, event, eventPayload, [actorUserId]);
+            emitToAllAuthenticatedUsers(socket, event, eventPayload);
           },
         },
         publicPayload
@@ -1604,10 +1796,10 @@ export const socketController = (socket: Socket) => {
       emitToUserIds(socket, "find/reel/updated", normalized, [actorUserId]);
       emitToUserIds(socket, "reels", normalized, [actorUserId]);
 
-      emitToAllAuthenticatedUsers(socket, "reel/updated", publicPayload, [actorUserId]);
-      emitToAllAuthenticatedUsers(socket, "orbit/updated", publicPayload, [actorUserId]);
-      emitToAllAuthenticatedUsers(socket, "find/reel/updated", publicPayload, [actorUserId]);
-      emitToAllAuthenticatedUsers(socket, "reels", publicPayload, [actorUserId]);
+      emitToAllAuthenticatedUsers(socket, "reel/updated", publicPayload);
+      emitToAllAuthenticatedUsers(socket, "orbit/updated", publicPayload);
+      emitToAllAuthenticatedUsers(socket, "find/reel/updated", publicPayload);
+      emitToAllAuthenticatedUsers(socket, "reels", publicPayload);
       return;
     }
 

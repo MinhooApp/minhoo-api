@@ -58,8 +58,22 @@ const emitPostUpdatedRealtime = (params: {
     sourcePost.userId ?? sourcePost.user_id ?? sourcePost.user?.id ?? params.ownerIdRaw
   );
   const actorUserId = toPositiveIntOrNull(params.actorUserIdRaw);
-  const likesCount = toCounter(params.likesCountRaw ?? sourcePost.likes_count ?? sourcePost.likesCount);
-  const savesCount = toCounter(params.savesCountRaw ?? sourcePost.saves_count ?? sourcePost.savesCount);
+  const likesCount = toCounter(
+    params.likesCountRaw ??
+      sourcePost.likes_count ??
+      sourcePost.likesCount ??
+      sourcePost.stars_count ??
+      sourcePost.starsCount ??
+      sourcePost.star_count ??
+      sourcePost.starCount
+  );
+  const savesCount = toCounter(
+    params.savesCountRaw ??
+      sourcePost.saves_count ??
+      sourcePost.savesCount ??
+      sourcePost.saved_count ??
+      sourcePost.savedCount
+  );
   const sharesCount = toCounter(params.sharesCountRaw ?? sourcePost.shares_count ?? sourcePost.sharesCount);
   const commentsCount = toCounter(
     params.commentsCountRaw ?? sourcePost.comments_count ?? sourcePost.commentsCount
@@ -74,8 +88,14 @@ const emitPostUpdatedRealtime = (params: {
     user_id: ownerId,
     likes_count: likesCount,
     likesCount,
+    stars_count: likesCount,
+    starsCount: likesCount,
+    star_count: likesCount,
+    starCount: likesCount,
     saves_count: savesCount,
     savesCount,
+    saved_count: savesCount,
+    savedCount: savesCount,
     shares_count: sharesCount,
     sharesCount,
     comments_count: commentsCount,
@@ -97,8 +117,14 @@ const emitPostUpdatedRealtime = (params: {
     actor_user_id: actorUserId,
     likesCount,
     likes_count: likesCount,
+    starsCount: likesCount,
+    stars_count: likesCount,
+    starCount: likesCount,
+    star_count: likesCount,
     savesCount,
     saves_count: savesCount,
+    savedCount: savesCount,
+    saved_count: savesCount,
     sharesCount,
     shares_count: sharesCount,
     commentsCount,
