@@ -704,8 +704,10 @@ export const user_reels = async (req: Request, res: Response) => {
       (req.query as any)?.current_video_uid ??
       (req.query as any)?.currentVideoUid ??
       null;
+    // Profile reels should start from newest item unless the client explicitly
+    // asks for looping behavior.
     const loop = shouldLoopFeed(
-      (req.query as any)?.loop ?? (req.query as any)?.repeat
+      (req.query as any)?.loop ?? (req.query as any)?.repeat ?? false
     );
     if (loop) {
       await writeProfileFeedLockForRequest(req, targetUserId);
@@ -716,7 +718,9 @@ export const user_reels = async (req: Request, res: Response) => {
       String(afterReelId ?? "").trim() || String(afterVideoUid ?? "").trim()
     );
     const profileCursorKey = buildProfileReelCursorKey(req, targetUserId);
-    if (loop && !clientProvidedCursor) {
+    // Never resume from stored cursor on the initial profile page.
+    // This guarantees profile opens from newest Orbit and avoids stale-cursor skips.
+    if (loop && page > 0 && !clientProvidedCursor) {
       const cursor = await readProfileReelCursor(profileCursorKey);
       if (cursor?.reelId) afterReelId = cursor.reelId;
       else if (cursor?.videoUid) afterVideoUid = cursor.videoUid;

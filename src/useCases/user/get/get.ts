@@ -5,7 +5,9 @@ import {
   repository,
   followerRepo,
 } from "../_module/module";
+import { Op } from "sequelize";
 import * as savedRepository from "../../../repository/saved/saved_repository";
+import Like from "../../../_models/like/like";
 import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
 import { isSummaryMode, toFollowSummary } from "../../../libs/summary_response";
 import { attachActiveOrbitStateToUsers } from "../../../repository/reel/orbit_ring_projection";
@@ -72,9 +74,11 @@ const setSavedFlagOnPost = (post: any, isSaved: boolean) => {
   if (!post) return;
   if (typeof (post as any).setDataValue === "function") {
     (post as any).setDataValue("is_saved", isSaved);
+    (post as any).setDataValue("isSaved", isSaved);
     return;
   }
   (post as any).is_saved = isSaved;
+  (post as any).isSaved = isSaved;
 };
 
 const setSavedCountOnPost = (post: any, count: number) => {
@@ -109,6 +113,91 @@ const attachSavedStateToUserPosts = async (viewerIdRaw: any, user: any) => {
   const savedSet = await savedRepository.getSavedPostIdSet(viewerId, postIds);
   posts.forEach((post: any) => {
     setSavedFlagOnPost(post, savedSet.has(Number(post?.id)));
+  });
+};
+
+const setLikedFlagOnPost = (post: any, isLiked: boolean) => {
+  if (!post) return;
+  if (typeof (post as any).setDataValue === "function") {
+    (post as any).setDataValue("is_liked", isLiked);
+    (post as any).setDataValue("isLiked", isLiked);
+    (post as any).setDataValue("isLike", isLiked);
+    (post as any).setDataValue("is_like", isLiked);
+    (post as any).setDataValue("liked", isLiked);
+    (post as any).setDataValue("is_starred", isLiked);
+    (post as any).setDataValue("isStarred", isLiked);
+    (post as any).setDataValue("starred", isLiked);
+    return;
+  }
+  (post as any).is_liked = isLiked;
+  (post as any).isLiked = isLiked;
+  (post as any).isLike = isLiked;
+  (post as any).is_like = isLiked;
+  (post as any).liked = isLiked;
+  (post as any).is_starred = isLiked;
+  (post as any).isStarred = isLiked;
+  (post as any).starred = isLiked;
+};
+
+const setViewerLikeHintOnPost = (post: any, viewerId: number | null, isLiked: boolean) => {
+  if (!post) return;
+  const currentLikes = Array.isArray((post as any)?.likes) ? [...(post as any).likes] : [];
+  const likes = currentLikes.filter((like: any) => {
+    const likeUserId = Number(like?.userId ?? like?.user_id ?? 0);
+    return Number.isFinite(likeUserId) && likeUserId > 0;
+  });
+
+  if (isLiked && viewerId && !likes.some((like: any) => Number(like?.userId) === viewerId)) {
+    likes.push({ id: null, userId: viewerId, user_id: viewerId });
+  }
+
+  if (!isLiked && viewerId) {
+    for (let i = likes.length - 1; i >= 0; i -= 1) {
+      if (Number(likes[i]?.userId) === viewerId) likes.splice(i, 1);
+    }
+  }
+
+  if (typeof (post as any).setDataValue === "function") {
+    (post as any).setDataValue("likes", likes);
+    return;
+  }
+  (post as any).likes = likes;
+};
+
+const attachLikedStateToUserPosts = async (viewerIdRaw: any, user: any) => {
+  const posts = Array.isArray((user as any)?.posts) ? (user as any).posts : [];
+  if (!posts.length) return;
+
+  const postIds = posts
+    .map((post: any) => Number(post?.id))
+    .filter((postId: number) => Number.isFinite(postId) && postId > 0);
+  if (!postIds.length) return;
+
+  const viewerId = Number(viewerIdRaw);
+  if (!Number.isFinite(viewerId) || viewerId <= 0) {
+    posts.forEach((post: any) => setLikedFlagOnPost(post, false));
+    return;
+  }
+
+  const likes = await Like.findAll({
+    where: {
+      userId: viewerId,
+      postId: { [Op.in]: postIds },
+    },
+    attributes: ["postId"],
+    raw: true,
+  });
+
+  const likedPostIds = new Set<number>(
+    (Array.isArray(likes) ? likes : [])
+      .map((like: any) => Number(like?.postId))
+      .filter((postId: number) => Number.isFinite(postId) && postId > 0)
+  );
+
+  posts.forEach((post: any) => {
+    const likedByViewer = likedPostIds.has(Number(post?.id));
+    setLikedFlagOnPost(post, likedByViewer);
+    setViewerLikeHintOnPost(post, viewerId, likedByViewer);
   });
 };
 
@@ -254,6 +343,7 @@ export const get = async (req: Request, res: Response) => {
       usersRaw: [user].filter(Boolean),
       viewerIdRaw: req.userId,
     });
+    await attachLikedStateToUserPosts(req.userId, user);
     await attachSavedStateToUserPosts(req.userId, user);
     const counts = await enrichUserFollowCounts(user);
     const viewerId = Number(req.userId);
@@ -332,6 +422,7 @@ export const get = async (req: Request, res: Response) => {
 export const myData = async (req: Request, res: Response) => {
   try {
     const user = await repository.get(req.userId);
+    await attachLikedStateToUserPosts(req.userId, user);
     await attachSavedStateToUserPosts(req.userId, user);
     const counts = await enrichUserFollowCounts(user);
     const breakdown = {

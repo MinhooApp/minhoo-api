@@ -1292,6 +1292,9 @@ const fetchPostsByIdsOrdered = async (
     ),
   ]);
 
+  await Promise.all([applyPostHashtags(posts), applyCommentHashtags(commentRows as any[])]);
+  const viewerId = Number(meId);
+  const validViewerId = Number.isFinite(viewerId) && viewerId > 0 ? viewerId : null;
   const userById = new Map<number, any>();
   users.forEach((user: any) => {
     const id = Number(user?.id);
@@ -1318,9 +1321,14 @@ const fetchPostsByIdsOrdered = async (
   });
 
   const likesByPostId = new Map<number, any[]>();
+  const likedPostIds = new Set<number>();
   likeRows.forEach((like: any) => {
     const postId = Number(like?.postId);
     if (!Number.isFinite(postId) || postId <= 0) return;
+    const likeUserId = Number(like?.userId);
+    if (validViewerId && likeUserId === validViewerId) {
+      likedPostIds.add(postId);
+    }
     const list = likesByPostId.get(postId) ?? [];
     list.push({
       id: Number(like?.id),
@@ -1368,6 +1376,15 @@ const fetchPostsByIdsOrdered = async (
     post.setDataValue("post_media", postMedia);
     post.setDataValue("likes", postLikes);
     post.setDataValue("comments", postComments);
+    const likedByViewer = likedPostIds.has(postId);
+    post.setDataValue("is_liked", likedByViewer);
+    post.setDataValue("isLiked", likedByViewer);
+    post.setDataValue("isLike", likedByViewer);
+    post.setDataValue("is_like", likedByViewer);
+    post.setDataValue("liked", likedByViewer);
+    post.setDataValue("is_starred", likedByViewer);
+    post.setDataValue("isStarred", likedByViewer);
+    post.setDataValue("starred", likedByViewer);
   });
 
   const byId = new Map<number, any>();
@@ -1478,7 +1495,15 @@ const fetchPostsByIdsOrderedSummary = async (
     post.setDataValue("post_media", mediaByPostId.has(postId) ? [mediaByPostId.get(postId)] : []);
     post.setDataValue("likes", []);
     post.setDataValue("comments", []);
-    post.setDataValue("is_liked", likedPostIds.has(postId));
+    const likedByViewer = likedPostIds.has(postId);
+    post.setDataValue("is_liked", likedByViewer);
+    post.setDataValue("isLiked", likedByViewer);
+    post.setDataValue("isLike", likedByViewer);
+    post.setDataValue("is_like", likedByViewer);
+    post.setDataValue("liked", likedByViewer);
+    post.setDataValue("is_starred", likedByViewer);
+    post.setDataValue("isStarred", likedByViewer);
+    post.setDataValue("starred", likedByViewer);
     byId.set(postId, post);
   });
 

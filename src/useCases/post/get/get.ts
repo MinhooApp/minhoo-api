@@ -6,6 +6,7 @@ import {
 } from "../_module/module";
 import crypto from "crypto";
 import * as savedRepository from "../../../repository/saved/saved_repository";
+import Like from "../../../_models/like/like";
 import { isSummaryMode, toPostSummary } from "../../../libs/summary_response";
 import * as userRepository from "../../../repository/user/user_repository";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
@@ -114,9 +115,11 @@ const setSavedFlag = (post: any, isSaved: boolean) => {
   if (!post) return;
   if (typeof post.setDataValue === "function") {
     post.setDataValue("is_saved", isSaved);
+    post.setDataValue("isSaved", isSaved);
     return;
   }
   post.is_saved = isSaved;
+  post.isSaved = isSaved;
 };
 
 const setSavedCount = (post: any, count: number) => {
@@ -128,6 +131,29 @@ const setSavedCount = (post: any, count: number) => {
   }
   post.saved_count = count;
   post.savedCount = count;
+};
+
+const setLikedFlag = (post: any, isLiked: boolean) => {
+  if (!post) return;
+  if (typeof post.setDataValue === "function") {
+    post.setDataValue("is_liked", isLiked);
+    post.setDataValue("isLiked", isLiked);
+    post.setDataValue("isLike", isLiked);
+    post.setDataValue("is_like", isLiked);
+    post.setDataValue("liked", isLiked);
+    post.setDataValue("is_starred", isLiked);
+    post.setDataValue("isStarred", isLiked);
+    post.setDataValue("starred", isLiked);
+    return;
+  }
+  post.is_liked = isLiked;
+  post.isLiked = isLiked;
+  post.isLike = isLiked;
+  post.is_like = isLiked;
+  post.liked = isLiked;
+  post.is_starred = isLiked;
+  post.isStarred = isLiked;
+  post.starred = isLiked;
 };
 
 const setValue = (target: any, key: string, value: any) => {
@@ -393,12 +419,20 @@ export const get = async (req: Request, res: Response) => {
       const viewerId = normalizeUserId(req.userId);
       if (!viewerId) {
         setSavedFlag(post, false);
+        setLikedFlag(post, false);
       } else {
-        const isSaved = await savedRepository.isPostSavedByUser(
-          viewerId,
-          postId
-        );
+        const [isSaved, likeRow] = await Promise.all([
+          savedRepository.isPostSavedByUser(viewerId, postId),
+          Like.findOne({
+            where: {
+              userId: viewerId,
+              postId,
+            },
+            attributes: ["id"],
+          }),
+        ]);
         setSavedFlag(post, isSaved);
+        setLikedFlag(post, Boolean(likeRow));
       }
 
       applyRelativeToPostComments(post, locale);
