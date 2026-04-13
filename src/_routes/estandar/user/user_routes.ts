@@ -55,13 +55,17 @@ const USER_GRAPH_RATE_WINDOW_MS = parsePositiveInt(
   process.env.USER_GRAPH_RATE_WINDOW_MS,
   15_000
 );
-const USER_GRAPH_RATE_MAX = parsePositiveInt(
-  process.env.USER_GRAPH_RATE_MAX,
+const USER_GRAPH_RATE_MAX_ANON = parsePositiveInt(
+  process.env.USER_GRAPH_RATE_MAX_ANON ?? process.env.USER_GRAPH_RATE_MAX,
   50
+);
+const USER_GRAPH_RATE_MAX_AUTH = parsePositiveInt(
+  process.env.USER_GRAPH_RATE_MAX_AUTH,
+  120
 );
 const USER_GRAPH_RATE_BLOCK_MS = parsePositiveInt(
   process.env.USER_GRAPH_RATE_BLOCK_MS,
-  30_000,
+  15_000,
   0
 );
 const APP_RATE_MAX_ENTRIES = parsePositiveInt(
@@ -79,17 +83,26 @@ const normalizeIp = (rawIp: any) => {
 
 const followGraphReadLimiter = createRequestRateLimiter({
   windowMs: USER_GRAPH_RATE_WINDOW_MS,
-  max: USER_GRAPH_RATE_MAX,
+  max: USER_GRAPH_RATE_MAX_ANON,
   blockDurationMs: USER_GRAPH_RATE_BLOCK_MS,
   maxEntries: APP_RATE_MAX_ENTRIES,
   keyPrefix: "user:follow_graph:read",
   message: "too many follow list requests, try later",
+  maxResolver: (req: any) => {
+    const authUserId = Number(req?.userId ?? 0);
+    const isAuthenticated = Boolean(req?.authenticated) && Number.isFinite(authUserId) && authUserId > 0;
+    return isAuthenticated ? USER_GRAPH_RATE_MAX_AUTH : USER_GRAPH_RATE_MAX_ANON;
+  },
   keyGenerator: (req: any) => {
-    const ip = normalizeIp(req?.ip ?? req?.socket?.remoteAddress);
+    const authUserId = Number(req?.userId ?? 0);
     const targetId = String(req?.params?.id ?? req?.query?.id ?? "self")
       .trim()
       .slice(0, 64);
-    return `${ip}:${targetId || "self"}`;
+    if (Boolean(req?.authenticated) && Number.isFinite(authUserId) && authUserId > 0) {
+      return `u:${authUserId}:${targetId || "self"}`;
+    }
+    const ip = normalizeIp(req?.ip ?? req?.socket?.remoteAddress);
+    return `ip:${ip}:${targetId || "self"}`;
   },
 });
 
@@ -147,10 +160,10 @@ router.patch("/:id/report", TokenValidation(), report);
 router.post("/report/:id", TokenValidation(), report);
 router.put("/report/:id", TokenValidation(), report);
 router.patch("/report/:id", TokenValidation(), report);
-router.get("/follows/:id?", followGraphReadLimiter, TokenOptional(), follows);
-router.get("/followers/:id?", followGraphReadLimiter, TokenOptional(), followers);
-router.get("/:id/followers", followGraphReadLimiter, TokenOptional(), followers_v2);
-router.get("/:id/following", followGraphReadLimiter, TokenOptional(), following_v2);
+router.get("/follows/:id?", TokenOptional(), followGraphReadLimiter, follows);
+router.get("/followers/:id?", TokenOptional(), followGraphReadLimiter, followers);
+router.get("/:id/followers", TokenOptional(), followGraphReadLimiter, followers_v2);
+router.get("/:id/following", TokenOptional(), followGraphReadLimiter, following_v2);
 router.get("/:id/relationship", TokenOptional(), relationship);
 router.get("/username/check", TokenOptional(), check_username);
 router.get("/username/:username", TokenOptional(), get_username);
