@@ -2,6 +2,7 @@ import Router from "express";
 import User from "../../../_models/user/user";
 import TokenOptional from "../../../libs/middlewares/optional_jwt";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
+import { createRequestRateLimiter } from "../../../libs/middlewares/request_rate_limiter";
 import {
   get,
   gets,
@@ -41,6 +42,56 @@ import {
 import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
 
 const router = Router();
+
+const parsePositiveInt = (value: any, fallback: number, min = 1) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const rounded = Math.trunc(parsed);
+  if (rounded < min) return fallback;
+  return rounded;
+};
+
+const USER_GRAPH_RATE_WINDOW_MS = parsePositiveInt(
+  process.env.USER_GRAPH_RATE_WINDOW_MS,
+  15_000
+);
+const USER_GRAPH_RATE_MAX = parsePositiveInt(
+  process.env.USER_GRAPH_RATE_MAX,
+  50
+);
+const USER_GRAPH_RATE_BLOCK_MS = parsePositiveInt(
+  process.env.USER_GRAPH_RATE_BLOCK_MS,
+  30_000,
+  0
+);
+const APP_RATE_MAX_ENTRIES = parsePositiveInt(
+  process.env.APP_RATE_MAX_ENTRIES,
+  50_000,
+  500
+);
+
+const normalizeIp = (rawIp: any) => {
+  const ip = String(rawIp ?? "").trim();
+  if (!ip) return "unknown";
+  if (ip.startsWith("::ffff:")) return ip.slice("::ffff:".length);
+  return ip;
+};
+
+const followGraphReadLimiter = createRequestRateLimiter({
+  windowMs: USER_GRAPH_RATE_WINDOW_MS,
+  max: USER_GRAPH_RATE_MAX,
+  blockDurationMs: USER_GRAPH_RATE_BLOCK_MS,
+  maxEntries: APP_RATE_MAX_ENTRIES,
+  keyPrefix: "user:follow_graph:read",
+  message: "too many follow list requests, try later",
+  keyGenerator: (req: any) => {
+    const ip = normalizeIp(req?.ip ?? req?.socket?.remoteAddress);
+    const targetId = String(req?.params?.id ?? req?.query?.id ?? "self")
+      .trim()
+      .slice(0, 64);
+    return `${ip}:${targetId || "self"}`;
+  },
+});
 
 const buildUserSharePage = async (req: any) => {
   const userId = String(req.params.id ?? "").trim();
@@ -96,10 +147,10 @@ router.patch("/:id/report", TokenValidation(), report);
 router.post("/report/:id", TokenValidation(), report);
 router.put("/report/:id", TokenValidation(), report);
 router.patch("/report/:id", TokenValidation(), report);
-router.get("/follows/:id?", TokenOptional(), follows);
-router.get("/followers/:id?", TokenOptional(), followers);
-router.get("/:id/followers", TokenOptional(), followers_v2);
-router.get("/:id/following", TokenOptional(), following_v2);
+router.get("/follows/:id?", followGraphReadLimiter, TokenOptional(), follows);
+router.get("/followers/:id?", followGraphReadLimiter, TokenOptional(), followers);
+router.get("/:id/followers", followGraphReadLimiter, TokenOptional(), followers_v2);
+router.get("/:id/following", followGraphReadLimiter, TokenOptional(), following_v2);
 router.get("/:id/relationship", TokenOptional(), relationship);
 router.get("/username/check", TokenOptional(), check_username);
 router.get("/username/:username", TokenOptional(), get_username);

@@ -62,6 +62,8 @@ export class AppRoutes {
     // 🔹 Healthcheck (GET /api/v1/ping)
     // -----------------------------
     router.use("/api/v1", common_routes);
+    // Compatibilidad para monitores externos que consultan /ping|/live|/ready en raíz
+    router.use("/", common_routes);
 
     return router;
   }
