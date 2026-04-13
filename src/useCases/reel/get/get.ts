@@ -150,9 +150,13 @@ const buildReelSummaryCacheKey = (params: {
   sessionKey: string;
   allowLoop: boolean;
 }) => {
+  const viewerId = normalizeUserId(params.viewerId) ?? 0;
   const sessionSuffix = params.sessionKey || "anonymous";
   const loopFlag = params.allowLoop ? 1 : 0;
-  return `summary:${params.variant}:v:${params.viewerId}:p:${params.page}:s:${params.size}:l:${loopFlag}:sk:${sessionSuffix}`;
+  if (viewerId <= 0) {
+    return `summary:${params.variant}:public:p:${params.page}:s:${params.size}:l:${loopFlag}`;
+  }
+  return `summary:${params.variant}:v:${viewerId}:p:${params.page}:s:${params.size}:l:${loopFlag}:sk:${sessionSuffix}`;
 };
 
 const readReelSummaryCache = async (cacheKey: string): Promise<any | null> => {

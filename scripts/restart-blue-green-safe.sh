@@ -24,19 +24,49 @@ wait_http_200() {
   done
 }
 
+warmup_instance() {
+  local api_base="$1"
+  local label="$2"
+  local -a warmup_paths=(
+    "/bootstrap/home?include=posts,reels,services,notifications&posts_size=5&reels_size=6&services_size=4&notifications_limit=5"
+    "/post?summary=1&page=0&size=20"
+    "/post/suggested?summary=1&page=0&size=20"
+    "/reel?summary=1&page=0&size=20"
+    "/reel/suggested?summary=1&page=0&size=20"
+  )
+
+  echo "Warming ${label} feed caches..."
+  local path
+  for path in "${warmup_paths[@]}"; do
+    if ! curl -fsS --max-time 4 "${api_base}${path}" >/dev/null 2>&1; then
+      echo "  warning: warm-up failed for ${label}: ${path}"
+    fi
+  done
+}
+
 restart_with_health() {
   local service="$1"
   local ping_url="$2"
   local ready_url="$3"
+  local api_base="$4"
   echo "Restarting ${service}..."
   systemctl restart "${service}"
   systemctl is-active --quiet "${service}"
   wait_http_200 "${ping_url}" "${service} ping"
   wait_http_200 "${ready_url}" "${service} ready"
+  warmup_instance "${api_base}" "${service}"
   echo "${service} is healthy."
 }
 
 echo "Starting blue/green rolling restart..."
-restart_with_health "minhoo-api.service" "http://127.0.0.1:3000/api/v1/ping" "http://127.0.0.1:3000/api/v1/ready"
-restart_with_health "minhoo-api-green.service" "http://127.0.0.1:3001/api/v1/ping" "http://127.0.0.1:3001/api/v1/ready"
+restart_with_health \
+  "minhoo-api.service" \
+  "http://127.0.0.1:3000/api/v1/ping" \
+  "http://127.0.0.1:3000/api/v1/ready" \
+  "http://127.0.0.1:3000/api/v1"
+restart_with_health \
+  "minhoo-api-green.service" \
+  "http://127.0.0.1:3001/api/v1/ping" \
+  "http://127.0.0.1:3001/api/v1/ready" \
+  "http://127.0.0.1:3001/api/v1"
 echo "Rolling restart completed successfully."

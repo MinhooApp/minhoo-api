@@ -9,6 +9,7 @@ This folder contains ready-to-apply server config for:
 - MySQL tuning drop-in (`max_connections`, `thread_cache_size`, `innodb_buffer_pool_size`)
 - Additional systemd hardening on green service (`PrivateDevices`, kernel protections, SUID restrictions)
 - Automatic `.env.green` generation (copies `.env` and enforces `PORT=3001`)
+- Automatic feed cache warm-up after each blue/green restart (`bootstrap/home`, `post/reel summary`)
 
 Application-level graceful shutdown is also supported via `SHUTDOWN_GRACE_MS` in env.
 
