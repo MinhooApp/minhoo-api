@@ -1354,8 +1354,10 @@ const fetchPostsByIdsOrdered = async (
     commentsByPostId.set(postId, list);
   });
 
+  const byId = new Map<number, any>();
   posts.forEach((post: any) => {
     const postId = Number(post?.id);
+    if (!Number.isFinite(postId) || postId <= 0) return;
     const userId = Number(post?.userId);
     const rawUser = userById.get(userId) ?? null;
     const user = rawUser
@@ -1385,11 +1387,7 @@ const fetchPostsByIdsOrdered = async (
     post.setDataValue("is_starred", likedByViewer);
     post.setDataValue("isStarred", likedByViewer);
     post.setDataValue("starred", likedByViewer);
-  });
-
-  const byId = new Map<number, any>();
-  posts.forEach((post: any) => {
-    byId.set(Number(post?.id), post);
+    byId.set(postId, post);
   });
 
   return postIds.map((id) => byId.get(Number(id))).filter(Boolean);
