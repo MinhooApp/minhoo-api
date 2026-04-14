@@ -22,6 +22,197 @@ const parseBool = (value: any, fallback = true) => {
   return fallback;
 };
 
+const REEL_VALIDATE_STREAM_VARIANTS = parseBool(
+  process.env.REEL_VALIDATE_STREAM_VARIANTS,
+  true
+);
+const REEL_ENFORCE_SAFE_STREAM_VARIANTS = parseBool(
+  process.env.REEL_ENFORCE_SAFE_STREAM_VARIANTS,
+  false
+);
+const REEL_ALLOW_UNSAFE_STREAM_VARIANTS = parseBool(
+  process.env.REEL_ALLOW_UNSAFE_STREAM_VARIANTS,
+  true
+);
+const REEL_STARTUP_SAFE_MAX_FPS = Math.max(
+  24,
+  Number(process.env.REEL_STARTUP_SAFE_MAX_FPS ?? 30) || 30
+);
+const REEL_STREAM_PROFILE_TIMEOUT_MS = Math.max(
+  1000,
+  Number(process.env.REEL_STREAM_PROFILE_TIMEOUT_MS ?? 3000) || 3000
+);
+const REEL_STREAM_PROFILE_CACHE_TTL_MS = Math.max(
+  30 * 1000,
+  Number(process.env.REEL_STREAM_PROFILE_CACHE_TTL_MS ?? 10 * 60 * 1000) ||
+    10 * 60 * 1000
+);
+
+type ReelHlsVariantProfile = {
+  url: string;
+  bandwidth: number | null;
+  frameRate: number | null;
+  resolution: string | null;
+};
+
+type ReelHlsManifestProfile = {
+  sourceUrl: string;
+  variantCount: number;
+  safeVariantCount: number;
+  maxFrameRate: number | null;
+  hasUnsafeFrameRate: boolean;
+  inspectedAt: string;
+  checkError: string | null;
+};
+
+const reelHlsProfileCache = new Map<
+  string,
+  { expiresAt: number; profile: ReelHlsManifestProfile | null }
+>();
+
+const parseM3u8NumberAttr = (
+  attrsRaw: string,
+  key: "BANDWIDTH" | "FRAME-RATE"
+): number | null => {
+  const match = attrsRaw.match(new RegExp(`${key}=([0-9]+(?:\\.[0-9]+)?)`, "i"));
+  if (!match) return null;
+  const parsed = Number(match[1]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const parseM3u8TextAttr = (attrsRaw: string, key: "RESOLUTION"): string | null => {
+  const match = attrsRaw.match(new RegExp(`${key}=([^,\\s]+)`, "i"));
+  if (!match) return null;
+  const value = String(match[1] ?? "").trim();
+  return value || null;
+};
+
+const parseHlsVariantProfiles = (
+  manifestRaw: string,
+  baseUrlRaw: string
+): ReelHlsVariantProfile[] => {
+  const lines = String(manifestRaw ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const profiles: ReelHlsVariantProfile[] = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (!line.toUpperCase().startsWith("#EXT-X-STREAM-INF:")) continue;
+
+    const attrs = line.slice(line.indexOf(":") + 1);
+    let uri: string | null = null;
+    for (let j = i + 1; j < lines.length; j += 1) {
+      const candidate = lines[j];
+      if (!candidate || candidate.startsWith("#")) continue;
+      uri = candidate;
+      break;
+    }
+    if (!uri) continue;
+
+    let url = uri;
+    try {
+      url = new URL(uri, baseUrlRaw).toString();
+    } catch {
+      // Keep original uri when URL cannot be resolved as absolute.
+      url = uri;
+    }
+
+    profiles.push({
+      url,
+      bandwidth: parseM3u8NumberAttr(attrs, "BANDWIDTH"),
+      frameRate: parseM3u8NumberAttr(attrs, "FRAME-RATE"),
+      resolution: parseM3u8TextAttr(attrs, "RESOLUTION"),
+    });
+  }
+
+  return profiles;
+};
+
+const inspectReelHlsManifestProfile = async (
+  sourceUrlRaw: string
+): Promise<ReelHlsManifestProfile | null> => {
+  const sourceUrl = String(sourceUrlRaw ?? "").trim();
+  if (!sourceUrl || !/\.m3u8($|\?)/i.test(sourceUrl)) return null;
+
+  const now = Date.now();
+  const cached = reelHlsProfileCache.get(sourceUrl);
+  if (cached && cached.expiresAt > now) {
+    return cached.profile;
+  }
+
+  const inspectedAt = new Date().toISOString();
+  let profile: ReelHlsManifestProfile | null = null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), REEL_STREAM_PROFILE_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(sourceUrl, {
+      method: "GET",
+      headers: {
+        Accept: "application/vnd.apple.mpegurl,application/x-mpegURL,text/plain,*/*",
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      profile = {
+        sourceUrl,
+        variantCount: 0,
+        safeVariantCount: 0,
+        maxFrameRate: null,
+        hasUnsafeFrameRate: false,
+        inspectedAt,
+        checkError: `manifest_http_${response.status}`,
+      };
+    } else {
+      const manifestText = await response.text();
+      const variants = parseHlsVariantProfiles(manifestText, sourceUrl);
+      const maxFrameRate = variants.reduce<number | null>((max, variant) => {
+        if (!variant.frameRate) return max;
+        if (max == null) return variant.frameRate;
+        return variant.frameRate > max ? variant.frameRate : max;
+      }, null);
+      const safeVariants = variants.filter(
+        (variant) =>
+          variant.frameRate == null ||
+          variant.frameRate <= REEL_STARTUP_SAFE_MAX_FPS + 0.001
+      );
+      profile = {
+        sourceUrl,
+        variantCount: variants.length,
+        safeVariantCount: safeVariants.length,
+        maxFrameRate,
+        hasUnsafeFrameRate: variants.some(
+          (variant) =>
+            variant.frameRate != null &&
+            variant.frameRate > REEL_STARTUP_SAFE_MAX_FPS + 0.001
+        ),
+        inspectedAt,
+        checkError: null,
+      };
+    }
+  } catch (error: any) {
+    profile = {
+      sourceUrl,
+      variantCount: 0,
+      safeVariantCount: 0,
+      maxFrameRate: null,
+      hasUnsafeFrameRate: false,
+      inspectedAt,
+      checkError: String(error?.message ?? "manifest_check_failed"),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  reelHlsProfileCache.set(sourceUrl, {
+    profile,
+    expiresAt: now + REEL_STREAM_PROFILE_CACHE_TTL_MS,
+  });
+  return profile;
+};
 const parseVisibility = (value: any) => {
   const v = String(value ?? "public").trim().toLowerCase();
   if (["public", "followers", "private"].includes(v)) return v;
@@ -284,6 +475,47 @@ export const create_reel = async (req: Request, res: Response) => {
           Number((req.body as any)?.duration_seconds ?? (req.body as any)?.durationSeconds ?? 0) || 0
         );
 
+    const streamProfile =
+      !inferredImageMode &&
+      REEL_VALIDATE_STREAM_VARIANTS &&
+      /^https?:\/\/.+\.m3u8($|\?)/i.test(stream_url)
+        ? await inspectReelHlsManifestProfile(stream_url)
+        : null;
+
+    const safeStartupByManifest =
+      streamProfile == null ||
+      streamProfile.variantCount === 0 ||
+      streamProfile.safeVariantCount > 0;
+
+    const unsafeStartupVariantsDetected =
+      !inferredImageMode &&
+      streamProfile != null &&
+      streamProfile.variantCount > 0 &&
+      streamProfile.safeVariantCount <= 0;
+
+    if (
+      unsafeStartupVariantsDetected &&
+      REEL_ENFORCE_SAFE_STREAM_VARIANTS &&
+      !REEL_ALLOW_UNSAFE_STREAM_VARIANTS
+    ) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 409,
+        message:
+          "Video no compatible para startup seguro (<=30fps). Reexporta en 30fps y vuelve a subir.",
+      });
+    }
+
+    if (
+      unsafeStartupVariantsDetected &&
+      REEL_ENFORCE_SAFE_STREAM_VARIANTS &&
+      REEL_ALLOW_UNSAFE_STREAM_VARIANTS
+    ) {
+      console.warn(
+        `[reel/create] allowing unsafe startup variants userId=${Number(req.userId ?? 0) || 0} videoUid=${video_uid || "n/a"} streamUrl=${stream_url}`
+      );
+    }
     const rawMetadata = parseJSON((req.body as any)?.metadata) ?? {};
     const metadata = {
       ...(rawMetadata && typeof rawMetadata === 'object' ? rawMetadata : {}),
