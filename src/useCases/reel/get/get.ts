@@ -1,6 +1,12 @@
 import { Request, Response, formatResponse, repository } from "../_module/module";
 import crypto from "crypto";
-import { isSummaryMode, toReelSummary } from "../../../libs/summary_response";
+import {
+  isCompactMode,
+  isSummaryMode,
+  toReelSummary,
+  toReelSummaryCompact,
+} from "../../../libs/summary_response";
+import * as followerRepo from "../../../repository/follower/follower_repository";
 import * as userRepository from "../../../repository/user/user_repository";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
 import { formatRelativeTime } from "../../../libs/localization/relative_time";
@@ -22,16 +28,235 @@ const reelSummaryCacheTtlSeconds = Math.max(
   15,
   Number(process.env.REEL_SUMMARY_CACHE_TTL_SECONDS ?? 20) || 20
 );
+const reelSummaryL1MaxEntries = Math.max(
+  100,
+  Number(process.env.REEL_SUMMARY_L1_MAX_ENTRIES ?? 2000) || 2000
+);
+const reelPublicSummaryBrowserMaxAgeSeconds = Math.max(
+  0,
+  Number(process.env.REEL_PUBLIC_SUMMARY_BROWSER_MAX_AGE_SECONDS ?? 15) || 15
+);
+const reelPublicSummaryEdgeMaxAgeSeconds = Math.max(
+  reelPublicSummaryBrowserMaxAgeSeconds,
+  Number(process.env.REEL_PUBLIC_SUMMARY_EDGE_MAX_AGE_SECONDS ?? 75) || 75
+);
+const reelPublicSummaryStaleWhileRevalidateSeconds = Math.max(
+  0,
+  Number(process.env.REEL_PUBLIC_SUMMARY_STALE_WHILE_REVALIDATE_SECONDS ?? 180) || 180
+);
+const reelPublicSummaryStaleIfErrorSeconds = Math.max(
+  0,
+  Number(process.env.REEL_PUBLIC_SUMMARY_STALE_IF_ERROR_SECONDS ?? 600) || 600
+);
+const reelSummaryRelationshipCacheTtlMs = Math.max(
+  0,
+  Number(process.env.REEL_SUMMARY_RELATIONSHIP_CACHE_TTL_MS ?? 10000) || 10000
+);
 
 type ReelSummaryCacheEntry = {
   cachedAtMs: number;
   body: any | null;
 };
+type ReelSummaryL1Entry = {
+  expiresAtMs: number;
+  body: any;
+};
+
+type ReelRelationshipFlags = {
+  isFollowing: boolean;
+  isFollowedBy: boolean;
+  isMutual: boolean;
+};
+
+type ReelRelationshipMap = Record<number, ReelRelationshipFlags>;
+
+type ReelRelationshipCacheEntry = {
+  expiresAtMs: number;
+  value: ReelRelationshipMap;
+};
+
+const reelRelationshipCache = new Map<string, ReelRelationshipCacheEntry>();
+const reelSummaryL1 = new Map<string, ReelSummaryL1Entry>();
+const reelSummaryInFlight = new Map<string, Promise<any>>();
 
 const normalizeUserId = (value: any): number | null => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return parsed;
+};
+
+const hasAuthCredentialsHint = (req: Request): boolean => {
+  const authHeaders = [
+    req.header("Authorization"),
+    req.header("x-auth-token"),
+    req.header("x-access-token"),
+    req.header("auth_token"),
+  ];
+  if (authHeaders.some((value: any) => String(value ?? "").trim().length > 0)) return true;
+
+  const query: any = req.query ?? {};
+  const authQueryParams = [
+    query?.urlToken,
+    query?.auth_token,
+    query?.authToken,
+    query?.token,
+  ];
+  return authQueryParams.some((value: any) => String(value ?? "").trim().length > 0);
+};
+
+const isAuthenticatedRequest = (req: Request): boolean => {
+  const requestAny: any = req as any;
+  const userId = Number(requestAny?.userId ?? 0);
+  return Boolean(requestAny?.authenticated) || (Number.isFinite(userId) && userId > 0);
+};
+
+const setReelListCacheHeaders = (req: Request, res: Response, summary: boolean) => {
+  if (!summary) {
+    res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+    res.set("Pragma", "no-cache");
+    res.set("Vary", "Accept-Encoding, Authorization");
+    return;
+  }
+
+  const canUsePublicCache = !isAuthenticatedRequest(req) && !hasAuthCredentialsHint(req);
+  if (canUsePublicCache) {
+    const browserCacheControl = [
+      "public",
+      `max-age=${reelPublicSummaryBrowserMaxAgeSeconds}`,
+      `s-maxage=${reelPublicSummaryEdgeMaxAgeSeconds}`,
+      `stale-while-revalidate=${reelPublicSummaryStaleWhileRevalidateSeconds}`,
+      `stale-if-error=${reelPublicSummaryStaleIfErrorSeconds}`,
+    ].join(", ");
+    const edgeCacheControl = [
+      "public",
+      `s-maxage=${reelPublicSummaryEdgeMaxAgeSeconds}`,
+      `stale-while-revalidate=${reelPublicSummaryStaleWhileRevalidateSeconds}`,
+      `stale-if-error=${reelPublicSummaryStaleIfErrorSeconds}`,
+    ].join(", ");
+
+    res.set("Cache-Control", browserCacheControl);
+    res.set("CDN-Cache-Control", edgeCacheControl);
+    res.set("Cloudflare-CDN-Cache-Control", edgeCacheControl);
+    res.set("Vary", "Accept-Encoding");
+    return;
+  }
+
+  res.set("Cache-Control", "private, no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("CDN-Cache-Control", "private, no-store");
+  res.set("Cloudflare-CDN-Cache-Control", "private, no-store");
+  res.set("Vary", "Accept-Encoding, Authorization");
+};
+
+const collectReelCreatorIds = (rowsRaw: any[]): number[] =>
+  Array.from(
+    new Set(
+      (Array.isArray(rowsRaw) ? rowsRaw : [])
+        .map((row: any) => Number(row?.user?.id ?? row?.userId))
+        .filter((id: number) => Number.isFinite(id) && id > 0)
+    )
+  );
+
+const attachRelationshipAliases = (target: any, relationshipRaw: any) => {
+  if (!target) return;
+  const isFollowing = Boolean(relationshipRaw?.isFollowing);
+  const isFollowedBy = Boolean(relationshipRaw?.isFollowedBy);
+  const isMutual = isFollowing && isFollowedBy;
+  const fields = {
+    relationship: { isFollowing, isFollowedBy, isMutual },
+    isFollowing,
+    is_following: isFollowing,
+    viewerFollowsUser: isFollowing,
+    viewer_follows_user: isFollowing,
+    isFollowedBy,
+    is_followed_by: isFollowedBy,
+    userFollowsViewer: isFollowedBy,
+    user_follows_viewer: isFollowedBy,
+    isMutual,
+    is_mutual: isMutual,
+  };
+  if (typeof target.setDataValue === "function") {
+    Object.entries(fields).forEach(([key, value]) => {
+      target.setDataValue(key, value);
+    });
+    return;
+  }
+  Object.assign(target, fields);
+};
+
+const buildReelRelationshipCacheKey = (
+  viewerIdRaw: any,
+  creatorIdsRaw: number[]
+): string => {
+  const viewerId = normalizeUserId(viewerIdRaw);
+  if (!viewerId) return "";
+  const creatorIds = Array.from(
+    new Set(
+      (Array.isArray(creatorIdsRaw) ? creatorIdsRaw : [])
+        .map((id) => Number(id))
+        .filter((id) => Number.isFinite(id) && id > 0)
+    )
+  ).sort((a, b) => a - b);
+  if (!creatorIds.length) return "";
+  const digest = crypto
+    .createHash("sha1")
+    .update(creatorIds.join(","))
+    .digest("hex")
+    .slice(0, 20);
+  return `${viewerId}:${digest}`;
+};
+
+const readCachedReelRelationshipMap = (cacheKey: string): ReelRelationshipMap | null => {
+  if (!cacheKey || reelSummaryRelationshipCacheTtlMs <= 0) return null;
+  const cached = reelRelationshipCache.get(cacheKey);
+  if (!cached) return null;
+  if (cached.expiresAtMs <= Date.now()) {
+    reelRelationshipCache.delete(cacheKey);
+    return null;
+  }
+  return cached.value;
+};
+
+const writeCachedReelRelationshipMap = (cacheKey: string, value: ReelRelationshipMap) => {
+  if (!cacheKey || reelSummaryRelationshipCacheTtlMs <= 0) return;
+  reelRelationshipCache.set(cacheKey, {
+    value: { ...(value ?? {}) },
+    expiresAtMs: Date.now() + reelSummaryRelationshipCacheTtlMs,
+  });
+};
+
+const attachRelationshipsToReels = async (
+  viewerIdRaw: any,
+  rowsRaw: any[],
+  options: { useCache?: boolean } = {}
+) => {
+  const creatorIds = collectReelCreatorIds(rowsRaw);
+  const useCache = Boolean(options.useCache);
+  const cacheKey = useCache ? buildReelRelationshipCacheKey(viewerIdRaw, creatorIds) : "";
+  const cachedMap = cacheKey ? readCachedReelRelationshipMap(cacheKey) : null;
+  const relationshipByUserId =
+    cachedMap ??
+    (await followerRepo.getRelationshipMap(
+      viewerIdRaw,
+      creatorIds
+    ));
+  if (!cachedMap && cacheKey) {
+    writeCachedReelRelationshipMap(cacheKey, relationshipByUserId);
+  }
+
+  (Array.isArray(rowsRaw) ? rowsRaw : []).forEach((row: any) => {
+    const user =
+      (row as any)?.user ??
+      (row as any)?.dataValues?.user ??
+      (typeof (row as any)?.get === "function" ? (row as any).get("user") : null);
+    const userId = Number((user as any)?.id ?? (row as any)?.userId);
+    const relationship =
+      relationshipByUserId[userId] ??
+      ({ isFollowing: false, isFollowedBy: false, isMutual: false } as const);
+    attachRelationshipAliases(user, relationship);
+  });
+
+  return relationshipByUserId;
 };
 
 const setValue = (target: any, key: string, value: any) => {
@@ -96,6 +321,16 @@ const toSessionKey = (req: Request) => {
   const headerKey = String(req.header("x-session-key") ?? "").trim();
 
   const explicit = queryKey || headerKey;
+  const viewerId = Number((req as any)?.userId ?? 0);
+  if (Number.isFinite(viewerId) && viewerId > 0) {
+    // For authenticated users keep a stable key by user.
+    // Volatile client session_key values (often regenerated UUIDs) break persistence.
+    if (isTruthy(process.env.ORBIT_AUTH_SESSION_BY_DEVICE ?? "0") && explicit) {
+      return explicit.slice(0, 128);
+    }
+    return `u:${viewerId}`;
+  }
+
   if (explicit) return explicit.slice(0, 128);
 
   const authorization = String(req.header("authorization") ?? "").trim();
@@ -109,24 +344,6 @@ const toSessionKey = (req: Request) => {
         .digest("hex")
         .slice(0, 20);
     }
-  }
-
-  const viewerId = Number((req as any)?.userId ?? 0);
-  if (Number.isFinite(viewerId) && viewerId > 0) {
-    if (tokenFingerprint) return `u:${viewerId}:t:${tokenFingerprint}`;
-
-    const ip = String(req.ip ?? "").trim();
-    const userAgent = String(req.header("user-agent") ?? "").trim();
-    if (ip || userAgent) {
-      const deviceFingerprint = crypto
-        .createHash("sha1")
-        .update(`${ip}|${userAgent}`)
-        .digest("hex")
-        .slice(0, 20);
-      return `u:${viewerId}:fp:${deviceFingerprint}`;
-    }
-
-    return `u:${viewerId}`;
   }
 
   if (tokenFingerprint) return `a:t:${tokenFingerprint}`;
@@ -149,18 +366,85 @@ const buildReelSummaryCacheKey = (params: {
   viewerId: number;
   sessionKey: string;
   allowLoop: boolean;
+  compact: boolean;
 }) => {
   const viewerId = normalizeUserId(params.viewerId) ?? 0;
   const sessionSuffix = params.sessionKey || "anonymous";
   const loopFlag = params.allowLoop ? 1 : 0;
+  const compactFlag = params.compact ? 1 : 0;
   if (viewerId <= 0) {
-    return `summary:${params.variant}:public:p:${params.page}:s:${params.size}:l:${loopFlag}`;
+    return `summary:${params.variant}:public:p:${params.page}:s:${params.size}:l:${loopFlag}:cp:${compactFlag}`;
   }
-  return `summary:${params.variant}:v:${viewerId}:p:${params.page}:s:${params.size}:l:${loopFlag}:sk:${sessionSuffix}`;
+  return `summary:${params.variant}:v:${viewerId}:p:${params.page}:s:${params.size}:l:${loopFlag}:cp:${compactFlag}:sk:${sessionSuffix}`;
+};
+
+const cloneCacheValue = <T>(value: T): T => {
+  try {
+    return JSON.parse(JSON.stringify(value)) as T;
+  } catch {
+    return value;
+  }
+};
+
+const cleanupReelSummaryL1 = () => {
+  const now = Date.now();
+  for (const [key, entry] of reelSummaryL1.entries()) {
+    if (entry.expiresAtMs <= now) reelSummaryL1.delete(key);
+  }
+  while (reelSummaryL1.size > reelSummaryL1MaxEntries) {
+    const oldestKey = reelSummaryL1.keys().next().value;
+    if (!oldestKey) break;
+    reelSummaryL1.delete(oldestKey);
+  }
+};
+
+const readReelSummaryL1 = (cacheKey: string): any | null => {
+  if (!cacheKey) return null;
+  cleanupReelSummaryL1();
+  const entry = reelSummaryL1.get(cacheKey);
+  if (!entry) return null;
+  if (entry.expiresAtMs <= Date.now()) {
+    reelSummaryL1.delete(cacheKey);
+    return null;
+  }
+  return entry.body != null ? cloneCacheValue(entry.body) : null;
+};
+
+const writeReelSummaryL1 = (cacheKey: string, body: any) => {
+  if (!cacheKey || body == null) return;
+  cleanupReelSummaryL1();
+  reelSummaryL1.set(cacheKey, {
+    expiresAtMs: Date.now() + reelSummaryCacheTtlSeconds * 1000,
+    body: cloneCacheValue(body),
+  });
+};
+
+const withSingleFlight = async <T>(
+  store: Map<string, Promise<T>>,
+  key: string,
+  task: () => Promise<T>
+): Promise<{ value: T; shared: boolean }> => {
+  if (!key) return { value: await task(), shared: false };
+
+  const current = store.get(key);
+  if (current) return { value: await current, shared: true };
+
+  const promise = (async () => task())();
+  store.set(key, promise);
+
+  try {
+    return { value: await promise, shared: false };
+  } finally {
+    if (store.get(key) === promise) {
+      store.delete(key);
+    }
+  }
 };
 
 const readReelSummaryCache = async (cacheKey: string): Promise<any | null> => {
   if (!reelSummaryCacheEnabled || !cacheKey) return null;
+  const l1 = readReelSummaryL1(cacheKey);
+  if (l1) return l1;
   const loaded = await loadFindSessionState<ReelSummaryCacheEntry>({
     scope: "orbit",
     sessionKey: cacheKey,
@@ -173,11 +457,13 @@ const readReelSummaryCache = async (cacheKey: string): Promise<any | null> => {
   const entry = loaded?.state;
   if (!entry?.body || !entry?.cachedAtMs) return null;
   if (Date.now() - Number(entry.cachedAtMs) > reelSummaryCacheTtlSeconds * 1000) return null;
+  writeReelSummaryL1(cacheKey, entry.body);
   return entry.body;
 };
 
 const writeReelSummaryCache = async (cacheKey: string, body: any) => {
   if (!reelSummaryCacheEnabled || !cacheKey) return;
+  writeReelSummaryL1(cacheKey, body);
   await saveFindSessionState<ReelSummaryCacheEntry>({
     scope: "orbit",
     sessionKey: cacheKey,
@@ -475,70 +761,105 @@ export const reels_feed = async (req: Request, res: Response) => {
     const page = Math.max(0, Number((req.query as any)?.page ?? 0) || 0);
     const size = Math.min(Math.max(Number((req.query as any)?.size ?? 15) || 15, 1), 20);
     const summary = isSummaryMode((req.query as any)?.summary);
+    const compact = summary && isCompactMode((req.query as any)?.compact);
+    const canUseSummaryServerCache =
+      summary && !isAuthenticatedRequest(req) && !hasAuthCredentialsHint(req);
+    setReelListCacheHeaders(req, res, summary);
     const allowLoop = shouldLoopFeed(
       (req.query as any)?.loop ?? (req.query as any)?.repeat
     );
     const sessionKey = toSessionKey(req);
     const viewerId = Number((req as any).userId ?? 0) || 0;
+    const cacheKey =
+      summary && canUseSummaryServerCache
+        ? buildReelSummaryCacheKey({
+            variant: "feed",
+            page,
+            size,
+            viewerId,
+            sessionKey,
+            allowLoop,
+            compact,
+          })
+        : "";
     if (summary) {
-      const cacheKey = buildReelSummaryCacheKey({
-        variant: "feed",
-        page,
-        size,
-        viewerId,
-        sessionKey,
-        allowLoop,
-      });
+      res.set("X-Summary-Cache-TTL", String(reelSummaryCacheTtlSeconds));
+    }
+    if (summary && cacheKey) {
       const cachedBody = await readReelSummaryCache(cacheKey);
       if (cachedBody) {
         res.set("X-Summary-Cache", "hit");
         return formatResponse({ res, success: true, body: cachedBody });
       }
-      res.set("X-Summary-Cache", "miss");
+    } else if (summary) {
+      res.set("X-Summary-Cache", "bypass");
     }
-    const { data, requestedPage, looped } = await fetchFeedWithLoopFallback({
-      page,
-      size,
-      viewerId: (req as any).userId,
-      suggested: false,
-      summary,
-      sessionKey,
-      allowLoop,
-    });
-    if (shouldLogFindProfile()) {
-      console.log(
-        `[find/orbit/endpoint] ${JSON.stringify({
-          endpoint: "/api/v1/reel",
-          page: Number(requestedPage) || 0,
-          size: Number(size) || 15,
-          viewerId: Number((req as any).userId ?? 0) || null,
-          totalCount: Number(data?.count ?? 0),
-          served: Array.isArray(data?.rows) ? data.rows.length : 0,
-          looped,
-          totalLatencyMs: round3(nowMs() - startedAtMs),
-        })}`
-      );
-    }
-
-    const responseBody = {
-      page: data.page,
-      requestedPage,
-      size: data.size,
-      count: data.count,
-      looped,
-      reels: summary ? (data.rows ?? []).map((row: any) => toReelSummary(row)) : data.rows,
-    };
-    if (summary) {
-      const cacheKey = buildReelSummaryCacheKey({
-        variant: "feed",
+    const buildResponseBody = async () => {
+      const { data, requestedPage, looped } = await fetchFeedWithLoopFallback({
         page,
         size,
-        viewerId,
+        viewerId: (req as any).userId,
+        suggested: false,
+        summary,
         sessionKey,
         allowLoop,
       });
-      await writeReelSummaryCache(cacheKey, responseBody);
+      if (shouldLogFindProfile()) {
+        console.log(
+          `[find/orbit/endpoint] ${JSON.stringify({
+            endpoint: "/api/v1/reel",
+            page: Number(requestedPage) || 0,
+            size: Number(size) || 15,
+            viewerId: Number((req as any).userId ?? 0) || null,
+            totalCount: Number(data?.count ?? 0),
+            served: Array.isArray(data?.rows) ? data.rows.length : 0,
+            looped,
+            totalLatencyMs: round3(nowMs() - startedAtMs),
+          })}`
+        );
+      }
+      const relationshipByUserId = await attachRelationshipsToReels(
+        (req as any).userId,
+        data.rows ?? [],
+        { useCache: summary }
+      );
+
+      return {
+        page: data.page,
+        requestedPage,
+        size: data.size,
+        count: data.count,
+        looped,
+        reels: summary
+          ? (data.rows ?? []).map((row: any) => {
+              const reelSummary = toReelSummary(
+                row,
+                (req as any).userId,
+                relationshipByUserId
+              );
+              return compact ? toReelSummaryCompact(reelSummary) : reelSummary;
+            })
+          : data.rows,
+      };
+    };
+
+    if (summary && cacheKey) {
+      const result = await withSingleFlight(reelSummaryInFlight, cacheKey, async () => {
+        const warm = await readReelSummaryCache(cacheKey);
+        if (warm) return warm;
+        const computed = await buildResponseBody();
+        await writeReelSummaryCache(cacheKey, computed);
+        return computed;
+      });
+      res.set("X-Summary-Cache", result.shared ? "coalesced" : "miss");
+      return formatResponse({
+        res,
+        success: true,
+        body: result.value,
+      });
     }
+
+    const responseBody = await buildResponseBody();
 
     return formatResponse({
       res,
@@ -555,6 +876,10 @@ export const reels_suggested = async (req: Request, res: Response) => {
     const page = Math.max(0, Number((req.query as any)?.page ?? 0) || 0);
     const size = Math.min(Math.max(Number((req.query as any)?.size ?? 15) || 15, 1), 20);
     const summary = isSummaryMode((req.query as any)?.summary);
+    const compact = summary && isCompactMode((req.query as any)?.compact);
+    const canUseSummaryServerCache =
+      summary && !isAuthenticatedRequest(req) && !hasAuthCredentialsHint(req);
+    setReelListCacheHeaders(req, res, summary);
     const allowLoop = shouldLoopFeed(
       (req.query as any)?.loop ?? (req.query as any)?.repeat
     );
@@ -573,6 +898,11 @@ export const reels_suggested = async (req: Request, res: Response) => {
       const profileCursorKey = buildProfileReelCursorKey(req, profileFeedLock.targetUserId);
       if (lockedRows.length > 0) {
         await writeProfileReelCursor(profileCursorKey, lockedRows[0]);
+        const relationshipByUserId = await attachRelationshipsToReels(
+          (req as any).userId,
+          lockedRows,
+          { useCache: summary }
+        );
 
         return formatResponse({
           res,
@@ -583,7 +913,16 @@ export const reels_suggested = async (req: Request, res: Response) => {
             size: lockedData?.size ?? size,
             count: Number(lockedData?.count ?? 0),
             looped: allowLoop,
-            reels: summary ? lockedRows.map((row: any) => toReelSummary(row)) : lockedRows,
+            reels: summary
+              ? lockedRows.map((row: any) => {
+                  const reelSummary = toReelSummary(
+                    row,
+                    (req as any).userId,
+                    relationshipByUserId
+                  );
+                  return compact ? toReelSummaryCompact(reelSummary) : reelSummary;
+                })
+              : lockedRows,
             profileLocked: true,
             profileUserId: profileFeedLock.targetUserId,
             source: "profile_lock",
@@ -598,66 +937,96 @@ export const reels_suggested = async (req: Request, res: Response) => {
     }
 
     const startedAtMs = nowMs();
+    const cacheKey =
+      summary && canUseSummaryServerCache
+        ? buildReelSummaryCacheKey({
+            variant: "suggested",
+            page,
+            size,
+            viewerId,
+            sessionKey,
+            allowLoop,
+            compact,
+          })
+        : "";
     if (summary) {
-      const cacheKey = buildReelSummaryCacheKey({
-        variant: "suggested",
-        page,
-        size,
-        viewerId,
-        sessionKey,
-        allowLoop,
-      });
+      res.set("X-Summary-Cache-TTL", String(reelSummaryCacheTtlSeconds));
+    }
+    if (summary && cacheKey) {
       const cachedBody = await readReelSummaryCache(cacheKey);
       if (cachedBody) {
         res.set("X-Summary-Cache", "hit");
         return formatResponse({ res, success: true, body: cachedBody });
       }
-      res.set("X-Summary-Cache", "miss");
+    } else if (summary) {
+      res.set("X-Summary-Cache", "bypass");
     }
-
-    const { data, requestedPage, looped } = await fetchFeedWithLoopFallback({
-      page,
-      size,
-      viewerId: (req as any).userId,
-      suggested: true,
-      summary,
-      sessionKey,
-      allowLoop,
-    });
-    if (shouldLogFindProfile()) {
-      console.log(
-        `[find/orbit/endpoint] ${JSON.stringify({
-          endpoint: "/api/v1/reel/suggested",
-          page: Number(requestedPage) || 0,
-          size: Number(size) || 15,
-          viewerId: Number((req as any).userId ?? 0) || null,
-          totalCount: Number(data?.count ?? 0),
-          served: Array.isArray(data?.rows) ? data.rows.length : 0,
-          looped,
-          totalLatencyMs: round3(nowMs() - startedAtMs),
-        })}`
-      );
-    }
-
-    const responseBody = {
-      page: data.page,
-      requestedPage,
-      size: data.size,
-      count: data.count,
-      looped,
-      reels: summary ? (data.rows ?? []).map((row: any) => toReelSummary(row)) : data.rows,
-    };
-    if (summary) {
-      const cacheKey = buildReelSummaryCacheKey({
-        variant: "suggested",
+    const buildResponseBody = async () => {
+      const { data, requestedPage, looped } = await fetchFeedWithLoopFallback({
         page,
         size,
-        viewerId,
+        viewerId: (req as any).userId,
+        suggested: true,
+        summary,
         sessionKey,
         allowLoop,
       });
-      await writeReelSummaryCache(cacheKey, responseBody);
+      if (shouldLogFindProfile()) {
+        console.log(
+          `[find/orbit/endpoint] ${JSON.stringify({
+            endpoint: "/api/v1/reel/suggested",
+            page: Number(requestedPage) || 0,
+            size: Number(size) || 15,
+            viewerId: Number((req as any).userId ?? 0) || null,
+            totalCount: Number(data?.count ?? 0),
+            served: Array.isArray(data?.rows) ? data.rows.length : 0,
+            looped,
+            totalLatencyMs: round3(nowMs() - startedAtMs),
+          })}`
+        );
+      }
+      const relationshipByUserId = await attachRelationshipsToReels(
+        (req as any).userId,
+        data.rows ?? [],
+        { useCache: summary }
+      );
+
+      return {
+        page: data.page,
+        requestedPage,
+        size: data.size,
+        count: data.count,
+        looped,
+        reels: summary
+          ? (data.rows ?? []).map((row: any) => {
+              const reelSummary = toReelSummary(
+                row,
+                (req as any).userId,
+                relationshipByUserId
+              );
+              return compact ? toReelSummaryCompact(reelSummary) : reelSummary;
+            })
+          : data.rows,
+      };
+    };
+
+    if (summary && cacheKey) {
+      const result = await withSingleFlight(reelSummaryInFlight, cacheKey, async () => {
+        const warm = await readReelSummaryCache(cacheKey);
+        if (warm) return warm;
+        const computed = await buildResponseBody();
+        await writeReelSummaryCache(cacheKey, computed);
+        return computed;
+      });
+      res.set("X-Summary-Cache", result.shared ? "coalesced" : "miss");
+      return formatResponse({
+        res,
+        success: true,
+        body: result.value,
+      });
     }
+
+    const responseBody = await buildResponseBody();
 
     return formatResponse({
       res,
@@ -674,6 +1043,7 @@ export const my_reels = async (req: Request, res: Response) => {
     const page = Math.max(0, Number((req.query as any)?.page ?? 0) || 0);
     const size = Math.min(Math.max(Number((req.query as any)?.size ?? 15) || 15, 1), 20);
     const data = await repository.listMine(req.userId, page, size);
+    await attachRelationshipsToReels((req as any).userId, data.rows ?? []);
 
     return formatResponse({
       res,
@@ -763,6 +1133,7 @@ export const user_reels = async (req: Request, res: Response) => {
     } else if (!loop) {
       await clearProfileReelCursor(profileCursorKey);
     }
+    await attachRelationshipsToReels((req as any).userId, data.rows ?? []);
 
     return formatResponse({
       res,
@@ -784,6 +1155,7 @@ export const reels_saved = async (req: Request, res: Response) => {
     const page = Math.max(0, Number((req.query as any)?.page ?? 0) || 0);
     const size = Math.min(Math.max(Number((req.query as any)?.size ?? 15) || 15, 1), 20);
     const data = await repository.listSaved(req.userId, page, size);
+    await attachRelationshipsToReels((req as any).userId, data.rows ?? []);
 
     return formatResponse({
       res,
@@ -838,6 +1210,7 @@ export const reel_by_id = async (req: Request, res: Response) => {
       const fallbackReel = Array.isArray(recovered?.rows) ? recovered.rows[0] : null;
 
       if (fallbackReel) {
+        await attachRelationshipsToReels((req as any).userId, [fallbackReel]);
         await writeProfileReelCursor(profileCursorKey, fallbackReel);
         return formatResponse({
           res,
@@ -867,6 +1240,7 @@ export const reel_by_id = async (req: Request, res: Response) => {
         message: "reel not found",
       });
     }
+    await attachRelationshipsToReels((req as any).userId, [reel]);
 
     return formatResponse({
       res,
