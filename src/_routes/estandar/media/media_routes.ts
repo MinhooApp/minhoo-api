@@ -19,6 +19,7 @@ import {
   delete_image_asset,
   delete_video_asset,
   media_rules,
+  moderate_media_asset,
 } from "../../../useCases/media/_controller/controller";
 
 const router = Router();
@@ -30,6 +31,7 @@ router.get("/video/play", video_playback);
 router.get("/video/download", video_download);
 
 router.get("/rules", TokenValidation(), media_rules);
+router.post("/moderate", TokenValidation(), moderate_media_asset);
 
 router.post("/image/direct-upload", TokenValidation(), create_image_direct_upload);
 router.post("/image/confirm", TokenValidation(), confirm_image_upload);

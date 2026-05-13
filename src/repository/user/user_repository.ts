@@ -7,8 +7,11 @@ import Worker from "../../_models/worker/worker";
 import Follower from "../../_models/follower/follower";
 import Category from "../../_models/category/category";
 import UserReport from "../../_models/user/user_report";
+import Role from "../../_models/role/role";
 import { Op, QueryTypes, Sequelize, UniqueConstraintError } from "sequelize";
 import sequelize from "../../_db/connection";
+import { createHmac } from "crypto";
+import { invalidateUserCache, invalidateAuthUserCache } from "../../libs/cache/user_cache";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 const MIN_PUSH_TOKEN_LENGTH = Math.max(
@@ -28,6 +31,13 @@ const PROFILE_REPORT_DISABLE_THRESHOLD = Math.max(
   20,
   Number(process.env.PROFILE_REPORT_DISABLE_THRESHOLD ?? 20) || 20
 );
+const MEDIA_ACCESS_TOKEN_QUERY_KEY = "sat";
+const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
+  30,
+  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 10 * 60) || 10 * 60
+);
+
+type SignedMediaKind = "audio" | "document" | "video_key" | "video_uid" | "image_id";
 
 const isTrueLike = (value: any) => value === true || value === 1 || value === "1";
 
@@ -44,6 +54,146 @@ const toDistinctReporterIds = (rows: any[]) => {
     if (Number.isFinite(reporterId) && reporterId > 0) ids.add(reporterId);
   });
   return ids;
+};
+
+const toBase64Url = (value: Buffer | string) =>
+  Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+
+const getMediaAccessSigningSecret = () =>
+  String(
+    process.env.MEDIA_ACCESS_SIGNING_SECRET ??
+      process.env.JWT_SECRET ??
+      process.env.SECRETORPRIVATEKEY ??
+      ""
+  ).trim();
+
+const normalizeImageId = (value: any): string | null => {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^[a-zA-Z0-9._-]{6,255}$/.test(normalized)) return null;
+  return normalized;
+};
+
+const normalizeVideoUid = (value: any): string | null => {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^[a-f0-9]{32}$/i.test(normalized)) return null;
+  return normalized.toLowerCase();
+};
+
+const normalizeStorageKey = (value: any): string | null => {
+  const decoded = decodeURIComponent(String(value ?? "").trim());
+  if (!decoded) return null;
+  if (!/^[a-zA-Z0-9/_.,@-]{2,512}$/.test(decoded)) return null;
+  return decoded;
+};
+
+const buildMediaAccessToken = (kind: SignedMediaKind, resourceKey: string): string | null => {
+  const secret = getMediaAccessSigningSecret();
+  const key = String(resourceKey ?? "").trim();
+  if (!secret || !key) return null;
+  const exp = Math.floor(Date.now() / 1000) + MEDIA_ACCESS_TOKEN_TTL_SECONDS;
+  const payload = `${kind}:${key}:${exp}`;
+  const signature = createHmac("sha256", secret).update(payload).digest();
+  return `${exp}.${toBase64Url(signature)}`;
+};
+
+const rebuildUrlLikeInput = (rawUrl: string, parsed: URL): string => {
+  const trimmed = String(rawUrl ?? "").trim();
+  if (!trimmed) return trimmed;
+  const query = parsed.searchParams.toString();
+  const pathWithQuery = query ? `${parsed.pathname}?${query}` : parsed.pathname;
+  if (/^https?:\/\//i.test(trimmed)) return `${parsed.protocol}//${parsed.host}${pathWithQuery}`;
+  return pathWithQuery;
+};
+
+const removeMediaAccessTokenFromUrl = (rawUrl: string): string => {
+  const trimmed = String(rawUrl ?? "").trim();
+  if (!trimmed || !trimmed.includes(MEDIA_ACCESS_TOKEN_QUERY_KEY)) return trimmed;
+
+  try {
+    const parsed = new URL(trimmed, "http://local");
+    if (!String(parsed.pathname ?? "").includes("/api/v1/media/")) return trimmed;
+    parsed.searchParams.delete(MEDIA_ACCESS_TOKEN_QUERY_KEY);
+    return rebuildUrlLikeInput(trimmed, parsed);
+  } catch {
+    return trimmed;
+  }
+};
+
+const refreshSignedMediaUrl = (rawUrl: string): string => {
+  const canonicalUrl = removeMediaAccessTokenFromUrl(rawUrl);
+  const trimmed = String(canonicalUrl ?? "").trim();
+  if (!trimmed) return trimmed;
+
+  try {
+    const parsed = new URL(trimmed, "http://local");
+    const pathname = String(parsed.pathname ?? "").trim().toLowerCase();
+
+    let kind: SignedMediaKind | null = null;
+    let resourceKey: string | null = null;
+
+    if (pathname === "/api/v1/media/image/play") {
+      kind = "image_id";
+      resourceKey = normalizeImageId(parsed.searchParams.get("id"));
+    } else if (pathname === "/api/v1/media/video/play") {
+      const key = normalizeStorageKey(parsed.searchParams.get("key"));
+      if (key) {
+        kind = "video_key";
+        resourceKey = key;
+      } else {
+        const uidRaw = String(parsed.searchParams.get("uid") ?? "").trim();
+        const uid = normalizeVideoUid(uidRaw);
+        if (uid) {
+          kind = "video_uid";
+          resourceKey = uid;
+        } else {
+          const fallbackKey = normalizeStorageKey(uidRaw);
+          if (fallbackKey) {
+            kind = "video_key";
+            resourceKey = fallbackKey;
+          }
+        }
+      }
+    } else if (pathname === "/api/v1/media/audio/play") {
+      kind = "audio";
+      resourceKey = normalizeStorageKey(parsed.searchParams.get("key"));
+    } else if (pathname === "/api/v1/media/document/download") {
+      kind = "document";
+      resourceKey = normalizeStorageKey(parsed.searchParams.get("key"));
+    }
+
+    if (!kind || !resourceKey) return trimmed;
+
+    const token = buildMediaAccessToken(kind, resourceKey);
+    if (!token) return trimmed;
+    parsed.searchParams.set(MEDIA_ACCESS_TOKEN_QUERY_KEY, token);
+    return rebuildUrlLikeInput(trimmed, parsed);
+  } catch {
+    return trimmed;
+  }
+};
+
+const refreshProfilePostsMediaLinks = (user: any) => {
+  const posts = Array.isArray((user as any)?.posts) ? (user as any).posts : [];
+  posts.forEach((post: any) => {
+    const mediaRows = Array.isArray((post as any)?.post_media) ? (post as any).post_media : [];
+    mediaRows.forEach((media: any) => {
+      const original = String(media?.url ?? "").trim();
+      if (!original) return;
+      const refreshed = refreshSignedMediaUrl(original);
+      if (refreshed === original) return;
+      if (typeof (media as any)?.setDataValue === "function") {
+        (media as any).setDataValue("url", refreshed);
+      } else {
+        (media as any).url = refreshed;
+      }
+    });
+  });
 };
 
 /**
@@ -76,13 +226,29 @@ export const search_profiles = async (
   query: any = "",
   meId: any = -1,
   page: any = 0,
-  size: any = 20
+  size: any = 20,
+  modeRaw: any = "all"
 ) => {
   const pageNumber = Number.isFinite(Number(page)) && Number(page) >= 0 ? Math.floor(Number(page)) : 0;
   const sizeNumber = Number.isFinite(Number(size)) ? Math.floor(Number(size)) : 20;
   const limit = Math.min(Math.max(sizeNumber, 1), 100);
   const offset = pageNumber * limit;
-  const search = String(query ?? "").trim();
+  const mode = String(modeRaw ?? "all")
+    .trim()
+    .toLowerCase() === "username"
+    ? "username"
+    : "all";
+  const search = String(query ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^@+/, "")
+    .replace(/\s+/g, " ")
+    .slice(0, 80);
+
+  if (!search) {
+    return { count: 0, rows: [] };
+  }
+
   const where: any = {
     available: true,
     disabled: false,
@@ -91,48 +257,57 @@ export const search_profiles = async (
   const and: any[] = [];
   const order: any[] = [];
 
-  if (search.length) {
+  if (mode === "username") {
+    and.push(
+      Sequelize.where(Sequelize.fn("lower", Sequelize.col("user.username")), {
+        [Op.like]: `%${search}%`,
+      })
+    );
+  } else {
     const tokens = search.split(/\s+/).filter(Boolean).slice(0, 5);
-    const tokenClauses = tokens.map((token) => {
-      const like = `%${token}%`;
-      return {
-        [Op.or]: [
-          { name: { [Op.like]: like } },
-          { last_name: { [Op.like]: like } },
-          { username: { [Op.like]: like } },
-        ],
-      };
-    });
+    const tokenClauses = tokens.map((token) => ({
+      [Op.or]: [
+        Sequelize.where(Sequelize.fn("lower", Sequelize.col("user.name")), {
+          [Op.like]: `%${token}%`,
+        }),
+        Sequelize.where(Sequelize.fn("lower", Sequelize.col("user.last_name")), {
+          [Op.like]: `%${token}%`,
+        }),
+        Sequelize.where(Sequelize.fn("lower", Sequelize.col("user.username")), {
+          [Op.like]: `%${token}%`,
+        }),
+      ],
+    }));
 
-    // UX rule:
-    // - 1 token: match in any field (OR)
-    // - 2+ tokens: each token must appear in any field (AND across tokens)
     if (tokenClauses.length === 1) {
       and.push(tokenClauses[0]);
     } else if (tokenClauses.length > 1) {
       and.push(...tokenClauses);
     }
-
-    // Relevance ranking for search:
-    // exact username > username prefix > username contains > name/last_name contains
-    const queryLower = search.toLowerCase();
-    const exact = sequelize.escape(queryLower);
-    const prefix = sequelize.escape(`${queryLower}%`);
-    const contains = sequelize.escape(`%${queryLower}%`);
-    order.push([
-      Sequelize.literal(`
-        CASE
-          WHEN \`user\`.\`username\` IS NOT NULL AND LOWER(\`user\`.\`username\`) = ${exact} THEN 0
-          WHEN \`user\`.\`username\` IS NOT NULL AND LOWER(\`user\`.\`username\`) LIKE ${prefix} THEN 1
-          WHEN \`user\`.\`username\` IS NOT NULL AND LOWER(\`user\`.\`username\`) LIKE ${contains} THEN 2
-          WHEN \`user\`.\`name\` IS NOT NULL AND LOWER(\`user\`.\`name\`) LIKE ${contains} THEN 3
-          WHEN \`user\`.\`last_name\` IS NOT NULL AND LOWER(\`user\`.\`last_name\`) LIKE ${contains} THEN 4
-          ELSE 5
-        END
-      `),
-      "ASC",
-    ]);
   }
+
+  // Ranking contract:
+  // exact username > username prefix > username contains
+  const exact = sequelize.escape(search);
+  const prefix = sequelize.escape(`${search}%`);
+  const contains = sequelize.escape(`%${search}%`);
+  order.push([
+    Sequelize.literal(`
+      CASE
+        WHEN \`user\`.\`username\` IS NOT NULL AND LOWER(\`user\`.\`username\`) = ${exact} THEN 0
+        WHEN \`user\`.\`username\` IS NOT NULL AND LOWER(\`user\`.\`username\`) LIKE ${prefix} THEN 1
+        WHEN \`user\`.\`username\` IS NOT NULL AND LOWER(\`user\`.\`username\`) LIKE ${contains} THEN 2
+        ${mode === "all"
+          ? `
+        WHEN \`user\`.\`name\` IS NOT NULL AND LOWER(\`user\`.\`name\`) LIKE ${contains} THEN 3
+        WHEN \`user\`.\`last_name\` IS NOT NULL AND LOWER(\`user\`.\`last_name\`) LIKE ${contains} THEN 4
+        `
+          : ""}
+        ELSE 5
+      END
+    `),
+    "ASC",
+  ]);
 
   const viewerId = Number(meId);
   if (Number.isFinite(viewerId) && viewerId > 0) {
@@ -165,18 +340,13 @@ export const search_profiles = async (
     where[Op.and] = and;
   }
 
-  if (!search.length) {
-    // Empty query => show a random discovery list.
-    order.push([Sequelize.literal("RAND()"), "ASC"]);
-  } else {
-    order.push(
-      [Sequelize.literal("CASE WHEN `user`.`username` IS NULL OR `user`.`username` = '' THEN 1 ELSE 0 END"), "ASC"],
-      ["username", "ASC"],
-      ["name", "ASC"],
-      ["last_name", "ASC"],
-      ["id", "DESC"]
-    );
-  }
+  order.push(
+    [Sequelize.literal("CASE WHEN `user`.`username` IS NULL OR `user`.`username` = '' THEN 1 ELSE 0 END"), "ASC"],
+    ["username", "ASC"],
+    ["name", "ASC"],
+    ["last_name", "ASC"],
+    ["id", "DESC"]
+  );
 
   return User.findAndCountAll({
     where,
@@ -187,7 +357,11 @@ export const search_profiles = async (
       "username",
       "image_profil",
       "verified",
+      "profile_verified",
+      "profile_verification_status",
       "rate",
+      "available",
+      "disabled",
       "job_category_ids",
       "job_categories_labels",
     ],
@@ -246,12 +420,17 @@ export const search_profiles = async (
         userCategoryLabels.length > 0
           ? userCategoryLabels
           : Array.from(new Set(workerCategoryLabels));
+      const profileVerified = Boolean(
+        plain?.profile_verified ?? plain?.verified_badge ?? false
+      );
 
       return {
         ...plain,
         username,
         user_name: username,
         username_handle: username ? `@${username}` : null,
+        profile_verified: profileVerified,
+        verified_badge: profileVerified,
         category_ids,
         categories: categories_labels,
         categories_labels,
@@ -274,6 +453,373 @@ export const users = async (page: any = 0, size: any = 10) => {
     include: userIncludes(-1, { includeFollowGraph: false }),
   });
   return users;
+};
+
+type AdminListStatus = "all" | "active" | "disabled" | "deleted" | "directory";
+type AdminListVerified = "all" | "true" | "false";
+type AdminListRole = "all" | "worker" | "client";
+
+type AdminListUsersParams = {
+  page?: number;
+  limit?: number;
+  q?: string;
+  status?: AdminListStatus;
+  verified?: AdminListVerified;
+  role?: AdminListRole;
+  countryId?: number | null;
+  stateId?: number | null;
+  cityId?: number | null;
+};
+
+type AdminLocationSummaryParams = {
+  status?: AdminListStatus;
+  verified?: AdminListVerified;
+  role?: AdminListRole;
+  countryId?: number | null;
+  stateId?: number | null;
+  cityId?: number | null;
+};
+
+const adminUsersBaseAttributes = [
+  "id",
+  "name",
+  "last_name",
+  "username",
+  "image_profil",
+  "birthday",
+  "email",
+  "dialing_code",
+  "phone",
+  "country_residence_id",
+  "state_residence_id",
+  "city_residence_id",
+  "city_residence_name",
+  "available",
+  "disabled",
+  "is_deleted",
+  "deleted_at",
+  "profile_verified",
+  "profile_verification_status",
+  "profile_verified_at",
+  "profile_verification_last_submitted_at",
+  "createdAt",
+  "updatedAt",
+] as const;
+
+const applyAdminStatusFilter = (where: any, status: AdminListStatus) => {
+  switch (status) {
+    case "active":
+      where.available = true;
+      where.disabled = false;
+      where.is_deleted = false;
+      return;
+    case "directory":
+      where.available = true;
+      where.disabled = false;
+      where.is_deleted = false;
+      where[Op.and] = [
+        ...(Array.isArray(where[Op.and]) ? where[Op.and] : []),
+        Sequelize.literal(
+          "EXISTS (SELECT 1 FROM `workers` AS `w` WHERE `w`.`userId` = `user`.`id` AND `w`.`available` = 1 AND `w`.`visible` = 1)"
+        ),
+      ];
+      return;
+    case "disabled":
+      where.disabled = true;
+      where.is_deleted = false;
+      return;
+    case "deleted":
+      where.is_deleted = true;
+      return;
+    case "all":
+    default:
+      return;
+  }
+};
+
+const applyAdminVerifiedFilter = (where: any, verified: AdminListVerified) => {
+  if (verified === "true") {
+    where.profile_verified = true;
+    return;
+  }
+  if (verified === "false") {
+    where.profile_verified = false;
+  }
+};
+
+const normalizeAdminRoleFilter = (roleRaw: any): AdminListRole => {
+  const role = String(roleRaw ?? "all")
+    .trim()
+    .toLowerCase();
+  if (role === "worker") return "worker";
+  if (role === "client" || role === "customer") return "client";
+  return "all";
+};
+
+const applyAdminUserTypeFilter = (where: any, roleRaw: any) => {
+  const role = normalizeAdminRoleFilter(roleRaw);
+  if (role === "all") return;
+
+  const roleLiteral =
+    role === "worker"
+      ? Sequelize.literal(
+          "EXISTS (SELECT 1 FROM `workers` AS `w` WHERE `w`.`userId` = `user`.`id`)"
+        )
+      : Sequelize.literal(
+          "NOT EXISTS (SELECT 1 FROM `workers` AS `w` WHERE `w`.`userId` = `user`.`id`)"
+        );
+
+  where[Op.and] = [...(Array.isArray(where[Op.and]) ? where[Op.and] : []), roleLiteral];
+};
+
+const applyAdminLocationFilter = (
+  where: any,
+  countryId: number | null,
+  stateId: number | null,
+  cityId: number | null
+) => {
+  const LOCATION_NULL_SENTINEL = -1;
+  const pushAndCondition = (condition: any) => {
+    where[Op.and] = [...(Array.isArray(where[Op.and]) ? where[Op.and] : []), condition];
+  };
+
+  const normalizedCountry = Number(countryId);
+  if (normalizedCountry === LOCATION_NULL_SENTINEL) {
+    pushAndCondition({ country_residence_id: { [Op.is]: null } });
+  } else
+  if (Number.isFinite(normalizedCountry) && normalizedCountry > 0) {
+    where.country_residence_id = Math.trunc(normalizedCountry);
+  }
+
+  const normalizedState = Number(stateId);
+  if (normalizedState === LOCATION_NULL_SENTINEL) {
+    pushAndCondition({ state_residence_id: { [Op.is]: null } });
+  } else
+  if (Number.isFinite(normalizedState) && normalizedState > 0) {
+    where.state_residence_id = Math.trunc(normalizedState);
+  }
+
+  const normalizedCity = Number(cityId);
+  if (normalizedCity === LOCATION_NULL_SENTINEL) {
+    pushAndCondition({ city_residence_id: { [Op.is]: null } });
+  } else
+  if (Number.isFinite(normalizedCity) && normalizedCity > 0) {
+    where.city_residence_id = Math.trunc(normalizedCity);
+  }
+};
+
+const buildAdminUsersWhere = ({
+  status = "all",
+  verified = "all",
+  role = "all",
+  countryId = null,
+  stateId = null,
+  cityId = null,
+}: {
+  status?: AdminListStatus;
+  verified?: AdminListVerified;
+  role?: AdminListRole;
+  countryId?: number | null;
+  stateId?: number | null;
+  cityId?: number | null;
+} = {}) => {
+  const where: any = {};
+  applyAdminStatusFilter(where, status);
+  applyAdminVerifiedFilter(where, verified);
+  applyAdminUserTypeFilter(where, role);
+  applyAdminLocationFilter(where, countryId, stateId, cityId);
+  return where;
+};
+
+const adminRolesReadInclude = [
+  {
+    model: Role,
+    as: "roles",
+    attributes: ["id", "role", "description"],
+    through: { attributes: [] },
+    required: false,
+  },
+];
+
+const parseGroupedCount = (raw: any) => {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return Math.trunc(parsed);
+};
+
+const parseGroupedId = (raw: any) => {
+  if (raw === null || raw === undefined || raw === "") return null;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.trunc(parsed);
+};
+
+export const admin_location_summary = async ({
+  status = "all",
+  verified = "all",
+  role = "all",
+  countryId = null,
+  stateId = null,
+  cityId = null,
+}: AdminLocationSummaryParams = {}) => {
+  const where = buildAdminUsersWhere({
+    status,
+    verified,
+    role,
+    countryId,
+    stateId,
+    cityId,
+  });
+  const countExpression = Sequelize.fn("COUNT", Sequelize.col("id"));
+
+  const [totalUsers, countriesRaw, statesRaw, citiesRaw] = await Promise.all([
+    User.count({ where }),
+    User.findAll({
+      where,
+      attributes: [
+        "country_residence_id",
+        [countExpression, "count"],
+      ],
+      group: ["country_residence_id"],
+      order: [[Sequelize.literal("count"), "DESC"]],
+      raw: true,
+    }),
+    User.findAll({
+      where,
+      attributes: [
+        "country_residence_id",
+        "state_residence_id",
+        [countExpression, "count"],
+      ],
+      group: ["country_residence_id", "state_residence_id"],
+      order: [[Sequelize.literal("count"), "DESC"]],
+      raw: true,
+    }),
+    User.findAll({
+      where,
+      attributes: [
+        "country_residence_id",
+        "state_residence_id",
+        "city_residence_id",
+        "city_residence_name",
+        [countExpression, "count"],
+      ],
+      group: [
+        "country_residence_id",
+        "state_residence_id",
+        "city_residence_id",
+        "city_residence_name",
+      ],
+      order: [[Sequelize.literal("count"), "DESC"]],
+      raw: true,
+    }),
+  ]);
+
+  const countries = (countriesRaw as any[]).map((row: any) => ({
+    country_id: parseGroupedId(row?.country_residence_id),
+    count: parseGroupedCount(row?.count),
+  }));
+
+  const states = (statesRaw as any[]).map((row: any) => ({
+    country_id: parseGroupedId(row?.country_residence_id),
+    state_id: parseGroupedId(row?.state_residence_id),
+    count: parseGroupedCount(row?.count),
+  }));
+
+  const cities = (citiesRaw as any[]).map((row: any) => ({
+    country_id: parseGroupedId(row?.country_residence_id),
+    state_id: parseGroupedId(row?.state_residence_id),
+    city_id: parseGroupedId(row?.city_residence_id),
+    city_residence_name:
+      String(row?.city_residence_name ?? "").trim() || null,
+    count: parseGroupedCount(row?.count),
+  }));
+
+  return {
+    total_users: Number(totalUsers) || 0,
+    countries,
+    states,
+    cities,
+  };
+};
+
+export const admin_list_users = async ({
+  page = 1,
+  limit = 20,
+  q = "",
+  status = "all",
+  verified = "all",
+  role = "all",
+  countryId = null,
+  stateId = null,
+  cityId = null,
+}: AdminListUsersParams = {}) => {
+  const safePage = Number.isFinite(Number(page)) ? Math.max(1, Math.floor(Number(page))) : 1;
+  const safeLimit = Number.isFinite(Number(limit))
+    ? Math.min(100, Math.max(1, Math.floor(Number(limit))))
+    : 20;
+  const offset = (safePage - 1) * safeLimit;
+
+  const where: any = buildAdminUsersWhere({
+    status,
+    verified,
+    role,
+    countryId,
+    stateId,
+    cityId,
+  });
+
+  const query = String(q ?? "").trim();
+  if (query) {
+    const queryOr: any[] = [
+      { name: { [Op.like]: `%${query}%` } },
+      { last_name: { [Op.like]: `%${query}%` } },
+      { username: { [Op.like]: `%${query}%` } },
+      { email: { [Op.like]: `%${query}%` } },
+      { phone: { [Op.like]: `%${query}%` } },
+    ];
+
+    const numericId = Number(query);
+    if (Number.isFinite(numericId) && numericId > 0) {
+      queryOr.unshift({ id: Math.floor(numericId) });
+    }
+
+    where[Op.and] = [...(Array.isArray(where[Op.and]) ? where[Op.and] : []), { [Op.or]: queryOr }];
+  }
+
+  const [listResult, totalUsersGlobal] = await Promise.all([
+    User.findAndCountAll({
+      where,
+      attributes: adminUsersBaseAttributes as unknown as string[],
+      include: adminRolesReadInclude as any,
+      limit: safeLimit,
+      offset,
+      distinct: true,
+      order: [
+        ["createdAt", "DESC"],
+        ["id", "DESC"],
+      ],
+    }),
+    User.count(),
+  ]);
+
+  return {
+    ...listResult,
+    total_users_global: Number(totalUsersGlobal) || 0,
+  };
+};
+
+export const admin_get_user_by_id = async (idRaw: any) => {
+  const id = Number(idRaw);
+  if (!Number.isFinite(id) || id <= 0) return null;
+
+  return User.findOne({
+    where: { id: Math.floor(id) },
+    attributes: {
+      exclude: ["password", "auth_token", "temp_code", "created_temp_code"],
+    },
+    include: userIncludes(-1, { includeFollowGraph: false }),
+  });
 };
 
 /* 🔹 Perfil de usuario (solo si no está deshabilitado globalmente)
@@ -310,6 +856,8 @@ export const get = async (id: any, meId: any = -1) => {
     replacements: { meId, id },
   });
 
+  if (user) refreshProfilePostsMediaLinks(user);
+
   return user;
 };
 
@@ -320,6 +868,8 @@ export const update = async (id: any, body: any) => {
     include: userIncludes(-1, { includeFollowGraph: false }),
   });
   const user = await userTemp?.update(body);
+  void invalidateUserCache(Number(id));
+  void invalidateAuthUserCache(Number(id));
   return [user];
 };
 
@@ -1121,6 +1671,25 @@ export const admin_restore_deleted = async (id: number) => {
   return affected
     ? { id, restored: true }
     : { id, restored: false, notFound: true };
+};
+
+export const admin_set_birthday = async (id: number, birthday: Date | null) => {
+  const [affected] = await User.update(
+    { birthday },
+    { where: { id } }
+  );
+
+  if (!affected) return { id, notFound: true };
+
+  const user = await User.findByPk(id, {
+    attributes: ["id", "birthday"],
+  });
+
+  return {
+    id,
+    birthday: user?.getDataValue("birthday") ?? null,
+    notFound: false,
+  };
 };
 
 export const activeUser = async (id: any) => {

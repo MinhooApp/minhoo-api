@@ -5,6 +5,9 @@ import {
   axios,
 } from "../_module/module";
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "crypto";
+import multer from "multer";
+import { promises as fs } from "fs";
+import path from "path";
 
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const IS_PRODUCTION =
@@ -15,6 +18,27 @@ const IMAGE_MAX_RESOLUTION = 2048;
 const IMAGE_FEED_WIDTH = 1080;
 const IMAGE_OUTPUT_FORMAT = "webp";
 const IMAGE_OUTPUT_QUALITY = 80;
+const IMAGE_UPLOAD_TTL_SECONDS = 60 * 15;
+const IMAGE_PLAY_TTL_SECONDS = 60 * 10;
+const IMAGE_R2_KEY_PREFIX =
+  String(process.env.CLOUDFLARE_R2_IMAGE_PREFIX ?? "r2img")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "") || "r2img";
+const LOCAL_IMAGE_FALLBACK_ENABLED =
+  String(process.env.LOCAL_IMAGE_FALLBACK_ENABLED ?? "1").trim() !== "0";
+const LOCAL_IMAGE_FALLBACK_DIR_RAW = String(
+  process.env.LOCAL_IMAGE_FALLBACK_DIR ?? "/home/appuser/minhoo-image-fallback"
+).trim();
+const LOCAL_IMAGE_FALLBACK_DIR =
+  !LOCAL_IMAGE_FALLBACK_DIR_RAW ||
+  LOCAL_IMAGE_FALLBACK_DIR_RAW === "/tmp" ||
+  LOCAL_IMAGE_FALLBACK_DIR_RAW.startsWith("/tmp/")
+    ? "/home/appuser/minhoo-image-fallback"
+    : LOCAL_IMAGE_FALLBACK_DIR_RAW;
+const uploadImageFallback = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: IMAGE_MAX_BYTES },
+});
 const IMAGE_PLAYBACK_REDIRECT_TTL_SECONDS = Math.max(
   30,
   Number(process.env.IMAGE_PLAYBACK_REDIRECT_TTL_SECONDS ?? 300) || 300
@@ -35,7 +59,7 @@ const VIDEO_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS = Math.max(
 );
 
 const VIDEO_MAX_BYTES = 100 * 1024 * 1024;
-const VIDEO_MAX_DURATION_SECONDS = 60;
+const VIDEO_MAX_DURATION_SECONDS = 180;
 const VIDEO_OUTPUT_RESOLUTION = "720p";
 const VIDEO_OUTPUT_CODEC = "H.264 MP4";
 const VIDEO_STREAMING = "HLS";
@@ -44,10 +68,32 @@ const CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS = Math.max(
   5000,
   Number(process.env.CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS ?? 20000) || 20000
 );
+const CLOUDFLARE_IMAGE_CONFIRM_TIMEOUT_MS = Math.max(
+  500,
+  Number(process.env.CLOUDFLARE_IMAGE_CONFIRM_TIMEOUT_MS ?? 1200) || 1200
+);
 const VIDEO_PENDINGUPLOAD_STALE_SECONDS = Math.max(
   10,
   Number(process.env.VIDEO_PENDINGUPLOAD_STALE_SECONDS ?? 20) || 20
 );
+const VIDEO_CONFIRM_READY_CACHE_TTL_MS = Math.max(
+  5000,
+  Number(process.env.VIDEO_CONFIRM_READY_CACHE_TTL_MS ?? 60000) || 60000
+);
+const VIDEO_CONFIRM_PENDING_CACHE_TTL_MS = Math.max(
+  500,
+  Number(process.env.VIDEO_CONFIRM_PENDING_CACHE_TTL_MS ?? 1500) || 1500
+);
+const VIDEO_CONFIRM_CACHE_MAX_ITEMS = Math.max(
+  100,
+  Number(process.env.VIDEO_CONFIRM_CACHE_MAX_ITEMS ?? 10000) || 10000
+);
+const VIDEO_DOWNLOAD_STREAM_MODE = String(
+  process.env.VIDEO_DOWNLOAD_STREAM_MODE ?? "redirect"
+)
+  .trim()
+  .toLowerCase();
+const VIDEO_DOWNLOAD_SHOULD_PROXY = VIDEO_DOWNLOAD_STREAM_MODE === "proxy";
 
 const AUDIO_MAX_BYTES = 10 * 1024 * 1024;
 const AUDIO_MAX_DURATION_SECONDS = 60;
@@ -93,6 +139,546 @@ const parseCsv = (value: any): string[] => {
     .filter(Boolean);
 };
 
+type ModerationCategory = "sexual" | "violence" | "alcohol" | "tobacco";
+
+type ModerationDecision = {
+  blocked: boolean;
+  categories: ModerationCategory[];
+  rawSignals: string[];
+};
+
+type ModerationAssetType = "image" | "video";
+
+const MODERATION_CATEGORY_KEYWORDS: Record<ModerationCategory, string[]> = {
+  sexual: [
+    "sexual",
+    "sex",
+    "nudity",
+    "nude",
+    "porn",
+    "explicit",
+    "nsfw",
+    "adult",
+  ],
+  violence: [
+    "violence",
+    "violent",
+    "gore",
+    "blood",
+    "graphic",
+    "weapon",
+    "fight",
+  ],
+  alcohol: [
+    "alcohol",
+    "beer",
+    "wine",
+    "vodka",
+    "whisky",
+    "liquor",
+    "drunk",
+  ],
+  tobacco: [
+    "tobacco",
+    "cigarette",
+    "cigar",
+    "smoke",
+    "smoking",
+    "vape",
+    "nicotine",
+  ],
+};
+
+const isTruthyLike = (value: any): boolean => {
+  if (value === true || value === 1) return true;
+  const raw = String(value ?? "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "y";
+};
+
+const prefersSpanishLocale = (req: Request): boolean => {
+  const candidates = [
+    req.header("x-language"),
+    req.header("x-lang"),
+    req.header("x-locale"),
+    req.header("accept-language"),
+    (req.body as any)?.language,
+    (req.body as any)?.lang,
+    (req.body as any)?.locale,
+  ];
+  const raw = candidates
+    .map((value) => String(value ?? "").trim().toLowerCase())
+    .find((value) => Boolean(value));
+  return Boolean(raw && raw.startsWith("es"));
+};
+
+const normalizeModerationSignals = (value: any): string[] => {
+  if (!value) return [];
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry ?? "").trim().toLowerCase())
+      .filter(Boolean);
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (!normalized) return [];
+    return normalized
+      .split(/[,\s;|]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+  if (typeof value === "object") {
+    return Object.entries(value)
+      .filter(([, flag]) => isTruthyLike(flag))
+      .map(([key]) => String(key).trim().toLowerCase())
+      .filter(Boolean);
+  }
+  return [];
+};
+
+const detectModerationCategories = (signals: string[]): ModerationCategory[] => {
+  const categories: ModerationCategory[] = [];
+  (Object.keys(MODERATION_CATEGORY_KEYWORDS) as ModerationCategory[]).forEach((category) => {
+    const hit = signals.some((signal) =>
+      MODERATION_CATEGORY_KEYWORDS[category].some((keyword) => signal.includes(keyword))
+    );
+    if (hit) categories.push(category);
+  });
+  return categories;
+};
+
+const normalizeModerationAssetType = (value: any): ModerationAssetType | null => {
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "_");
+  if (!normalized) return null;
+  if (normalized === "image" || normalized === "photo" || normalized === "img") return "image";
+  if (normalized === "video" || normalized === "stream") return "video";
+  return null;
+};
+
+const normalizeModerationDecisionFromObject = (raw: any): ModerationDecision => {
+  const payload = raw ?? {};
+  const sources = [
+    payload,
+    payload?.moderation,
+    payload?.data,
+    payload?.data?.moderation,
+    payload?.result,
+    payload?.result?.moderation,
+    payload?.output,
+    payload?.analysis,
+    payload?.classification,
+  ].filter(Boolean);
+
+  const rawSignals = Array.from(
+    new Set(
+      sources.flatMap((source: any) => [
+        ...normalizeModerationSignals(source?.moderation_categories),
+        ...normalizeModerationSignals(source?.moderation_labels),
+        ...normalizeModerationSignals(source?.moderation_hazards),
+        ...normalizeModerationSignals(source?.blocked_categories),
+        ...normalizeModerationSignals(source?.categories),
+        ...normalizeModerationSignals(source?.labels),
+        ...normalizeModerationSignals(source?.hazards),
+        ...normalizeModerationSignals(source?.violations),
+        ...normalizeModerationSignals(source?.classes),
+      ])
+    )
+  );
+
+  const categories = detectModerationCategories(rawSignals);
+  const explicitlyBlocked = sources.some(
+    (source: any) =>
+      isTruthyLike(source?.blocked) ||
+      isTruthyLike(source?.is_blocked) ||
+      isTruthyLike(source?.moderation_blocked) ||
+      isTruthyLike(source?.blocked_content) ||
+      isTruthyLike(source?.unsafe)
+  );
+
+  return {
+    blocked: explicitlyBlocked || categories.length > 0,
+    categories,
+    rawSignals,
+  };
+};
+
+const buildModerationConfirmPayload = (decision: ModerationDecision) => ({
+  moderation_blocked: decision.blocked,
+  moderation_categories: decision.categories,
+});
+
+const resolveModerationDecision = (req: Request): ModerationDecision => {
+  const body = (req.body as any) ?? {};
+  return normalizeModerationDecisionFromObject(body);
+};
+
+const buildModerationBlockedMessage = (req: Request, categories: ModerationCategory[]) => {
+  const isSpanish = prefersSpanishLocale(req);
+  if (isSpanish) {
+    if (categories.length === 1 && categories[0] === "sexual") {
+      return "No tenemos permitido publicar contenido sexual explícito en Minhoo.";
+    }
+    if (categories.length === 1 && categories[0] === "violence") {
+      return "No tenemos permitido publicar contenido violento o gráfico en Minhoo.";
+    }
+    if (categories.length === 1 && categories[0] === "alcohol") {
+      return "No tenemos permitido publicar contenido relacionado con alcohol en Minhoo.";
+    }
+    if (categories.length === 1 && categories[0] === "tobacco") {
+      return "No tenemos permitido publicar contenido relacionado con tabaco en Minhoo.";
+    }
+    return "No tenemos permitido este tipo de contenido en Minhoo. Evita contenido sexual, violento o relacionado con alcohol o tabaco.";
+  }
+
+  if (categories.length === 1 && categories[0] === "sexual") {
+    return "Explicit sexual content is not allowed on Minhoo.";
+  }
+  if (categories.length === 1 && categories[0] === "violence") {
+    return "Violent or graphic content is not allowed on Minhoo.";
+  }
+  if (categories.length === 1 && categories[0] === "alcohol") {
+    return "Alcohol-related content is not allowed on Minhoo.";
+  }
+  if (categories.length === 1 && categories[0] === "tobacco") {
+    return "Tobacco-related content is not allowed on Minhoo.";
+  }
+  return "This type of content is not allowed on Minhoo. Please avoid sexual, violent, alcohol-related, or tobacco-related content.";
+};
+
+const respondModerationBlocked = ({
+  req,
+  res,
+  assetType,
+  decision,
+}: {
+  req: Request;
+  res: Response;
+  assetType: "image" | "video";
+  decision: ModerationDecision;
+}) =>
+  formatResponse({
+    res,
+    success: false,
+    islogin: true,
+    code: 422,
+    message: buildModerationBlockedMessage(req, decision.categories),
+    body: {
+      moderation: {
+        blocked: true,
+        code: "MEDIA_BLOCKED_CONTENT_POLICY",
+        asset_type: assetType,
+        categories: decision.categories,
+        signals: decision.rawSignals,
+      },
+    },
+  });
+
+const getModerationProviderUrl = () =>
+  String(
+    process.env.MEDIA_MODERATION_PROVIDER_URL ??
+      process.env.CLOUDFLARE_MODERATION_WORKER_URL ??
+      ""
+  ).trim();
+
+const getModerationProviderToken = () =>
+  String(
+    process.env.MEDIA_MODERATION_PROVIDER_TOKEN ??
+      process.env.CLOUDFLARE_MODERATION_WORKER_TOKEN ??
+      ""
+  ).trim();
+
+const getModerationProviderTimeoutMs = () => {
+  const parsed = Number(process.env.MEDIA_MODERATION_PROVIDER_TIMEOUT_MS ?? 15000);
+  if (!Number.isFinite(parsed) || parsed < 1000) return 15000;
+  return Math.floor(parsed);
+};
+
+const shouldAutoBlockTobacco = (): boolean => {
+  const configured = process.env.MEDIA_MODERATION_AUTOBLOCK_TOBACCO;
+  if (configured === undefined) return false;
+  return isTruthyLike(configured);
+};
+
+const TOBACCO_SIGNAL_KEYWORDS = [
+  "tobacco",
+  "cigarette",
+  "cigar",
+  "smoke",
+  "smoking",
+  "vape",
+  "nicotine",
+];
+
+const isTobaccoSignal = (signal: string): boolean =>
+  TOBACCO_SIGNAL_KEYWORDS.some((keyword) => signal.includes(keyword));
+
+const shouldTrustTobaccoSignal = (): boolean => {
+  const configured = process.env.MEDIA_MODERATION_TRUST_TOBACCO_SIGNAL;
+  if (configured === undefined) return false;
+  return isTruthyLike(configured);
+};
+
+const safeParseJsonObject = (value: any): Record<string, any> | null => {
+  if (!value) return null;
+  if (typeof value === "object") return value as Record<string, any>;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, any>) : null;
+  } catch {
+    return null;
+  }
+};
+
+const applyModerationProviderGuards = (
+  providerPayload: any,
+  decision: ModerationDecision
+): ModerationDecision => {
+  const moderationNode =
+    providerPayload?.data?.moderation ??
+    providerPayload?.moderation ??
+    providerPayload?.result?.moderation ??
+    providerPayload?.output?.moderation ??
+    null;
+
+  if (!moderationNode || typeof moderationNode !== "object") return decision;
+  if (shouldTrustTobaccoSignal()) return decision;
+
+  const categories = Array.isArray(moderationNode?.categories)
+    ? moderationNode.categories.map((entry: any) => String(entry ?? "").trim().toLowerCase())
+    : [];
+  const onlyTobaccoCategory =
+    categories.length === 1 && categories[0] === "tobacco" && decision.categories.length === 1;
+
+  if (!onlyTobaccoCategory) return decision;
+
+  const baseRaw = safeParseJsonObject(moderationNode?.raw_response);
+  const baseBlocked = isTruthyLike(baseRaw?.blocked);
+  const baseCategories = normalizeModerationSignals(baseRaw?.categories);
+  const baseLabels = normalizeModerationSignals(baseRaw?.labels);
+  const baseHasViolation = baseBlocked || baseCategories.length > 0 || baseLabels.length > 0;
+
+  const tobaccoSignal = moderationNode?.tobacco_signal ?? {};
+  const tobaccoPresent = isTruthyLike(tobaccoSignal?.tobacco_present);
+  const tobaccoConfidence = Number(tobaccoSignal?.confidence ?? 0);
+  const confidenceIsLow = !Number.isFinite(tobaccoConfidence) || tobaccoConfidence <= 0.8;
+
+  if (!baseHasViolation && tobaccoPresent && confidenceIsLow) {
+    const filteredSignals = decision.rawSignals.filter(
+      (signal) => !signal.includes("tobacco") && !signal.includes("cigarette")
+    );
+    return {
+      blocked: false,
+      categories: [],
+      rawSignals: filteredSignals,
+    };
+  }
+
+  return decision;
+};
+
+const applyModerationBlockingPolicy = (decision: ModerationDecision): ModerationDecision => {
+  if (shouldAutoBlockTobacco()) return decision;
+
+  const categoriesWithoutTobacco = decision.categories.filter((category) => category !== "tobacco");
+  const hasTobaccoCategory = decision.categories.includes("tobacco");
+  const hasOnlyTobaccoSignals =
+    decision.rawSignals.length > 0 && decision.rawSignals.every(isTobaccoSignal);
+
+  // Temporary policy for QA: do not auto-block tobacco-only detections.
+  if (hasTobaccoCategory && categoriesWithoutTobacco.length === 0) {
+    return {
+      blocked: false,
+      categories: [],
+      rawSignals: decision.rawSignals.filter((signal) => !isTobaccoSignal(signal)),
+    };
+  }
+
+  if (!hasTobaccoCategory && hasOnlyTobaccoSignals) {
+    return {
+      blocked: false,
+      categories: [],
+      rawSignals: [],
+    };
+  }
+
+  return {
+    blocked: categoriesWithoutTobacco.length > 0 ? true : decision.blocked,
+    categories: categoriesWithoutTobacco,
+    rawSignals: decision.rawSignals,
+  };
+};
+
+const shouldEnforceModerationAtConfirm = (context: string): boolean => {
+  const configured = process.env.MEDIA_MODERATION_ENFORCE_AT_CONFIRM;
+  const enforceByDefault = IS_PRODUCTION;
+  const enforce = configured === undefined ? enforceByDefault : isTruthyLike(configured);
+  if (!enforce) return false;
+
+  const contextsRaw = String(
+    process.env.MEDIA_MODERATION_ENFORCE_CONTEXTS ?? "feed,post,reel,public"
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!contextsRaw) return true;
+  const contexts = new Set(
+    contextsRaw
+      .split(/[,\s;|]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+  if (!contexts.size) return true;
+  return contexts.has(context);
+};
+
+type ModerationProviderResult =
+  | {
+      ok: true;
+      decision: ModerationDecision;
+    }
+  | {
+      ok: false;
+      code: number;
+      message: string;
+    };
+
+const fetchModerationDecisionFromProvider = async ({
+  req,
+  assetType,
+  imageId,
+  videoUid,
+  context,
+}: {
+  req: Request;
+  assetType: ModerationAssetType;
+  imageId?: string | null;
+  videoUid?: string | null;
+  context: string;
+}): Promise<ModerationProviderResult> => {
+  const providerUrl = getModerationProviderUrl();
+  if (!providerUrl) {
+    return {
+      ok: false,
+      code: 503,
+      message:
+        "MEDIA_MODERATION_PROVIDER_URL is not configured. Unable to moderate media before confirm.",
+    };
+  }
+
+  const mediaPath =
+    assetType === "image" && imageId
+      ? buildImagePlaybackPath(imageId)
+      : buildVideoPlaybackPath(String(videoUid ?? ""));
+  const requestOrigin = resolveRequestOrigin(req);
+  const mediaUrl = requestOrigin ? `${requestOrigin}${mediaPath}` : mediaPath;
+  const payload = {
+    asset_type: assetType,
+    image_id: imageId ?? null,
+    video_uid: videoUid ?? null,
+    media_path: mediaPath,
+    media_url: mediaUrl,
+    user_id: req.userId ?? null,
+    context: normalizeMediaContext(context),
+    locale:
+      String(
+        (req.body as any)?.locale ??
+          (req.body as any)?.lang ??
+          (req.body as any)?.language ??
+          req.header("accept-language") ??
+          ""
+      )
+        .trim()
+        .slice(0, 20) || null,
+  };
+
+  const token = getModerationProviderToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  if (token) headers.authorization = `Bearer ${token}`;
+
+  try {
+    const response = await axios.post(providerUrl, payload, {
+      headers,
+      timeout: getModerationProviderTimeoutMs(),
+    });
+    const providerPayload = response?.data ?? {};
+    const normalizedDecision = normalizeModerationDecisionFromObject(providerPayload);
+    const guardedDecision = applyModerationProviderGuards(providerPayload, normalizedDecision);
+    return {
+      ok: true,
+      decision: applyModerationBlockingPolicy(guardedDecision),
+    };
+  } catch (error: any) {
+    const providerMessage =
+      String(
+        error?.response?.data?.message ??
+          error?.response?.data?.error ??
+          error?.message ??
+          "moderation provider request failed"
+      ).trim() || "moderation provider request failed";
+
+    return {
+      ok: false,
+      code: 502,
+      message: providerMessage,
+    };
+  }
+};
+
+const resolveConfirmModerationDecision = async ({
+  req,
+  assetType,
+  imageId,
+  videoUid,
+}: {
+  req: Request;
+  assetType: ModerationAssetType;
+  imageId?: string | null;
+  videoUid?: string | null;
+}): Promise<ModerationProviderResult> => {
+  const context = normalizeMediaContext((req.body as any)?.context ?? "feed");
+  const clientDecision = resolveModerationDecision(req);
+
+  if (!shouldEnforceModerationAtConfirm(context)) {
+    return { ok: true, decision: applyModerationBlockingPolicy(clientDecision) };
+  }
+
+  const providerResult = await fetchModerationDecisionFromProvider({
+    req,
+    assetType,
+    imageId: imageId ?? null,
+    videoUid: videoUid ?? null,
+    context,
+  });
+  if (!providerResult.ok) return providerResult;
+
+  const categories = Array.from(
+    new Set([...providerResult.decision.categories, ...clientDecision.categories])
+  ) as ModerationCategory[];
+  const rawSignals = Array.from(
+    new Set([...providerResult.decision.rawSignals, ...clientDecision.rawSignals])
+  );
+  const mergedDecision = applyModerationBlockingPolicy({
+    blocked:
+      providerResult.decision.blocked ||
+      clientDecision.blocked ||
+      categories.length > 0,
+    categories,
+    rawSignals,
+  });
+
+  return {
+    ok: true,
+    decision: mergedDecision,
+  };
+};
+
 const getCloudflareAccountId = () =>
   String(process.env.CLOUDFLARE_ACCOUNT_ID ?? "").trim();
 
@@ -128,6 +714,8 @@ const getStreamPlaybackBaseUrl = () => {
 const getImageVariant = () =>
   String(process.env.CLOUDFLARE_IMAGES_VARIANT ?? "public").trim() || "public";
 
+const isPublicImageVariant = () => getImageVariant().trim().toLowerCase() === "public";
+
 const cloudflareHeaders = (token: string) => ({
   Authorization: `Bearer ${token}`,
   "Content-Type": "application/json",
@@ -156,6 +744,30 @@ const isAxiosTimeoutError = (error: any) => {
   if (code === "ECONNABORTED") return true;
   const message = String(error?.message ?? "").toLowerCase();
   return message.includes("timeout");
+};
+
+const isCloudflareTransientError = (error: any) => {
+  if (isAxiosTimeoutError(error)) return true;
+  const status = Number(error?.response?.status ?? 0);
+  if (status >= 500 || status === 429) return true;
+  const code = String(error?.code ?? "").trim().toUpperCase();
+  return (
+    code === "ECONNRESET" ||
+    code === "ENOTFOUND" ||
+    code === "EAI_AGAIN" ||
+    code === "ETIMEDOUT"
+  );
+};
+
+const isCloudflareAuthError = (error: any) => {
+  const status = Number(error?.response?.status ?? error?.statusCode ?? 0);
+  if (status === 401 || status === 403) return true;
+  const message = String(error?.message ?? "").toLowerCase();
+  return (
+    message.includes("authentication error") ||
+    message.includes("invalid access token") ||
+    message.includes("expired")
+  );
 };
 
 const parseDateMs = (value: any): number | null => {
@@ -210,6 +822,8 @@ const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
 const MEDIA_ACCESS_TOKEN_ENFORCE =
   String(process.env.MEDIA_ACCESS_TOKEN_ENFORCE ?? (IS_PRODUCTION ? "1" : "0"))
     .trim() === "1";
+const MEDIA_ACCESS_ALLOW_PUBLIC_IMAGE_UNSIGNED =
+  String(process.env.MEDIA_ACCESS_ALLOW_PUBLIC_IMAGE_UNSIGNED ?? "1").trim() === "1";
 
 const getR2Bucket = () =>
   String(
@@ -422,7 +1036,8 @@ type SignedMediaKind =
   | "document"
   | "video_key"
   | "video_uid"
-  | "image_id";
+  | "image_id"
+  | "image_upload";
 
 const getMediaAccessSigningSecret = () =>
   String(
@@ -505,6 +1120,21 @@ const enforceSignedMediaAccess = (
   kind: SignedMediaKind,
   resourceKey: string
 ): boolean => {
+  // Public Cloudflare image variants are already publicly readable.
+  // This prevents stale `sat` links from breaking images in mobile clients
+  // that do not attach auth headers on image requests.
+  if (
+    kind === "image_id" &&
+    MEDIA_ACCESS_ALLOW_PUBLIC_IMAGE_UNSIGNED &&
+    isPublicImageVariant()
+  ) {
+    return true;
+  }
+
+  const authenticatedUserId = Number((req as any)?.userId ?? 0);
+  const hasAuthenticatedSession =
+    Number.isFinite(authenticatedUserId) && authenticatedUserId > 0;
+
   if (!hasMediaAccessSigningSecret()) {
     if (!MEDIA_ACCESS_TOKEN_ENFORCE) return true;
     formatResponse({
@@ -517,9 +1147,33 @@ const enforceSignedMediaAccess = (
   }
   const tokenRaw = (req.query as any)?.[MEDIA_ACCESS_TOKEN_QUERY_KEY];
   const hasToken = String(tokenRaw ?? "").trim().length > 0;
-  if (!hasToken && !MEDIA_ACCESS_TOKEN_ENFORCE) return true;
-  const valid = validateMediaAccessToken(tokenRaw, kind, resourceKey);
-  if (valid) return true;
+
+  if (hasToken) {
+    const valid = validateMediaAccessToken(tokenRaw, kind, resourceKey);
+    if (valid) return true;
+
+    // If the request carries a valid authenticated session, do not fail
+    // only because an old/stale `sat` query param is still present.
+    if (hasAuthenticatedSession) return true;
+
+    if (!MEDIA_ACCESS_TOKEN_ENFORCE) return true;
+
+    formatResponse({
+      res,
+      success: false,
+      code: 403,
+      message: "invalid or expired media access token",
+    });
+    return false;
+  }
+
+  // Backward compatibility:
+  // some app flows still request download/play URLs without `sat`.
+  // If request is authenticated with a valid JWT session, allow it.
+  if (hasAuthenticatedSession) return true;
+
+  if (!MEDIA_ACCESS_TOKEN_ENFORCE) return true;
+
   formatResponse({
     res,
     success: false,
@@ -598,6 +1252,154 @@ const buildDocumentObjectKey = (userId: any, contentType: string) => {
   return `${prefix}-${safeUid}-${Date.now()}-${rand}${ext}`;
 };
 
+const pickImageExt = (contentType: string): string => {
+  const lower = contentType.toLowerCase();
+  if (lower.includes("png")) return ".png";
+  if (lower.includes("jpeg") || lower.includes("jpg")) return ".jpg";
+  if (lower.includes("gif")) return ".gif";
+  if (lower.includes("heic")) return ".heic";
+  if (lower.includes("heif")) return ".heif";
+  return ".webp";
+};
+
+const inferImageMimeFromName = (name: string): string | null => {
+  const lower = String(name ?? "").trim().toLowerCase();
+  if (!lower) return null;
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".heic")) return "image/heic";
+  if (lower.endsWith(".heif")) return "image/heif";
+  return null;
+};
+
+const inferImageMimeFromBuffer = (buffer: Buffer): string | null => {
+  if (!buffer || buffer.length < 12) return null;
+
+  // JPEG
+  if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+
+  // PNG
+  if (
+    buffer[0] === 0x89 &&
+    buffer[1] === 0x50 &&
+    buffer[2] === 0x4e &&
+    buffer[3] === 0x47 &&
+    buffer[4] === 0x0d &&
+    buffer[5] === 0x0a &&
+    buffer[6] === 0x1a &&
+    buffer[7] === 0x0a
+  ) {
+    return "image/png";
+  }
+
+  // GIF
+  if (
+    buffer[0] === 0x47 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x38
+  ) {
+    return "image/gif";
+  }
+
+  // WEBP RIFF....WEBP
+  if (
+    buffer[0] === 0x52 &&
+    buffer[1] === 0x49 &&
+    buffer[2] === 0x46 &&
+    buffer[3] === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    return "image/webp";
+  }
+
+  // HEIC/HEIF (ISO BMFF)
+  const boxType = buffer.slice(4, 8).toString("ascii");
+  const brand = buffer.slice(8, 12).toString("ascii").toLowerCase();
+  if (boxType === "ftyp") {
+    if (brand.startsWith("heic") || brand.startsWith("heix")) return "image/heic";
+    if (brand.startsWith("heif") || brand.startsWith("mif1") || brand.startsWith("msf1")) {
+      return "image/heif";
+    }
+  }
+
+  return null;
+};
+
+const normalizeUploadedImageMime = (params: {
+  rawMime: string;
+  originalName: string;
+  buffer: Buffer;
+}): string | null => {
+  const raw = String(params.rawMime ?? "").trim().toLowerCase();
+  if (raw.startsWith("image/")) return raw;
+
+  if (!raw || raw === "application/octet-stream" || raw === "binary/octet-stream") {
+    const byName = inferImageMimeFromName(params.originalName);
+    if (byName) return byName;
+    return inferImageMimeFromBuffer(params.buffer);
+  }
+
+  return null;
+};
+
+const getLocalImageFallbackPath = (imageId: string) => {
+  const safeName = imageId.replace(/[^a-zA-Z0-9._-]/g, "_");
+  return path.join(LOCAL_IMAGE_FALLBACK_DIR, safeName);
+};
+
+const saveLocalImageFallback = async (params: {
+  imageId: string;
+  buffer: Buffer;
+}) => {
+  if (!LOCAL_IMAGE_FALLBACK_ENABLED) return false;
+  const fullPath = getLocalImageFallbackPath(params.imageId);
+  await fs.mkdir(LOCAL_IMAGE_FALLBACK_DIR, { recursive: true });
+  await fs.writeFile(fullPath, params.buffer);
+  return true;
+};
+
+const getLocalImageFallbackStat = async (imageId: string) => {
+  try {
+    const fullPath = getLocalImageFallbackPath(imageId);
+    const stat = await fs.stat(fullPath);
+    if (!stat.isFile()) return null;
+    return {
+      fullPath,
+      sizeBytes: Number.isFinite(stat.size) ? stat.size : null,
+    };
+  } catch {
+    return null;
+  }
+};
+
+const deleteLocalImageFallback = async (imageId: string) => {
+  try {
+    const fullPath = getLocalImageFallbackPath(imageId);
+    await fs.unlink(fullPath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const buildImageObjectKey = (userId: any, contentType: string) => {
+  const uid = Number(userId);
+  const safeUid = Number.isFinite(uid) && uid > 0 ? uid : 0;
+  const ext = pickImageExt(contentType);
+  const rand = randomBytes(8).toString("hex");
+  return `${IMAGE_R2_KEY_PREFIX}-${safeUid}-${Date.now()}-${rand}${ext}`;
+};
+
+const isR2ImageId = (imageId: string) => imageId.startsWith(`${IMAGE_R2_KEY_PREFIX}-`);
+
 const buildAudioPlaybackPath = (key: string) =>
   appendMediaAccessToken(
     `/api/v1/media/audio/play?key=${encodeURIComponent(key)}`,
@@ -614,6 +1416,12 @@ const buildImagePlaybackPath = (imageId: string) =>
   appendMediaAccessToken(
     `/api/v1/media/image/play?id=${encodeURIComponent(imageId)}`,
     "image_id",
+    imageId
+  );
+const buildImageFallbackUploadPath = (imageId: string) =>
+  appendMediaAccessToken(
+    `/api/v1/media/image/direct-upload/fallback?id=${encodeURIComponent(imageId)}`,
+    "image_upload",
     imageId
   );
 const buildVideoPlaybackPath = (uid: string) =>
@@ -653,6 +1461,15 @@ const normalizeImageId = (value: any): string | null => {
   return decoded;
 };
 
+const resolveRequestOrigin = (req: Request): string | null => {
+  const protoRaw = String((req.headers as any)["x-forwarded-proto"] ?? req.protocol ?? "https");
+  const hostRaw = String((req.headers as any)["x-forwarded-host"] ?? req.headers.host ?? "");
+  const proto = protoRaw.split(",")[0].trim() || "https";
+  const host = hostRaw.split(",")[0].trim();
+  if (!host) return null;
+  return `${proto}://${host}`;
+};
+
 const normalizeVideoUid = (value: any): string | null => {
   if (value === undefined || value === null) return null;
   const decoded = decodeURIComponent(String(value).trim());
@@ -666,8 +1483,26 @@ type PlaybackRedirectCacheEntry = {
   expiresAt: number;
 };
 
+type VideoConfirmSnapshot = {
+  uid: string;
+  ready: boolean;
+  durationSeconds: number | null;
+  hls: string | null;
+  thumbnail: string | null;
+  status: any;
+  uploadState: string | null;
+  createdAt: string | null;
+  ageSeconds: number | null;
+};
+
+type VideoConfirmCacheEntry = {
+  snapshot: VideoConfirmSnapshot;
+  expiresAt: number;
+};
+
 const imagePlaybackRedirectCache = new Map<string, PlaybackRedirectCacheEntry>();
 const videoPlaybackRedirectCache = new Map<string, PlaybackRedirectCacheEntry>();
+const videoConfirmCache = new Map<string, VideoConfirmCacheEntry>();
 
 const setPlaybackCacheHeaders = (res: Response, maxAge: number) => {
   const staleWhileRevalidate = Math.min(60, Math.max(10, Math.floor(maxAge / 3)));
@@ -683,6 +1518,59 @@ const setImagePlaybackCacheHeaders = (res: Response) => {
 
 const setVideoPlaybackCacheHeaders = (res: Response) => {
   setPlaybackCacheHeaders(res, VIDEO_PLAYBACK_REDIRECT_TTL_SECONDS);
+};
+
+const sanitizeAttachmentFileName = (raw: string, fallback: string) => {
+  const normalized = String(raw ?? "")
+    .trim()
+    .replace(/[^a-zA-Z0-9._-]/g, "_");
+  if (!normalized) return fallback;
+  return normalized.slice(0, 120);
+};
+
+const streamRemoteDownloadToClient = async (params: {
+  res: Response;
+  sourceUrl: string;
+  fileName: string;
+  defaultContentType: string;
+}) => {
+  const upstream = await axios.get(params.sourceUrl, {
+    responseType: "stream",
+    timeout: CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS,
+    maxRedirects: 5,
+    validateStatus: () => true,
+  });
+
+  const upstreamStatus = Number(upstream.status ?? 0);
+  if (upstreamStatus < 200 || upstreamStatus >= 300) {
+    const error: any = new Error(
+      `upstream download failed with status ${upstreamStatus}`
+    );
+    error.statusCode = upstreamStatus;
+    throw error;
+  }
+
+  const contentType =
+    String(upstream.headers?.["content-type"] ?? "").trim() ||
+    params.defaultContentType;
+  const contentLength = String(upstream.headers?.["content-length"] ?? "").trim();
+  const dispositionName = sanitizeAttachmentFileName(params.fileName, "download.bin");
+
+  params.res.status(200);
+  params.res.setHeader("Content-Type", contentType);
+  params.res.setHeader(
+    "Content-Disposition",
+    `attachment; filename=\"${dispositionName}\"`
+  );
+  if (contentLength) params.res.setHeader("Content-Length", contentLength);
+
+  await new Promise<void>((resolve, reject) => {
+    const stream = upstream.data as NodeJS.ReadableStream;
+    stream.on("error", reject);
+    params.res.on("finish", resolve);
+    params.res.on("close", resolve);
+    stream.pipe(params.res);
+  });
 };
 
 const getCachedPlaybackRedirect = (
@@ -753,6 +1641,88 @@ const saveVideoPlaybackRedirect = (uid: string, url: string) => {
     VIDEO_PLAYBACK_REDIRECT_CACHE_MAX_ITEMS,
     VIDEO_PLAYBACK_REDIRECT_CACHE_TTL_MS
   );
+};
+
+const getCachedVideoConfirmSnapshot = (uid: string): VideoConfirmSnapshot | null => {
+  const cached = videoConfirmCache.get(uid);
+  if (!cached) return null;
+  if (cached.expiresAt <= Date.now()) {
+    videoConfirmCache.delete(uid);
+    return null;
+  }
+  return cached.snapshot;
+};
+
+const saveVideoConfirmSnapshot = (
+  uid: string,
+  snapshot: VideoConfirmSnapshot,
+  ttlMs: number
+) => {
+  const now = Date.now();
+
+  if (videoConfirmCache.size >= VIDEO_CONFIRM_CACHE_MAX_ITEMS) {
+    for (const [entryUid, value] of videoConfirmCache.entries()) {
+      if (value.expiresAt <= now) {
+        videoConfirmCache.delete(entryUid);
+      }
+    }
+  }
+
+  while (videoConfirmCache.size >= VIDEO_CONFIRM_CACHE_MAX_ITEMS) {
+    const oldestUid = videoConfirmCache.keys().next().value;
+    if (!oldestUid) break;
+    videoConfirmCache.delete(oldestUid);
+  }
+
+  videoConfirmCache.set(uid, {
+    snapshot,
+    expiresAt: now + Math.max(200, ttlMs),
+  });
+};
+
+const buildVideoConfirmResponseBody = (
+  snapshot: VideoConfirmSnapshot,
+  mediaSizeBytes: number | null
+) => {
+  const playbackPath = buildVideoPlaybackPath(snapshot.uid);
+  const downloadPath = buildVideoDownloadPath(snapshot.uid);
+  const durationCandidate = snapshot.durationSeconds;
+  const durationSeconds =
+    typeof durationCandidate === "number" &&
+    Number.isFinite(durationCandidate) &&
+    durationCandidate >= 0
+      ? durationCandidate
+      : null;
+
+  return {
+    video: {
+      uid: snapshot.uid,
+      ready: snapshot.ready,
+      duration_seconds: durationSeconds,
+      hls: snapshot.hls,
+      playback_url: snapshot.hls,
+      proxy_playback_url: playbackPath,
+      download_url: downloadPath,
+      thumbnail: snapshot.thumbnail,
+      status: snapshot.status ?? null,
+      upload_state: snapshot.uploadState,
+      created_at: snapshot.createdAt,
+      age_seconds: snapshot.ageSeconds,
+    },
+    should_retry_upload: false,
+    retry_after_ms: snapshot.ready ? 0 : 2000,
+    recommended_chat_payload: {
+      message_type: "video",
+      media_url: playbackPath,
+      media_mime: "application/x-mpegurl",
+      media_duration_ms:
+        durationSeconds !== null && durationSeconds > 0 ? Math.floor(durationSeconds * 1000) : null,
+      media_size_bytes: mediaSizeBytes,
+    },
+    recommended_download: {
+      media_url: downloadPath,
+    },
+  };
 };
 
 type StreamDownloadInfo = {
@@ -840,17 +1810,127 @@ export const media_rules = async (_req: Request, res: Response) => {
   });
 };
 
-export const create_image_direct_upload = async (req: Request, res: Response) => {
-  const config = ensureCloudflareConfig("images");
-  if (!config.ok) {
+export const moderate_media_asset = async (req: Request, res: Response) => {
+  const body = (req.body as any) ?? {};
+  const inferredAssetType =
+    body?.image_id || body?.imageId
+      ? "image"
+      : body?.video_uid || body?.videoUid || body?.uid
+      ? "video"
+      : null;
+
+  const assetType =
+    normalizeModerationAssetType(body?.asset_type ?? body?.assetType) ??
+    inferredAssetType;
+
+  if (!assetType) {
     return formatResponse({
       res,
       success: false,
-      code: 500,
-      message: config.message,
+      code: 400,
+      message: "asset_type is required (image|video)",
     });
   }
 
+  const imageId = normalizeImageId(body?.image_id ?? body?.imageId);
+  const videoUid = normalizeVideoUid(body?.video_uid ?? body?.videoUid ?? body?.uid);
+
+  if (assetType === "image" && !imageId) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "image_id is required for asset_type=image",
+    });
+  }
+
+  if (assetType === "video" && !videoUid) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "video_uid (or uid) is required for asset_type=video",
+    });
+  }
+
+  const moderationResult = await fetchModerationDecisionFromProvider({
+    req,
+    assetType,
+    imageId,
+    videoUid,
+    context: normalizeMediaContext(body?.context),
+  });
+
+  if (!moderationResult.ok) {
+    return formatResponse({
+      res,
+      success: false,
+      code: moderationResult.code,
+      message: moderationResult.message,
+    });
+  }
+
+  const decision = moderationResult.decision;
+  return formatResponse({
+    res,
+    success: true,
+    body: {
+      moderation: {
+        blocked: decision.blocked,
+        categories: decision.categories,
+        signals: decision.rawSignals,
+      },
+      confirm_payload: buildModerationConfirmPayload(decision),
+    },
+  });
+};
+
+const buildR2ImageDirectUploadBody = (params: {
+  req: Request;
+  contentType: string;
+  requestedObjectKey?: any;
+}) => {
+  const config = ensureR2Config();
+  if (!config.ok) {
+    return {
+      ok: false as const,
+      code: 500,
+      message: config.message,
+      body: null,
+    };
+  }
+
+  const safeContentType = params.contentType || "image/webp";
+  const objectKey =
+    normalizeImageId(params.requestedObjectKey) ??
+    buildImageObjectKey(params.req.userId, safeContentType);
+  const origin = resolveRequestOrigin(params.req);
+  const uploadPath = buildImageFallbackUploadPath(objectKey);
+
+  try {
+    return {
+      ok: true as const,
+      code: 200,
+      message: "",
+      body: {
+        image_id: objectKey,
+        upload_url: origin ? `${origin}${uploadPath}` : uploadPath,
+        rules: mediaRules.image,
+        delivery: "r2",
+        upload_method: "POST",
+      },
+    };
+  } catch (error: any) {
+    return {
+      ok: false as const,
+      code: 502,
+      message: error?.message ?? "image direct upload init failed",
+      body: null,
+    };
+  }
+};
+
+export const create_image_direct_upload = async (req: Request, res: Response) => {
   const fileSize = parsePositiveInt((req.body as any)?.file_size_bytes);
   if (fileSize !== null && fileSize > IMAGE_MAX_BYTES) {
     return formatResponse({
@@ -868,6 +1948,47 @@ export const create_image_direct_upload = async (req: Request, res: Response) =>
       success: false,
       code: 400,
       message: "content_type must be an image/* mime type",
+    });
+  }
+
+  const forceR2Upload =
+    String(process.env.MEDIA_IMAGE_UPLOAD_DELIVERY ?? "")
+      .trim()
+      .toLowerCase() === "r2";
+  if (forceR2Upload) {
+    const fallback = buildR2ImageDirectUploadBody({
+      req,
+      contentType: contentType.toLowerCase(),
+      requestedObjectKey: (req.body as any)?.object_key,
+    });
+    return formatResponse({
+      res,
+      success: fallback.ok,
+      code: fallback.code,
+      message: fallback.message || undefined,
+      body: fallback.body ?? undefined,
+    });
+  }
+
+  const config = ensureCloudflareConfig("images");
+  if (!config.ok) {
+    const fallback = buildR2ImageDirectUploadBody({
+      req,
+      contentType: contentType.toLowerCase(),
+      requestedObjectKey: (req.body as any)?.object_key,
+    });
+    if (fallback.ok) {
+      return formatResponse({
+        res,
+        success: true,
+        body: fallback.body,
+      });
+    }
+    return formatResponse({
+      res,
+      success: false,
+      code: 500,
+      message: config.message,
     });
   }
 
@@ -894,11 +2015,22 @@ export const create_image_direct_upload = async (req: Request, res: Response) =>
       }
     );
 
-    const payload: any = await response.json();
+    let payload: any = null;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = null;
+    }
     if (!payload?.success) {
       const firstError =
         payload?.errors?.[0]?.message ?? "cloudflare images upload failed";
-      throw new Error(firstError);
+      const uploadError: any = new Error(firstError);
+      uploadError.statusCode = Number(response.status ?? 0);
+      uploadError.response = {
+        status: Number(response.status ?? 0),
+        data: payload,
+      };
+      throw uploadError;
     }
 
     const result = payload?.result ?? {};
@@ -912,6 +2044,20 @@ export const create_image_direct_upload = async (req: Request, res: Response) =>
       },
     });
   } catch (error: any) {
+    if (isCloudflareAuthError(error) || isCloudflareTransientError(error)) {
+      const fallback = buildR2ImageDirectUploadBody({
+        req,
+        contentType: contentType.toLowerCase(),
+        requestedObjectKey: (req.body as any)?.object_key,
+      });
+      if (fallback.ok) {
+        return formatResponse({
+          res,
+          success: true,
+          body: fallback.body,
+        });
+      }
+    }
     return formatResponse({
       res,
       success: false,
@@ -921,7 +2067,305 @@ export const create_image_direct_upload = async (req: Request, res: Response) =>
   }
 };
 
+export const image_direct_upload_fallback_middleware = uploadImageFallback.any();
+
+export const image_direct_upload_fallback = async (req: Request, res: Response) => {
+  const imageId =
+    normalizeImageId((req.query as any)?.id) ??
+    normalizeImageId((req.query as any)?.image_id) ??
+    normalizeImageId((req.body as any)?.image_id);
+  if (!imageId) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "id (or image_id) is required",
+    });
+  }
+  if (!isR2ImageId(imageId)) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "invalid fallback image id",
+    });
+  }
+  if (!enforceSignedMediaAccess(req, res, "image_upload", imageId)) return;
+
+  const files = ((req as any).files ?? []) as Array<{
+    buffer?: Buffer;
+    size?: number;
+    mimetype?: string;
+    originalname?: string;
+  }>;
+  const firstFile = files.find((entry) => entry?.buffer && entry.buffer.length > 0);
+  if (!firstFile?.buffer) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "multipart form-data with file is required",
+    });
+  }
+
+  const config = ensureR2Config();
+  if (!config.ok) {
+    try {
+      const stored = await saveLocalImageFallback({
+        imageId,
+        buffer: firstFile.buffer,
+      });
+      if (stored) {
+        return formatResponse({
+          res,
+          success: true,
+          body: {
+            image_id: imageId,
+            uploaded: true,
+            delivery: "local",
+          },
+        });
+      }
+    } catch {
+      // noop
+    }
+    return formatResponse({
+      res,
+      success: false,
+      code: 500,
+      message: config.message,
+    });
+  }
+
+  const mime = normalizeUploadedImageMime({
+    rawMime: String(firstFile.mimetype ?? ""),
+    originalName: String(firstFile.originalname ?? ""),
+    buffer: firstFile.buffer,
+  });
+  if (!mime) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "uploaded file must be image/*",
+    });
+  }
+  const sizeBytes = Number(firstFile.size ?? firstFile.buffer.length ?? 0);
+  if (Number.isFinite(sizeBytes) && sizeBytes > IMAGE_MAX_BYTES) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: `image exceeds ${IMAGE_MAX_BYTES} bytes`,
+    });
+  }
+
+  try {
+    const putUrl = buildR2PresignedUrl({
+      method: "PUT",
+      bucket: config.bucket,
+      endpoint: config.endpoint,
+      key: imageId,
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+      expiresSeconds: IMAGE_UPLOAD_TTL_SECONDS,
+    });
+
+    const uploadResponse = await fetch(putUrl, {
+      method: "PUT",
+      headers: {
+        "Content-Type": mime || "application/octet-stream",
+      },
+      body: firstFile.buffer as any,
+    });
+    if (!uploadResponse.ok) {
+      try {
+        const stored = await saveLocalImageFallback({
+          imageId,
+          buffer: firstFile.buffer,
+        });
+        if (stored) {
+          return formatResponse({
+            res,
+            success: true,
+            body: {
+              image_id: imageId,
+              uploaded: true,
+              delivery: "local",
+            },
+          });
+        }
+      } catch {
+        // noop
+      }
+      return formatResponse({
+        res,
+        success: false,
+        code: 502,
+        message: `r2 upload failed (${uploadResponse.status})`,
+      });
+    }
+
+    return formatResponse({
+      res,
+      success: true,
+      body: {
+        image_id: imageId,
+        uploaded: true,
+        delivery: "r2",
+      },
+    });
+  } catch (error: any) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 502,
+      message: error?.message ?? "image fallback upload failed",
+    });
+  }
+};
+
 export const confirm_image_upload = async (req: Request, res: Response) => {
+  const imageId = normalizeImageId((req.body as any)?.image_id);
+  if (!imageId) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "image_id is required",
+    });
+  }
+  const moderationResult = await resolveConfirmModerationDecision({
+    req,
+    assetType: "image",
+    imageId,
+  });
+  if (!moderationResult.ok) {
+    return formatResponse({
+      res,
+      success: false,
+      code: moderationResult.code,
+      message: moderationResult.message,
+    });
+  }
+  const moderationDecision = moderationResult.decision;
+  if (moderationDecision.blocked) {
+    return respondModerationBlocked({
+      req,
+      res,
+      assetType: "image",
+      decision: moderationDecision,
+    });
+  }
+
+  if (isR2ImageId(imageId)) {
+    const localSnapshot = await getLocalImageFallbackStat(imageId);
+    if (localSnapshot) {
+      const playbackPath = buildImagePlaybackPath(imageId);
+      return formatResponse({
+        res,
+        success: true,
+        body: {
+          image: {
+            id: imageId,
+            ready: true,
+            uploaded: null,
+            variant: "local",
+            url: playbackPath,
+            playback_url: playbackPath,
+            variants: [playbackPath],
+            delivery: "local",
+          },
+          recommended_chat_payload: {
+            message_type: "image",
+            media_url: playbackPath,
+            media_mime: "image/webp",
+            media_duration_ms: null,
+            media_size_bytes:
+              parsePositiveInt((req.body as any)?.file_size_bytes) ?? localSnapshot.sizeBytes,
+          },
+        },
+      });
+    }
+
+    const config = ensureR2Config();
+    if (!config.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 500,
+        message: config.message,
+      });
+    }
+
+    try {
+      const headUrl = buildR2PresignedUrl({
+        method: "HEAD",
+        bucket: config.bucket,
+        endpoint: config.endpoint,
+        key: imageId,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        expiresSeconds: 60,
+      });
+      const headResponse = await fetch(headUrl, { method: "HEAD" });
+      if (!headResponse.ok) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 409,
+          message: `image object is not available yet (${headResponse.status})`,
+        });
+      }
+
+      const mime = String(headResponse.headers.get("content-type") ?? "").trim() || null;
+      const sizeBytesRaw = Number(headResponse.headers.get("content-length") ?? 0);
+      const sizeBytes =
+        Number.isFinite(sizeBytesRaw) && sizeBytesRaw > 0 ? Math.floor(sizeBytesRaw) : null;
+      if (sizeBytes !== null && sizeBytes > IMAGE_MAX_BYTES) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 409,
+          message: `image exceeds ${IMAGE_MAX_BYTES} bytes`,
+        });
+      }
+
+      const playbackPath = buildImagePlaybackPath(imageId);
+      return formatResponse({
+        res,
+        success: true,
+        body: {
+          image: {
+            id: imageId,
+            ready: true,
+            uploaded: null,
+            variant: "r2",
+            url: playbackPath,
+            playback_url: playbackPath,
+            variants: [playbackPath],
+            delivery: "r2",
+          },
+          recommended_chat_payload: {
+            message_type: "image",
+            media_url: playbackPath,
+            media_mime: mime && mime.startsWith("image/") ? mime : "image/webp",
+            media_duration_ms: null,
+            media_size_bytes:
+              parsePositiveInt((req.body as any)?.file_size_bytes) ?? sizeBytes,
+          },
+        },
+      });
+    } catch (error: any) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 502,
+        message: error?.message ?? "image confirm failed",
+      });
+    }
+  }
+
   const config = ensureCloudflareConfig("images");
   if (!config.ok) {
     return formatResponse({
@@ -932,20 +2376,60 @@ export const confirm_image_upload = async (req: Request, res: Response) => {
     });
   }
 
-  const imageId = normalizeImageId((req.body as any)?.image_id);
-  if (!imageId) {
+  const playbackPath = buildImagePlaybackPath(imageId);
+  const fallbackPayload = {
+    image: {
+      id: imageId,
+      ready: true,
+      uploaded: null,
+      variant: getImageVariant(),
+      url: playbackPath,
+      playback_url: playbackPath,
+      variants: [playbackPath],
+      confirmation_state: "deferred",
+    },
+    recommended_chat_payload: {
+      message_type: "image",
+      media_url: playbackPath,
+      media_mime: "image/webp",
+      media_duration_ms: null,
+      media_size_bytes: parsePositiveInt((req.body as any)?.file_size_bytes),
+    },
+  };
+
+  const cachedRedirectTarget = getCachedImagePlaybackRedirect(imageId);
+  if (cachedRedirectTarget) {
     return formatResponse({
       res,
-      success: false,
-      code: 400,
-      message: "image_id is required",
+      success: true,
+      body: {
+        image: {
+          id: imageId,
+          ready: true,
+          uploaded: null,
+          variant: getImageVariant(),
+          url: cachedRedirectTarget,
+          playback_url: playbackPath,
+          variants: [cachedRedirectTarget],
+        },
+        recommended_chat_payload: {
+          message_type: "image",
+          media_url: cachedRedirectTarget,
+          media_mime: "image/webp",
+          media_duration_ms: null,
+          media_size_bytes: parsePositiveInt((req.body as any)?.file_size_bytes),
+        },
+      },
     });
   }
 
   try {
     const response = await axios.get(
       `${CLOUDFLARE_API_BASE}/accounts/${config.accountId}/images/v1/${imageId}`,
-      { headers: cloudflareHeaders(config.token) }
+      {
+        headers: cloudflareHeaders(config.token),
+        timeout: CLOUDFLARE_IMAGE_CONFIRM_TIMEOUT_MS,
+      }
     );
 
     if (!response.data?.success) {
@@ -960,24 +2444,29 @@ export const confirm_image_upload = async (req: Request, res: Response) => {
       url.endsWith(`/${getImageVariant()}`)
     );
     const directVariantUrl = preferredVariant ?? variants[0] ?? null;
-    const playbackPath = buildImagePlaybackPath(result.id ?? imageId);
+    const resolvedImageId = String(result.id ?? imageId).trim() || imageId;
+    const resolvedPlaybackPath = buildImagePlaybackPath(resolvedImageId);
+
+    if (directVariantUrl) {
+      saveImagePlaybackRedirect(resolvedImageId, directVariantUrl);
+    }
 
     return formatResponse({
       res,
       success: true,
       body: {
         image: {
-          id: result.id ?? imageId,
+          id: resolvedImageId,
           ready: !result.draft,
           uploaded: result.uploaded ?? null,
           variant: getImageVariant(),
           url: directVariantUrl,
-          playback_url: playbackPath,
+          playback_url: resolvedPlaybackPath,
           variants,
         },
         recommended_chat_payload: {
           message_type: "image",
-          media_url: directVariantUrl ?? playbackPath,
+          media_url: directVariantUrl ?? resolvedPlaybackPath,
           media_mime: "image/webp",
           media_duration_ms: null,
           media_size_bytes: parsePositiveInt((req.body as any)?.file_size_bytes),
@@ -985,6 +2474,13 @@ export const confirm_image_upload = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
+    if (isCloudflareTransientError(error)) {
+      return formatResponse({
+        res,
+        success: true,
+        body: fallbackPayload,
+      });
+    }
     return formatResponse({
       res,
       success: false,
@@ -995,16 +2491,6 @@ export const confirm_image_upload = async (req: Request, res: Response) => {
 };
 
 export const delete_image_asset = async (req: Request, res: Response) => {
-  const config = ensureCloudflareConfig("images");
-  if (!config.ok) {
-    return formatResponse({
-      res,
-      success: false,
-      code: 500,
-      message: config.message,
-    });
-  }
-
   const imageId = String((req.params as any)?.id ?? "").trim();
   if (!imageId) {
     return formatResponse({
@@ -1012,6 +2498,71 @@ export const delete_image_asset = async (req: Request, res: Response) => {
       success: false,
       code: 400,
       message: "id is required",
+    });
+  }
+
+  if (isR2ImageId(imageId)) {
+    const deletedLocal = await deleteLocalImageFallback(imageId);
+    if (deletedLocal) {
+      return formatResponse({
+        res,
+        success: true,
+        body: { deleted: true, image_id: imageId },
+      });
+    }
+
+    const config = ensureR2Config();
+    if (!config.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 500,
+        message: config.message,
+      });
+    }
+
+    try {
+      const deleteUrl = buildR2PresignedUrl({
+        method: "DELETE",
+        bucket: config.bucket,
+        endpoint: config.endpoint,
+        key: imageId,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        expiresSeconds: 60,
+      });
+      const deleteResponse = await fetch(deleteUrl, { method: "DELETE" });
+      if (!deleteResponse.ok) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 502,
+          message: `image delete failed (${deleteResponse.status})`,
+        });
+      }
+
+      return formatResponse({
+        res,
+        success: true,
+        body: { deleted: true, image_id: imageId },
+      });
+    } catch (error: any) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 502,
+        message: error?.message ?? "image delete failed",
+      });
+    }
+  }
+
+  const config = ensureCloudflareConfig("images");
+  if (!config.ok) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 500,
+      message: config.message,
     });
   }
 
@@ -1207,6 +2758,40 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
     shouldUseR2ForVideoContext(context) ||
     (!requestedUid && Boolean(requestedKey || requestedKeyFromUid));
 
+  if (!useR2 && !requestedUid) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "uid is required",
+    });
+  }
+
+  const moderationResult = useR2
+    ? ({ ok: true, decision: resolveModerationDecision(req) } as const)
+    : await resolveConfirmModerationDecision({
+        req,
+        assetType: "video",
+        videoUid: requestedUid,
+      });
+  if (!moderationResult.ok) {
+    return formatResponse({
+      res,
+      success: false,
+      code: moderationResult.code,
+      message: moderationResult.message,
+    });
+  }
+  const moderationDecision = moderationResult.decision;
+  if (moderationDecision.blocked) {
+    return respondModerationBlocked({
+      req,
+      res,
+      assetType: "video",
+      decision: moderationDecision,
+    });
+  }
+
   if (useR2) {
     const config = ensureR2Config();
     if (!config.ok) {
@@ -1359,6 +2944,43 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
       message: "uid is required",
     });
   }
+  const requestedMediaSizeBytes = parsePositiveInt((req.body as any)?.file_size_bytes);
+
+  const cachedSnapshot = getCachedVideoConfirmSnapshot(uid);
+  if (cachedSnapshot) {
+    console.log(
+      `[media][video-confirm] userId=${req.userId ?? 0} uid=${uid} source=cache ready=${cachedSnapshot.ready}`
+    );
+    return formatResponse({
+      res,
+      success: true,
+      body: buildVideoConfirmResponseBody(cachedSnapshot, requestedMediaSizeBytes),
+    });
+  }
+
+  const cachedRedirectTarget = getCachedVideoPlaybackRedirect(uid);
+  if (cachedRedirectTarget) {
+    const shortcutSnapshot: VideoConfirmSnapshot = {
+      uid,
+      ready: true,
+      durationSeconds: null,
+      hls: cachedRedirectTarget,
+      thumbnail: `https://videodelivery.net/${uid}/thumbnails/thumbnail.jpg?time=1s`,
+      status: { state: "ready", source: "playback_cache" },
+      uploadState: "ready",
+      createdAt: null,
+      ageSeconds: null,
+    };
+    saveVideoConfirmSnapshot(uid, shortcutSnapshot, VIDEO_CONFIRM_READY_CACHE_TTL_MS);
+    console.log(
+      `[media][video-confirm] userId=${req.userId ?? 0} uid=${uid} source=playback-cache ready=true`
+    );
+    return formatResponse({
+      res,
+      success: true,
+      body: buildVideoConfirmResponseBody(shortcutSnapshot, requestedMediaSizeBytes),
+    });
+  }
 
   try {
     const response = await axios.get(
@@ -1440,46 +3062,32 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
     const thumbnail =
       result?.thumbnail ??
       (uid ? `https://videodelivery.net/${uid}/thumbnails/thumbnail.jpg?time=1s` : null);
-
-    const playbackPath = buildVideoPlaybackPath(uid);
-    const downloadPath = buildVideoDownloadPath(uid);
+    const durationSeconds = Number.isFinite(duration) ? duration : null;
+    const snapshot: VideoConfirmSnapshot = {
+      uid,
+      ready: readyToStream,
+      durationSeconds,
+      hls,
+      thumbnail,
+      status: result.status ?? null,
+      uploadState: statusState || null,
+      createdAt,
+      ageSeconds,
+    };
 
     if (readyToStream && hls) {
       saveVideoPlaybackRedirect(uid, hls);
     }
+    saveVideoConfirmSnapshot(
+      uid,
+      snapshot,
+      readyToStream ? VIDEO_CONFIRM_READY_CACHE_TTL_MS : VIDEO_CONFIRM_PENDING_CACHE_TTL_MS
+    );
 
     return formatResponse({
       res,
       success: true,
-      body: {
-        video: {
-          uid,
-          ready: readyToStream,
-          duration_seconds: Number.isFinite(duration) ? duration : null,
-          hls,
-          playback_url: hls,
-          proxy_playback_url: playbackPath,
-          download_url: downloadPath,
-          thumbnail,
-          status: result.status ?? null,
-          upload_state: statusState || null,
-          created_at: createdAt,
-          age_seconds: ageSeconds,
-        },
-        should_retry_upload: false,
-        retry_after_ms: readyToStream ? 0 : 2000,
-        recommended_chat_payload: {
-          message_type: "video",
-          media_url: playbackPath,
-          media_mime: "application/x-mpegurl",
-          media_duration_ms:
-            Number.isFinite(duration) && duration > 0 ? Math.floor(duration * 1000) : null,
-          media_size_bytes: parsePositiveInt((req.body as any)?.file_size_bytes),
-        },
-        recommended_download: {
-          media_url: downloadPath,
-        },
-      },
+      body: buildVideoConfirmResponseBody(snapshot, requestedMediaSizeBytes),
     });
   } catch (error: any) {
     if (isAxiosTimeoutError(error)) {
@@ -2048,16 +3656,6 @@ export const document_download = async (req: Request, res: Response) => {
 };
 
 export const image_playback = async (req: Request, res: Response) => {
-  const config = ensureCloudflareConfig("images");
-  if (!config.ok) {
-    return formatResponse({
-      res,
-      success: false,
-      code: 500,
-      message: config.message,
-    });
-  }
-
   const imageId =
     normalizeImageId((req.query as any)?.id) ??
     normalizeImageId((req.params as any)?.id);
@@ -2070,6 +3668,57 @@ export const image_playback = async (req: Request, res: Response) => {
     });
   }
   if (!enforceSignedMediaAccess(req, res, "image_id", imageId)) return;
+
+  if (isR2ImageId(imageId)) {
+    const localSnapshot = await getLocalImageFallbackStat(imageId);
+    if (localSnapshot) {
+      const byExt = inferImageMimeFromName(imageId);
+      res.setHeader("Content-Type", byExt || "application/octet-stream");
+      setImagePlaybackCacheHeaders(res);
+      return res.sendFile(localSnapshot.fullPath);
+    }
+
+    const config = ensureR2Config();
+    if (!config.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 500,
+        message: config.message,
+      });
+    }
+
+    try {
+      const getUrl = buildR2PresignedUrl({
+        method: "GET",
+        bucket: config.bucket,
+        endpoint: config.endpoint,
+        key: imageId,
+        accessKeyId: config.accessKeyId,
+        secretAccessKey: config.secretAccessKey,
+        expiresSeconds: IMAGE_PLAY_TTL_SECONDS,
+      });
+      setImagePlaybackCacheHeaders(res);
+      return res.redirect(302, getUrl);
+    } catch (error: any) {
+      return formatResponse({
+        res,
+        success: false,
+        code: 502,
+        message: error?.message ?? "image playback redirect failed",
+      });
+    }
+  }
+
+  const config = ensureCloudflareConfig("images");
+  if (!config.ok) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 500,
+      message: config.message,
+    });
+  }
 
   const cachedRedirectTarget = getCachedImagePlaybackRedirect(imageId);
   if (cachedRedirectTarget) {
@@ -2253,6 +3902,15 @@ export const video_download = async (req: Request, res: Response) => {
         secretAccessKey: config.secretAccessKey,
         expiresSeconds: VIDEO_DOWNLOAD_TTL_SECONDS,
       });
+      if (VIDEO_DOWNLOAD_SHOULD_PROXY) {
+        await streamRemoteDownloadToClient({
+          res,
+          sourceUrl: getUrl,
+          fileName: objectKey,
+          defaultContentType: "video/mp4",
+        });
+        return;
+      }
 
       return res.redirect(302, getUrl);
     } catch (error: any) {
@@ -2293,6 +3951,16 @@ export const video_download = async (req: Request, res: Response) => {
     });
 
     if (info?.status === "ready" && info.url) {
+      if (VIDEO_DOWNLOAD_SHOULD_PROXY) {
+        await streamRemoteDownloadToClient({
+          res,
+          sourceUrl: info.url,
+          fileName: `${uid}.mp4`,
+          defaultContentType: "video/mp4",
+        });
+        return;
+      }
+
       return res.redirect(302, info.url);
     }
 

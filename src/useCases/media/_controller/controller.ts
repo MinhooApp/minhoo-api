@@ -17,10 +17,12 @@ import {
   delete_image_asset,
   delete_video_asset,
   media_rules,
+  moderate_media_asset,
 } from "../create/create";
 
 export {
   media_rules,
+  moderate_media_asset,
   audio_playback,
   document_download,
   image_playback,

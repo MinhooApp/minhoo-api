@@ -887,6 +887,11 @@ export const followers_v2 = async (req: Request, res: Response) => {
       success: true,
       body: {
         followers: items,
+        follows: items,
+        items,
+        users: items.map((item: any) => item?.user ?? item).filter(Boolean),
+        count: targetCounts.followersCount,
+        total: targetCounts.followersCount,
         followersCount: targetCounts.followersCount,
         followingCount: targetCounts.followingCount,
         followingsCount: targetCounts.followingCount,
@@ -955,6 +960,10 @@ export const following_v2 = async (req: Request, res: Response) => {
       body: {
         following: items,
         follows: items,
+        items,
+        users: items.map((item: any) => item?.user ?? item).filter(Boolean),
+        count: targetCounts.followingCount,
+        total: targetCounts.followingCount,
         followersCount: targetCounts.followersCount,
         followingCount: targetCounts.followingCount,
         followingsCount: targetCounts.followingCount,

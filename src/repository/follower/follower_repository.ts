@@ -181,6 +181,56 @@ export const getCounts = async (userId: number) => {
   return { followersCount, followingCount };
 };
 
+export const getCountsMap = async (userIdsRaw: any[]) => {
+  const userIds = Array.from(
+    new Set(
+      (Array.isArray(userIdsRaw) ? userIdsRaw : [])
+        .map((value) => toPositiveInt(value))
+        .filter((value): value is number => Number.isFinite(value as any))
+    )
+  );
+
+  const output: Record<number, { followersCount: number; followingCount: number }> = {};
+  if (!userIds.length) return output;
+
+  const countExpression = Sequelize.fn("COUNT", Sequelize.col("id"));
+
+  const [followersRows, followingRows] = await Promise.all([
+    Follower.findAll({
+      where: { userId: { [Op.in]: userIds } },
+      attributes: ["userId", [countExpression, "count"]],
+      group: ["userId"],
+      raw: true,
+    }),
+    Follower.findAll({
+      where: { followerId: { [Op.in]: userIds } },
+      attributes: ["followerId", [countExpression, "count"]],
+      group: ["followerId"],
+      raw: true,
+    }),
+  ]);
+
+  userIds.forEach((userId) => {
+    output[userId] = { followersCount: 0, followingCount: 0 };
+  });
+
+  (followersRows as any[]).forEach((row: any) => {
+    const userId = toPositiveInt(row?.userId);
+    const count = Number(row?.count ?? 0);
+    if (!userId || !output[userId]) return;
+    output[userId].followersCount = Number.isFinite(count) && count > 0 ? Math.trunc(count) : 0;
+  });
+
+  (followingRows as any[]).forEach((row: any) => {
+    const userId = toPositiveInt(row?.followerId);
+    const count = Number(row?.count ?? 0);
+    if (!userId || !output[userId]) return;
+    output[userId].followingCount = Number.isFinite(count) && count > 0 ? Math.trunc(count) : 0;
+  });
+
+  return output;
+};
+
 export const followUser = async (targetId: number, viewerId: number) => {
   const [row, created] = await Follower.findOrCreate({
     where: { userId: targetId, followerId: viewerId },
