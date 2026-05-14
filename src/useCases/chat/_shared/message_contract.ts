@@ -1,5 +1,6 @@
 import { AppLocale } from "../../../libs/localization/locale";
 import { formatRelativeTime } from "../../../libs/localization/relative_time";
+import { createHmac } from "crypto";
 
 const toPlain = (value: any) =>
   value && typeof value.toJSON === "function" ? value.toJSON() : value ?? {};
@@ -23,6 +24,42 @@ const toDateValue = (value: any): Date | string | null => {
   return value;
 };
 
+type SignedMediaKind = "audio" | "document" | "video_key" | "video_uid" | "image_id";
+
+const MEDIA_ACCESS_TOKEN_QUERY_KEY = "sat";
+const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
+  30,
+  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 10 * 60) || 10 * 60
+);
+
+const getMediaAccessSigningSecret = () =>
+  String(
+    process.env.MEDIA_ACCESS_SIGNING_SECRET ??
+      process.env.JWT_SECRET ??
+      process.env.SECRETORPRIVATEKEY ??
+      ""
+  ).trim();
+
+const toBase64Url = (value: Buffer | string) =>
+  Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+
+const buildMediaAccessToken = (kind: SignedMediaKind, resourceKey: string): string | null => {
+  const secret = getMediaAccessSigningSecret();
+  if (!secret) return null;
+
+  const key = String(resourceKey ?? "").trim();
+  if (!key) return null;
+
+  const exp = Math.floor(Date.now() / 1000) + MEDIA_ACCESS_TOKEN_TTL_SECONDS;
+  const payload = `${kind}:${key}:${exp}`;
+  const signature = createHmac("sha256", secret).update(payload).digest();
+  return `${exp}.${toBase64Url(signature)}`;
+};
+
 const normalizeVideoUid = (value: any): string | null => {
   if (value === undefined || value === null) return null;
   const normalized = String(value).trim().toLowerCase();
@@ -37,6 +74,77 @@ const normalizeVideoStorageKey = (value: any): string | null => {
   if (!normalized) return null;
   if (!/^[a-zA-Z0-9._-]+$/.test(normalized)) return null;
   return normalized;
+};
+
+const normalizeImageId = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = decodeURIComponent(String(value).trim());
+  if (!normalized) return null;
+  if (!/^[a-zA-Z0-9._-]{6,255}$/.test(normalized)) return null;
+  return normalized;
+};
+
+const buildSignedMediaPlaybackUrl = (
+  messageTypeRaw: string | null,
+  rawUrl: string | null
+): string | null => {
+  const sourceUrl = toText(rawUrl);
+  if (!sourceUrl) return sourceUrl;
+
+  const messageType = String(messageTypeRaw ?? "").trim().toLowerCase();
+  if (!messageType) return sourceUrl;
+
+  let parsed: URL;
+  try {
+    parsed = new URL(sourceUrl, "http://local");
+  } catch {
+    return sourceUrl;
+  }
+
+  const pathname = String(parsed.pathname ?? "").trim().toLowerCase();
+  if (!pathname.startsWith("/api/v1/media/")) return sourceUrl;
+  let kind: SignedMediaKind | null = null;
+  let resourceKey: string | null = null;
+
+  if (messageType === "voice" && pathname === "/api/v1/media/audio/play") {
+    kind = "audio";
+    resourceKey = normalizeVideoStorageKey(parsed.searchParams.get("key"));
+  } else if (messageType === "document" && pathname === "/api/v1/media/document/download") {
+    kind = "document";
+    resourceKey =
+      normalizeVideoStorageKey(parsed.searchParams.get("key")) ??
+      normalizeVideoStorageKey(parsed.searchParams.get("uid"));
+  } else if (messageType === "image" && pathname === "/api/v1/media/image/play") {
+    kind = "image_id";
+    resourceKey = normalizeImageId(parsed.searchParams.get("id"));
+  } else if (messageType === "video" && pathname === "/api/v1/media/video/play") {
+    resourceKey = normalizeVideoStorageKey(parsed.searchParams.get("key"));
+    if (resourceKey) {
+      kind = "video_key";
+    } else {
+      resourceKey = normalizeVideoUid(parsed.searchParams.get("uid"));
+      kind = resourceKey ? "video_uid" : null;
+    }
+  } else if (messageType === "video" && pathname === "/api/v1/media/video/download") {
+    resourceKey = normalizeVideoStorageKey(parsed.searchParams.get("key"));
+    if (resourceKey) {
+      kind = "video_key";
+    } else {
+      resourceKey = normalizeVideoUid(parsed.searchParams.get("uid"));
+      kind = resourceKey ? "video_uid" : null;
+    }
+  } else {
+    return sourceUrl;
+  }
+
+  if (!kind || !resourceKey) return sourceUrl;
+
+  const token = buildMediaAccessToken(kind, resourceKey);
+  if (!token) return sourceUrl;
+
+  parsed.searchParams.set(MEDIA_ACCESS_TOKEN_QUERY_KEY, token);
+  const query = parsed.searchParams.toString();
+  return query ? `${parsed.pathname}?${query}` : parsed.pathname;
 };
 
 const extractVideoUidFromMediaUrl = (rawUrl: string | null): string | null => {
@@ -346,10 +454,15 @@ export const serializeMessageToCanonical = (
   const message = toPlain(value);
   const senderFields = resolveSenderFields(message);
   const messageType = toText((message as any)?.messageType) ?? "text";
-  const mediaUrl = toText((message as any)?.mediaUrl);
+  const mediaUrl = buildSignedMediaPlaybackUrl(
+    messageType,
+    toText((message as any)?.mediaUrl)
+  );
   const isVideo = messageType.toLowerCase() === "video";
 
-  const mediaDownloadUrl = isVideo ? resolveVideoDownloadUrl(message, mediaUrl) : null;
+  const mediaDownloadUrl = isVideo
+    ? buildSignedMediaPlaybackUrl("video", resolveVideoDownloadUrl(message, mediaUrl))
+    : null;
   const videoThumbnail = isVideo
     ? resolveVideoThumbnailFields(message, mediaUrl)
     : {

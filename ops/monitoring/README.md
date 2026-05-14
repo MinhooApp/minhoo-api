@@ -80,3 +80,216 @@ tail -n 200 /var/www/minhoo-api/backups/risk-monitor-cron.log
 
 - Policy: `/var/www/minhoo-api/minhoo_api/ops/monitoring/CAPACITY_SCALING_POLICY.md`
 - Incident runbook: `/var/www/minhoo-api/minhoo_api/ops/RUNBOOK_INCIDENT_RESPONSE.md`
+
+## 6) Feed cache monitor (Cloudflare + summary cache)
+
+Install automatic timer (every 5 minutes):
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+sudo bash ops/monitoring/install-feed-cache-monitor.sh
+```
+
+Manual run:
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+npm run -s ops:monitor:cache:feeds -- --cycles=1 --strict --auth-token=TU_TOKEN
+```
+
+Verify runtime:
+
+```bash
+systemctl status minhoo-feed-cache-monitor.timer --no-pager -n 30
+systemctl list-timers minhoo-feed-cache-monitor.timer
+journalctl -u minhoo-feed-cache-monitor.service --since "60 min ago" --no-pager
+```
+
+Alert behavior:
+
+- If strict monitor fails, systemd triggers `minhoo-feed-cache-alert.service` via `OnFailure=`.
+- Alert channels:
+  - Email: `FEED_CACHE_ALERT_EMAIL_ENABLED=1` + `FEED_CACHE_ALERT_EMAIL` (fallback `RISK_ALERT_EMAIL`) + `EMAIL_*`
+  - Telegram: `TELEGRAM_BOT_TOKEN` + `FEED_CACHE_ALERT_TELEGRAM_CHAT_ID` (fallback `TELEGRAM_CHAT_ID`)
+  - Optional network family: `FEED_CACHE_ALERT_TELEGRAM_HTTP_FAMILY=4` (fallback `TELEGRAM_HTTP_FAMILY`)
+- Anti-spam cooldown: `FEED_CACHE_ALERT_COOLDOWN_SECONDS` (default 900s)
+
+Manual alert test:
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+npm run -s ops:alert:cache:feeds:test
+```
+
+Check alert logs:
+
+```bash
+journalctl -u minhoo-feed-cache-alert.service --since "60 min ago" --no-pager
+```
+
+## 7) Feed SLO monitor (Day 1 baseline)
+
+Manual run:
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+npm run -s ops:monitor:slo:feeds -- --strict
+```
+
+JSON output:
+
+```bash
+npm run -s ops:monitor:slo:feeds -- --strict --json
+```
+
+Reference:
+
+- `/var/www/minhoo-api/minhoo_api/ops/monitoring/SLO_FEED_DAY1.md`
+
+## 8) Feed SLO sampling (24h) + automatic daily report
+
+Install timers/services:
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+sudo bash ops/monitoring/install-feed-slo-monitoring.sh
+```
+
+Manual sample run (append one JSONL sample):
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+npm run -s ops:monitor:slo:sample
+```
+
+Optional strict exit behavior (default collector mode does not fail systemd on SLO breach):
+
+```bash
+FEED_SLO_SAMPLE_FAIL_ON_BREACH=1 npm run -s ops:monitor:slo:sample
+```
+
+Manual 24h report run:
+
+```bash
+npm run -s ops:report:slo:feeds24h
+```
+
+Dry-run report (print only, no email/telegram):
+
+```bash
+npm run -s ops:report:slo:feeds24h -- --no-send
+```
+
+Verify runtime:
+
+```bash
+systemctl status minhoo-feed-slo-sampler.timer --no-pager -n 30
+systemctl status minhoo-feed-slo-report.timer --no-pager -n 30
+systemctl list-timers minhoo-feed-slo-sampler.timer minhoo-feed-slo-report.timer
+journalctl -u minhoo-feed-slo-sampler.service --since "24 hours ago" --no-pager
+journalctl -u minhoo-feed-slo-report.service --since "24 hours ago" --no-pager
+```
+
+## 9) Content idempotency monitor (POST /post + POST /reel)
+
+Manual run:
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+npm run -s ops:monitor:idempotency
+```
+
+JSON output:
+
+```bash
+IDEMP_MONITOR_JSON=1 npm run -s ops:monitor:idempotency
+```
+
+Install automatic timer (every 5 minutes):
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+sudo bash ops/monitoring/install-idempotency-monitor.sh
+```
+
+Verify runtime:
+
+```bash
+systemctl status minhoo-idempotency-monitor.timer --no-pager -n 30
+systemctl list-timers minhoo-idempotency-monitor.timer
+journalctl -u minhoo-idempotency-monitor.service --since "60 min ago" --no-pager
+journalctl -u minhoo-idempotency-alert.service --since "60 min ago" --no-pager
+```
+
+Key thresholds in `.env`:
+
+- `IDEMP_MONITOR_LOOKBACK_MINUTES`
+- `IDEMP_MONITOR_STUCK_MINUTES`
+- `IDEMP_MONITOR_MAX_STUCK`
+- `IDEMP_MONITOR_MIN_SAMPLES`
+- `IDEMP_MONITOR_MAX_CONFLICT_RATE_PCT`
+- `IDEMP_MONITOR_MAX_SERVER_ERROR_RATE_PCT`
+- `IDEMP_MONITOR_REQUIRE_RECENT_ACTIVITY`
+
+## 10) Chat SLO monitor (summary/list/message/send)
+
+Manual run:
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+npm run -s ops:monitor:slo:chat -- --strict
+```
+
+JSON output:
+
+```bash
+CHAT_SLO_JSON=1 npm run -s ops:monitor:slo:chat
+```
+
+Install automatic timer (every 5 minutes):
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+sudo bash ops/monitoring/install-chat-slo-monitor.sh
+```
+
+Verify runtime:
+
+```bash
+systemctl status minhoo-chat-slo-monitor.timer --no-pager -n 30
+systemctl list-timers minhoo-chat-slo-monitor.timer
+journalctl -u minhoo-chat-slo-monitor.service --since "60 min ago" --no-pager
+journalctl -u minhoo-chat-slo-alert.service --since "60 min ago" --no-pager
+```
+
+Key thresholds in `.env`:
+
+- `CHAT_SLO_MIN_WINDOW_REQUESTS`
+- `CHAT_SLO_MIN_ROUTE_SAMPLES`
+- `CHAT_SLO_CHAT_SUMMARY_P95_MS`
+- `CHAT_SLO_CHAT_MESSAGE_SUMMARY_P95_MS`
+- `CHAT_SLO_CHAT_SEND_P95_MS`
+- `CHAT_SLO_CHAT_FULL_P95_MS`
+- `CHAT_SLO_MAX_5XX_PERCENT`
+- `CHAT_SLO_MAX_429_PERCENT`
+- `CHAT_SLO_MAX_4XX_PERCENT`
+- `CHAT_SLO_STRICT_429`
+- `CHAT_SLO_STRICT_4XX`
+- `CHAT_SLO_REQUIRE_TRAFFIC`
+
+24h burn-in report:
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+sudo npm run -s ops:report:slo:chat24h -- --hours 24 --strict
+```
+
+JSON output:
+
+```bash
+CHAT_SLO_REPORT_JSON=1 sudo npm run -s ops:report:slo:chat24h
+```
+
+Mobile push/presence E2E checklist:
+
+- `/var/www/minhoo-api/minhoo_api/ops/monitoring/CHAT_PUSH_PRESENCE_E2E.md`

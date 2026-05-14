@@ -1,0 +1,21 @@
+[Unit]
+Description=Minhoo Idempotency Monitor (POST /post + POST /reel)
+After=network-online.target
+Wants=network-online.target
+OnFailure=minhoo-idempotency-alert.service
+
+[Service]
+Type=oneshot
+User=appuser
+Group=appuser
+WorkingDirectory=/var/www/minhoo-api/minhoo_api
+Environment=NODE_ENV=production
+Environment=IDEMP_MONITOR_STRICT=1
+Environment=IDEMP_MONITOR_LOOKBACK_MINUTES=30
+Environment=IDEMP_MONITOR_STUCK_MINUTES=10
+Environment=IDEMP_MONITOR_MAX_STUCK=0
+Environment=IDEMP_MONITOR_MIN_SAMPLES=2
+Environment=IDEMP_MONITOR_MAX_CONFLICT_RATE_PCT=60
+Environment=IDEMP_MONITOR_MAX_SERVER_ERROR_RATE_PCT=10
+Environment=IDEMP_MONITOR_REQUIRE_RECENT_ACTIVITY=0
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/scripts/monitor-idempotency-health.js

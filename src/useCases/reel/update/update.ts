@@ -7,6 +7,7 @@ import {
   socket,
   sendNotification,
 } from "../_module/module";
+import { resolvePushActorLabel } from "../../../libs/push_actor_label";
 
 const toSessionKey = (req: Request) => {
   const bodyKey = String((req.body as any)?.session_key ?? (req.body as any)?.sessionKey ?? "").trim();
@@ -262,12 +263,14 @@ export const toggle_reel_star = async (req: Request, res: Response) => {
 
     if (shouldNotifyOwner) {
       try {
+        const actorLabel = await resolvePushActorLabel(actorUserId);
         await sendNotification({
           userId: ownerUserId,
           interactorId: actorUserId,
           reelId: Number(id),
           type: "like",
-          message: "Has starred your Orbit.",
+          senderName: actorLabel,
+          message: `${actorLabel} has starred your Orbit.`,
           deeplink: `orbit/${Number(id)}`,
         });
       } catch (notifyError) {
@@ -333,12 +336,14 @@ export const save_reel = async (req: Request, res: Response) => {
 
     if (shouldNotifyOwner) {
       try {
+        const actorLabel = await resolvePushActorLabel(actorUserId);
         await sendNotification({
           userId: ownerUserId,
           interactorId: actorUserId,
           reelId: Number(id),
           type: "like",
-          message: "Has saved your Orbit.",
+          senderName: actorLabel,
+          message: `${actorLabel} has saved your Orbit.`,
           deeplink: `orbit/${Number(id)}`,
         });
       } catch (notifyError) {
@@ -418,6 +423,7 @@ export const unsave_reel = async (req: Request, res: Response) => {
 };
 
 export const record_reel_view = async (req: Request, res: Response) => {
+  const startedAt = Date.now();
   try {
     const { id } = req.params;
     const sessionKey = toSessionKey(req);
@@ -440,13 +446,20 @@ export const record_reel_view = async (req: Request, res: Response) => {
       body: {
         reelId: Number(id),
         counted: result.counted,
-        views_count: Number((result.reel as any)?.views_count ?? 0),
-        viewsCount: Number((result.reel as any)?.views_count ?? 0),
+        views_count: Number((result as any)?.views_count ?? (result.reel as any)?.views_count ?? 0),
+        viewsCount: Number((result as any)?.views_count ?? (result.reel as any)?.views_count ?? 0),
         reel: result.reel,
       },
     });
   } catch (error) {
     return formatResponse({ res, success: false, message: error });
+  } finally {
+    const elapsedMs = Date.now() - startedAt;
+    if (elapsedMs >= 1200) {
+      console.warn(
+        `[reel_view_slow] reelId=${Number(req.params?.id ?? 0)} userId=${Number((req as any)?.userId ?? 0)} elapsedMs=${elapsedMs}`
+      );
+    }
   }
 };
 

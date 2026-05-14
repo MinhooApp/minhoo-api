@@ -40,18 +40,6 @@ const REEL_STARTUP_SAFE_MAX_FPS = Math.max(
   24,
   Number(process.env.REEL_STARTUP_SAFE_MAX_FPS ?? 30) || 30
 );
-const REEL_STARTUP_SAFE_MAX_MIN_BANDWIDTH = Math.max(
-  120_000,
-  Number(process.env.REEL_STARTUP_SAFE_MAX_MIN_BANDWIDTH ?? 550_000) || 550_000
-);
-const REEL_ENFORCE_SAFE_STREAM_MIN_BITRATE = parseBool(
-  process.env.REEL_ENFORCE_SAFE_STREAM_MIN_BITRATE,
-  false
-);
-const REEL_ALLOW_UNSAFE_STREAM_MIN_BITRATE = parseBool(
-  process.env.REEL_ALLOW_UNSAFE_STREAM_MIN_BITRATE,
-  true
-);
 const REEL_STREAM_PROFILE_TIMEOUT_MS = Math.max(
   1000,
   Number(process.env.REEL_STREAM_PROFILE_TIMEOUT_MS ?? 3000) || 3000
@@ -61,21 +49,6 @@ const REEL_STREAM_PROFILE_CACHE_TTL_MS = Math.max(
   Number(process.env.REEL_STREAM_PROFILE_CACHE_TTL_MS ?? 10 * 60 * 1000) ||
     10 * 60 * 1000
 );
-// Rolled back per product request: disable strict readiness gate for now.
-const REEL_ENFORCE_STREAM_ASSET_READY = false;
-const REEL_STREAM_ASSET_LOOKUP_TIMEOUT_MS = Math.max(
-  1500,
-  Number(process.env.REEL_STREAM_ASSET_LOOKUP_TIMEOUT_MS ?? 5000) || 5000
-);
-const REEL_STREAM_WARMUP_ENABLED = parseBool(
-  process.env.REEL_STREAM_WARMUP_ENABLED,
-  true
-);
-const REEL_STREAM_WARMUP_TIMEOUT_MS = Math.max(
-  400,
-  Number(process.env.REEL_STREAM_WARMUP_TIMEOUT_MS ?? 2500) || 2500
-);
-const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 
 type ReelHlsVariantProfile = {
   url: string;
@@ -88,288 +61,16 @@ type ReelHlsManifestProfile = {
   sourceUrl: string;
   variantCount: number;
   safeVariantCount: number;
-  safeMinBandwidthVariantCount: number;
-  minBandwidth: number | null;
-  maxBandwidth: number | null;
   maxFrameRate: number | null;
   hasUnsafeFrameRate: boolean;
-  hasUnsafeMinBandwidth: boolean;
   inspectedAt: string;
   checkError: string | null;
-};
-
-type CloudflareStreamLookup = {
-  ok: boolean;
-  exists: boolean;
-  ready: boolean;
-  state: string | null;
-  streamUrl: string | null;
-  thumbnailUrl: string | null;
-  durationSeconds: number | null;
-  reason?: string;
 };
 
 const reelHlsProfileCache = new Map<
   string,
   { expiresAt: number; profile: ReelHlsManifestProfile | null }
 >();
-
-const normalizeVideoUid = (value: any): string | null => {
-  const raw = String(value ?? "").trim();
-  if (!raw) return null;
-  if (!/^[a-f0-9]{32}$/i.test(raw)) return null;
-  return raw.toLowerCase();
-};
-
-const getCloudflareStreamConfig = () => {
-  const accountId = String(process.env.CLOUDFLARE_ACCOUNT_ID ?? "").trim();
-  const token = String(
-    process.env.CLOUDFLARE_MEDIA_API_TOKEN ??
-      process.env.CLOUDFLARE_API_TOKEN ??
-      process.env.CLOUDFLARE_TOKEN ??
-      ""
-  ).trim();
-  return { accountId, token };
-};
-
-const readCloudflareStreamLookup = async (
-  uid: string
-): Promise<CloudflareStreamLookup> => {
-  const cfg = getCloudflareStreamConfig();
-  if (!cfg.accountId || !cfg.token) {
-    return {
-      ok: false,
-      exists: false,
-      ready: false,
-      state: null,
-      streamUrl: null,
-      thumbnailUrl: null,
-      durationSeconds: null,
-      reason: "missing_cloudflare_config",
-    };
-  }
-
-  try {
-    const response = await fetch(
-      `${CLOUDFLARE_API_BASE}/accounts/${cfg.accountId}/stream/${encodeURIComponent(uid)}`,
-      {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${cfg.token}`,
-          "Content-Type": "application/json",
-        },
-        signal: AbortSignal.timeout(REEL_STREAM_ASSET_LOOKUP_TIMEOUT_MS),
-      }
-    );
-    const payload = await response.json().catch(() => null);
-    if (!response.ok || !payload?.success) {
-      const firstCode = Number(payload?.errors?.[0]?.code ?? 0) || null;
-      const firstMessage = String(payload?.errors?.[0]?.message ?? "").trim();
-      if (response.status === 404 || firstCode === 10003) {
-        return {
-          ok: true,
-          exists: false,
-          ready: false,
-          state: "not_found",
-          streamUrl: null,
-          thumbnailUrl: null,
-          durationSeconds: null,
-          reason: "not_found",
-        };
-      }
-      return {
-        ok: false,
-        exists: false,
-        ready: false,
-        state: null,
-        streamUrl: null,
-        thumbnailUrl: null,
-        durationSeconds: null,
-        reason: firstMessage || `lookup_http_${response.status}`,
-      };
-    }
-
-    const result = payload?.result ?? {};
-    const state = String(result?.status?.state ?? "").trim().toLowerCase() || null;
-    const ready = Boolean(result?.readyToStream);
-    const hls =
-      String(result?.playback?.hls ?? "").trim() || buildDefaultStreamUrl(uid) || null;
-    const thumbnail =
-      String(result?.thumbnail ?? "").trim() ||
-      buildDefaultThumbnailUrl(uid, hls);
-    const durationRaw = Number(result?.duration ?? 0);
-    const durationSeconds =
-      Number.isFinite(durationRaw) && durationRaw > 0 ? Math.floor(durationRaw) : null;
-
-    return {
-      ok: true,
-      exists: true,
-      ready,
-      state,
-      streamUrl: hls,
-      thumbnailUrl: thumbnail,
-      durationSeconds,
-    };
-  } catch (error: any) {
-    return {
-      ok: false,
-      exists: false,
-      ready: false,
-      state: null,
-      streamUrl: null,
-      thumbnailUrl: null,
-      durationSeconds: null,
-      reason: String(error?.message ?? "stream_lookup_failed"),
-    };
-  }
-};
-
-const readFirstPlaylistUri = (manifestRaw: string): string | null => {
-  const lines = String(manifestRaw ?? "")
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  for (const line of lines) {
-    if (!line || line.startsWith("#")) continue;
-    return line;
-  }
-  return null;
-};
-
-const safeWarmupFetch = async (urlRaw: string, timeoutMs: number) => {
-  const url = String(urlRaw ?? "").trim();
-  if (!url) return null;
-  try {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        Accept:
-          "application/vnd.apple.mpegurl,application/x-mpegURL,application/x-mpegurl,*/*",
-      },
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const text = await response.text().catch(() => "");
-    return {
-      ok: response.ok,
-      status: response.status,
-      text,
-      finalUrl: response.url || url,
-    };
-  } catch (error: any) {
-    return {
-      ok: false,
-      status: 0,
-      text: "",
-      finalUrl: url,
-      error: String(error?.message ?? "fetch_failed"),
-    };
-  }
-};
-
-const sleep = (ms: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, Math.floor(ms))));
-
-const isAbsoluteHttpUrl = (valueRaw: any) => {
-  const value = String(valueRaw ?? "").trim();
-  return /^https?:\/\//i.test(value);
-};
-
-const resolveWarmupMasterUrl = (uid: string, streamUrlRaw: any) => {
-  const streamUrl = String(streamUrlRaw ?? "").trim();
-  if (isAbsoluteHttpUrl(streamUrl) && /\.m3u8($|\?)/i.test(streamUrl)) return streamUrl;
-  return buildDefaultStreamUrl(uid);
-};
-
-const parseWarmupDelayOffsetsMs = () => {
-  const raw = String(process.env.REEL_STREAM_WARMUP_DELAY_OFFSETS_MS ?? "0,7000,20000")
-    .split(",")
-    .map((entry) => Number(entry))
-    .filter((entry) => Number.isFinite(entry) && entry >= 0)
-    .map((entry) => Math.floor(entry));
-  const unique = Array.from(new Set(raw)).sort((a, b) => a - b);
-  return unique.length ? unique : [0];
-};
-
-const warmUpReelStreamAssets = async (params: {
-  userId: number;
-  videoUid: string;
-  streamUrl: string | null;
-  thumbnailUrl: string | null;
-  phase?: string;
-}): Promise<boolean> => {
-  if (!REEL_STREAM_WARMUP_ENABLED) return false;
-  const uid = normalizeVideoUid(params.videoUid);
-  if (!uid) return false;
-
-  const masterUrl = resolveWarmupMasterUrl(uid, params.streamUrl);
-  const maxAttempts = Math.max(
-    1,
-    Number(process.env.REEL_STREAM_WARMUP_ATTEMPTS ?? 6) || 6
-  );
-  const retryBaseMs = Math.max(
-    200,
-    Number(process.env.REEL_STREAM_WARMUP_RETRY_BASE_MS ?? 1500) || 1500
-  );
-  const phase = String(params.phase ?? "immediate").trim() || "immediate";
-
-  let master: Awaited<ReturnType<typeof safeWarmupFetch>> | null = null;
-  let variant: Awaited<ReturnType<typeof safeWarmupFetch>> | null = null;
-  let segment: Awaited<ReturnType<typeof safeWarmupFetch>> | null = null;
-  let attemptsUsed = 0;
-
-  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    attemptsUsed = attempt;
-    master = await safeWarmupFetch(masterUrl, REEL_STREAM_WARMUP_TIMEOUT_MS);
-    variant = null;
-    segment = null;
-
-    if (master?.ok && master.text) {
-      const firstVariantUri = readFirstPlaylistUri(master.text);
-      if (firstVariantUri) {
-        let variantUrl = firstVariantUri;
-        try {
-          variantUrl = new URL(firstVariantUri, master.finalUrl ?? masterUrl).toString();
-        } catch {
-          // use raw path
-        }
-
-        variant = await safeWarmupFetch(variantUrl, REEL_STREAM_WARMUP_TIMEOUT_MS);
-        if (variant?.ok && variant.text) {
-          const firstSegmentUri = readFirstPlaylistUri(variant.text);
-          if (firstSegmentUri) {
-            let segmentUrl = firstSegmentUri;
-            try {
-              segmentUrl = new URL(firstSegmentUri, variant.finalUrl ?? variantUrl).toString();
-            } catch {
-              // use raw path
-            }
-            segment = await safeWarmupFetch(segmentUrl, REEL_STREAM_WARMUP_TIMEOUT_MS);
-          }
-        }
-      }
-      break;
-    }
-
-    if (attempt < maxAttempts) {
-      await sleep(retryBaseMs * attempt);
-    }
-  }
-
-  const warmed = Boolean(master?.ok);
-
-  const providedThumbUrl = String(params.thumbnailUrl ?? "").trim();
-  const thumbUrl =
-    (isAbsoluteHttpUrl(providedThumbUrl) ? providedThumbUrl : "") ||
-    buildDefaultThumbnailUrl(uid, master?.finalUrl ?? params.streamUrl);
-  const thumbnail = await safeWarmupFetch(thumbUrl, REEL_STREAM_WARMUP_TIMEOUT_MS);
-
-  console.log(
-    `[reel-warmup] userId=${params.userId} uid=${uid} phase=${phase} attempts_used=${attemptsUsed}/${maxAttempts} warmed=${warmed} master=${
-      master?.status ?? 0
-    } variant=${variant?.status ?? 0} segment=${segment?.status ?? 0} thumb=${thumbnail?.status ?? 0}`
-  );
-  return warmed;
-};
 
 const parseM3u8NumberAttr = (
   attrsRaw: string,
@@ -462,28 +163,14 @@ const inspectReelHlsManifestProfile = async (
         sourceUrl,
         variantCount: 0,
         safeVariantCount: 0,
-        safeMinBandwidthVariantCount: 0,
-        minBandwidth: null,
-        maxBandwidth: null,
         maxFrameRate: null,
         hasUnsafeFrameRate: false,
-        hasUnsafeMinBandwidth: false,
         inspectedAt,
         checkError: `manifest_http_${response.status}`,
       };
     } else {
       const manifestText = await response.text();
       const variants = parseHlsVariantProfiles(manifestText, sourceUrl);
-      const minBandwidth = variants.reduce<number | null>((min, variant) => {
-        if (!variant.bandwidth) return min;
-        if (min == null) return variant.bandwidth;
-        return variant.bandwidth < min ? variant.bandwidth : min;
-      }, null);
-      const maxBandwidth = variants.reduce<number | null>((max, variant) => {
-        if (!variant.bandwidth) return max;
-        if (max == null) return variant.bandwidth;
-        return variant.bandwidth > max ? variant.bandwidth : max;
-      }, null);
       const maxFrameRate = variants.reduce<number | null>((max, variant) => {
         if (!variant.frameRate) return max;
         if (max == null) return variant.frameRate;
@@ -494,47 +181,30 @@ const inspectReelHlsManifestProfile = async (
           variant.frameRate == null ||
           variant.frameRate <= REEL_STARTUP_SAFE_MAX_FPS + 0.001
       );
-      const safeMinBandwidthVariants = variants.filter(
-        (variant) =>
-          variant.bandwidth == null ||
-          variant.bandwidth <= REEL_STARTUP_SAFE_MAX_MIN_BANDWIDTH + 1
-      );
       profile = {
         sourceUrl,
         variantCount: variants.length,
         safeVariantCount: safeVariants.length,
-        safeMinBandwidthVariantCount: safeMinBandwidthVariants.length,
-        minBandwidth,
-        maxBandwidth,
         maxFrameRate,
         hasUnsafeFrameRate: variants.some(
           (variant) =>
             variant.frameRate != null &&
             variant.frameRate > REEL_STARTUP_SAFE_MAX_FPS + 0.001
         ),
-        hasUnsafeMinBandwidth: variants.some(
-          (variant) =>
-            variant.bandwidth != null &&
-            variant.bandwidth > REEL_STARTUP_SAFE_MAX_MIN_BANDWIDTH + 1
-        ),
         inspectedAt,
         checkError: null,
       };
     }
   } catch (error: any) {
-      profile = {
-        sourceUrl,
-        variantCount: 0,
-        safeVariantCount: 0,
-        safeMinBandwidthVariantCount: 0,
-        minBandwidth: null,
-        maxBandwidth: null,
-        maxFrameRate: null,
-        hasUnsafeFrameRate: false,
-        hasUnsafeMinBandwidth: false,
-        inspectedAt,
-        checkError: String(error?.message ?? "manifest_check_failed"),
-      };
+    profile = {
+      sourceUrl,
+      variantCount: 0,
+      safeVariantCount: 0,
+      maxFrameRate: null,
+      hasUnsafeFrameRate: false,
+      inspectedAt,
+      checkError: String(error?.message ?? "manifest_check_failed"),
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -598,35 +268,6 @@ const buildDefaultStreamUrl = (videoUidRaw: any) => {
   const baseUrl = getStreamPlaybackBaseUrl();
   if (baseUrl) return `${baseUrl}/${videoUid}/manifest/video.m3u8`;
   return `https://videodelivery.net/${videoUid}/manifest/video.m3u8`;
-};
-
-const buildDefaultThumbnailUrl = (videoUidRaw: any, streamUrlRaw?: any) => {
-  const uid = String(videoUidRaw ?? "").trim().toLowerCase();
-  if (!/^[a-f0-9]{32}$/i.test(uid)) return "";
-
-  const streamUrl = String(streamUrlRaw ?? "").trim();
-  if (streamUrl) {
-    try {
-      const parsed = new URL(streamUrl);
-      const origin = String(parsed.origin ?? "").trim().replace(/\/+$/, "");
-      if (origin) return `${origin}/${uid}/thumbnails/thumbnail.jpg?time=1s`;
-    } catch {
-      // ignore malformed stream URL
-    }
-  }
-
-  const baseUrl = getStreamPlaybackBaseUrl();
-  if (baseUrl) {
-    try {
-      const parsed = new URL(baseUrl);
-      const origin = String(parsed.origin ?? "").trim().replace(/\/+$/, "");
-      if (origin) return `${origin}/${uid}/thumbnails/thumbnail.jpg?time=1s`;
-    } catch {
-      // ignore malformed playback base URL
-    }
-  }
-
-  return `https://videodelivery.net/${uid}/thumbnails/thumbnail.jpg?time=1s`;
 };
 
 const buildImagePlaybackPath = (imageIdRaw: any) => {
@@ -759,7 +400,7 @@ const resolveReelResourceId = (responsePayload: any): string | number | null => 
 
 export const create_reel = async (req: Request, res: Response) => {
   try {
-    let video_uid = String(
+    const video_uid = String(
       (req.body as any)?.video_uid ??
         (req.body as any)?.videoUid ??
         (req.body as any)?.uid ??
@@ -800,7 +441,7 @@ export const create_reel = async (req: Request, res: Response) => {
 
     const imagePlaybackPath = buildImagePlaybackPath(image_id);
     const resolvedImageUrl = imageUrlFromBody || imagePlaybackPath;
-    let stream_url = inferredImageMode
+    const stream_url = inferredImageMode
       ? resolvedImageUrl
       : shouldPreferDefaultStream
       ? buildDefaultStreamUrl(video_uid)
@@ -817,13 +458,13 @@ export const create_reel = async (req: Request, res: Response) => {
       });
     }
 
-    let thumbnail_url = String(
+    const thumbnail_url = String(
       (req.body as any)?.thumbnail_url ??
         (req.body as any)?.thumbnailUrl ??
         (inferredImageMode
           ? resolvedImageUrl
           : video_uid
-          ? buildDefaultThumbnailUrl(video_uid, stream_url)
+          ? `https://videodelivery.net/${video_uid}/thumbnails/thumbnail.jpg?time=1s`
           : "")
     ).trim();
 
@@ -844,62 +485,6 @@ export const create_reel = async (req: Request, res: Response) => {
           Number((req.body as any)?.duration_seconds ?? (req.body as any)?.durationSeconds ?? 0) || 0
         );
 
-    if (!inferredImageMode) {
-      const normalizedUid = normalizeVideoUid(video_uid);
-      if (!normalizedUid) {
-        return formatResponse({
-          res,
-          success: false,
-          code: 400,
-          message: "video_uid is invalid",
-        });
-      }
-      video_uid = normalizedUid;
-
-      if (REEL_ENFORCE_STREAM_ASSET_READY) {
-        const lookup = await readCloudflareStreamLookup(video_uid);
-        if (!lookup.ok) {
-          return formatResponse({
-            res,
-            success: false,
-            code: 502,
-            message: "video provider validation unavailable, retry",
-            body: {
-              video_uid,
-              reason: lookup.reason ?? "provider_unavailable",
-            },
-          });
-        }
-        if (!lookup.exists) {
-          return formatResponse({
-            res,
-            success: false,
-            code: 409,
-            message: "video upload not found, please upload again",
-            body: {
-              video_uid,
-              state: lookup.state ?? "not_found",
-            },
-          });
-        }
-        if (!lookup.ready) {
-          return formatResponse({
-            res,
-            success: false,
-            code: 409,
-            message: "video is still processing, try again in a moment",
-            body: {
-              video_uid,
-              state: lookup.state ?? "processing",
-            },
-          });
-        }
-        stream_url = String(lookup.streamUrl ?? stream_url ?? "").trim() || stream_url;
-        thumbnail_url =
-          String(lookup.thumbnailUrl ?? thumbnail_url ?? "").trim() || thumbnail_url;
-      }
-    }
-
     const streamProfile =
       !inferredImageMode &&
       REEL_VALIDATE_STREAM_VARIANTS &&
@@ -907,29 +492,19 @@ export const create_reel = async (req: Request, res: Response) => {
         ? await inspectReelHlsManifestProfile(stream_url)
         : null;
 
-    const safeStartupByFps =
+    const safeStartupByManifest =
       streamProfile == null ||
       streamProfile.variantCount === 0 ||
       streamProfile.safeVariantCount > 0;
-    const safeStartupByBitrate =
-      streamProfile == null ||
-      streamProfile.variantCount === 0 ||
-      streamProfile.safeMinBandwidthVariantCount > 0;
-    const safeStartupByManifest = safeStartupByFps && safeStartupByBitrate;
 
-    const unsafeStartupFpsDetected =
+    const unsafeStartupVariantsDetected =
       !inferredImageMode &&
       streamProfile != null &&
       streamProfile.variantCount > 0 &&
       streamProfile.safeVariantCount <= 0;
-    const unsafeStartupBitrateDetected =
-      !inferredImageMode &&
-      streamProfile != null &&
-      streamProfile.variantCount > 0 &&
-      streamProfile.safeMinBandwidthVariantCount <= 0;
 
     if (
-      unsafeStartupFpsDetected &&
+      unsafeStartupVariantsDetected &&
       REEL_ENFORCE_SAFE_STREAM_VARIANTS &&
       !REEL_ALLOW_UNSAFE_STREAM_VARIANTS
     ) {
@@ -943,37 +518,12 @@ export const create_reel = async (req: Request, res: Response) => {
     }
 
     if (
-      unsafeStartupFpsDetected &&
+      unsafeStartupVariantsDetected &&
       REEL_ENFORCE_SAFE_STREAM_VARIANTS &&
       REEL_ALLOW_UNSAFE_STREAM_VARIANTS
     ) {
       console.warn(
         `[reel/create] allowing unsafe startup variants userId=${Number(req.userId ?? 0) || 0} videoUid=${video_uid || "n/a"} streamUrl=${stream_url}`
-      );
-    }
-
-    if (
-      unsafeStartupBitrateDetected &&
-      REEL_ENFORCE_SAFE_STREAM_MIN_BITRATE &&
-      !REEL_ALLOW_UNSAFE_STREAM_MIN_BITRATE
-    ) {
-      return formatResponse({
-        res,
-        success: false,
-        code: 409,
-        message: `Video no compatible para startup seguro (min bitrate <= ${Math.round(
-          REEL_STARTUP_SAFE_MAX_MIN_BANDWIDTH / 1000
-        )} kbps). Comprime el video y vuelve a subir.`,
-      });
-    }
-
-    if (
-      unsafeStartupBitrateDetected &&
-      REEL_ENFORCE_SAFE_STREAM_MIN_BITRATE &&
-      REEL_ALLOW_UNSAFE_STREAM_MIN_BITRATE
-    ) {
-      console.warn(
-        `[reel/create] allowing unsafe startup bitrate userId=${Number(req.userId ?? 0) || 0} videoUid=${video_uid || "n/a"} minBandwidth=${streamProfile?.minBandwidth ?? "n/a"} threshold=${REEL_STARTUP_SAFE_MAX_MIN_BANDWIDTH}`
       );
     }
 
@@ -989,36 +539,24 @@ export const create_reel = async (req: Request, res: Response) => {
       stream_profile: !inferredImageMode
         ? {
             startup_safe_max_fps: REEL_STARTUP_SAFE_MAX_FPS,
-            startup_safe_max_min_bandwidth: REEL_STARTUP_SAFE_MAX_MIN_BANDWIDTH,
             startup_safe: safeStartupByManifest,
             checked_at: streamProfile?.inspectedAt ?? null,
             variant_count: streamProfile?.variantCount ?? null,
             safe_variant_count: streamProfile?.safeVariantCount ?? null,
-            safe_min_bandwidth_variant_count:
-              streamProfile?.safeMinBandwidthVariantCount ?? null,
-            min_bandwidth: streamProfile?.minBandwidth ?? null,
-            max_bandwidth: streamProfile?.maxBandwidth ?? null,
             max_frame_rate: streamProfile?.maxFrameRate ?? null,
             has_unsafe_frame_rate: streamProfile?.hasUnsafeFrameRate ?? null,
-            has_unsafe_min_bandwidth: streamProfile?.hasUnsafeMinBandwidth ?? null,
             check_error: streamProfile?.checkError ?? null,
           }
         : null,
       streamProfile: !inferredImageMode
         ? {
             startupSafeMaxFps: REEL_STARTUP_SAFE_MAX_FPS,
-            startupSafeMaxMinBandwidth: REEL_STARTUP_SAFE_MAX_MIN_BANDWIDTH,
             startupSafe: safeStartupByManifest,
             checkedAt: streamProfile?.inspectedAt ?? null,
             variantCount: streamProfile?.variantCount ?? null,
             safeVariantCount: streamProfile?.safeVariantCount ?? null,
-            safeMinBandwidthVariantCount:
-              streamProfile?.safeMinBandwidthVariantCount ?? null,
-            minBandwidth: streamProfile?.minBandwidth ?? null,
-            maxBandwidth: streamProfile?.maxBandwidth ?? null,
             maxFrameRate: streamProfile?.maxFrameRate ?? null,
             hasUnsafeFrameRate: streamProfile?.hasUnsafeFrameRate ?? null,
-            hasUnsafeMinBandwidth: streamProfile?.hasUnsafeMinBandwidth ?? null,
             checkError: streamProfile?.checkError ?? null,
           }
         : null,
@@ -1095,30 +633,6 @@ export const create_reel = async (req: Request, res: Response) => {
     });
 
     await bumpHomeContentSectionVersion("reels");
-
-    if (!inferredImageMode && video_uid) {
-      const warmupUserId = Number(req.userId ?? 0) || 0;
-      const warmupStreamUrl =
-        String((hydratedReel as any)?.stream_url ?? stream_url ?? "").trim() || null;
-      const warmupThumbUrl =
-        String((hydratedReel as any)?.thumbnail_url ?? thumbnail_url ?? "").trim() || null;
-      const warmupOffsetsMs = parseWarmupDelayOffsetsMs();
-      let warmupSucceeded = false;
-      for (const offsetMs of warmupOffsetsMs) {
-        setTimeout(() => {
-          if (warmupSucceeded) return;
-          void warmUpReelStreamAssets({
-            userId: warmupUserId,
-            videoUid: video_uid,
-            streamUrl: warmupStreamUrl,
-            thumbnailUrl: warmupThumbUrl,
-            phase: `t+${offsetMs}ms`,
-          }).then((ok) => {
-            if (ok) warmupSucceeded = true;
-          });
-        }, offsetMs);
-      }
-    }
 
     return formatResponse({
       res,

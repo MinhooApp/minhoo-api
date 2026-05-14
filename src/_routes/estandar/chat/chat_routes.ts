@@ -12,7 +12,8 @@ import {
   report,
 } from "../../../useCases/chat/_controller/controller";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
-import { createRequestRateLimiter } from "../../../libs/middlewares/request_rate_limiter";
+import { createDistributedRateLimiter } from "../../../libs/security/redis_rate_limiter";
+import { writeSecurityAuditFromRequest } from "../../../libs/security/security_audit_log";
 import { isSummaryMode } from "../../../libs/summary_response";
 const router = Router();
 
@@ -69,44 +70,86 @@ const chatRateLimitKey = (req: Request) => {
   return "ip:unknown";
 };
 
-const chatReadLimiter = createRequestRateLimiter({
+const keyHintFromRateKey = (rateKeyRaw: any) => {
+  const rateKey = String(rateKeyRaw ?? "").trim();
+  if (!rateKey) return "unknown";
+  if (rateKey.includes(":tok:")) {
+    return `tok:${rateKey.slice(-8)}`;
+  }
+  if (rateKey.includes(":ip:")) {
+    return `ip:${rateKey.slice(-12)}`;
+  }
+  return rateKey.slice(-12);
+};
+
+const onChatRateLimited = (context: {
+  req: Request;
+  key: string;
+  keyPrefix: string;
+  limit: number;
+  retryAfterSeconds: number;
+  message: string;
+}) => {
+  writeSecurityAuditFromRequest(context.req, {
+    event: "chat.rate_limited",
+    level: "warn",
+    actorUserId: Number((context.req as any)?.userId ?? 0),
+    success: false,
+    reason: "rate_limit",
+    meta: {
+      key_prefix: context.keyPrefix,
+      key_hint: keyHintFromRateKey(context.key),
+      limit: context.limit,
+      retry_after_seconds: context.retryAfterSeconds,
+      path: String((context.req as any)?.originalUrl ?? (context.req as any)?.url ?? "").trim(),
+      user_agent: String(context.req.header("user-agent") ?? "").trim() || null,
+      message: context.message,
+    },
+  });
+};
+
+const chatReadLimiter = createDistributedRateLimiter({
   windowMs: APP_RATE_WINDOW_MS,
   max: parsePositiveInt(process.env.CHAT_RATE_MAX_READ, 120),
   maxEntries: APP_RATE_MAX_ENTRIES,
   keyPrefix: "chat:read",
   keyGenerator: chatRateLimitKey,
   message: "too many chat read requests, try later",
+  onLimit: onChatRateLimited,
 });
-const chatReadSummaryLimiter = createRequestRateLimiter({
+const chatReadSummaryLimiter = createDistributedRateLimiter({
   windowMs: APP_RATE_WINDOW_MS,
   max: parsePositiveInt(process.env.CHAT_RATE_MAX_READ_SUMMARY, 12_000),
   maxEntries: APP_RATE_MAX_ENTRIES,
   keyPrefix: "chat:read:summary",
   keyGenerator: chatRateLimitKey,
   message: "too many chat summary requests, try later",
+  onLimit: onChatRateLimited,
 });
-const chatWriteLimiter = createRequestRateLimiter({
+const chatWriteLimiter = createDistributedRateLimiter({
   windowMs: APP_RATE_WINDOW_MS,
   max: parsePositiveInt(process.env.CHAT_RATE_MAX_WRITE, 30),
   maxEntries: APP_RATE_MAX_ENTRIES,
   keyPrefix: "chat:write",
   keyGenerator: chatRateLimitKey,
   message: "too many chat write requests, try later",
+  onLimit: onChatRateLimited,
 });
-const chatReportLimiter = createRequestRateLimiter({
+const chatReportLimiter = createDistributedRateLimiter({
   windowMs: APP_RATE_WINDOW_MS,
   max: parsePositiveInt(process.env.CHAT_RATE_MAX_REPORT, 10),
   maxEntries: APP_RATE_MAX_ENTRIES,
   keyPrefix: "chat:report",
   keyGenerator: chatRateLimitKey,
   message: "too many chat reports, try later",
+  onLimit: onChatRateLimited,
 });
 
 const chatReadAdaptiveLimiter: RequestHandler = (req, res, next) => {
-  if (isSummaryMode((req.query as any)?.summary)) {
-    return chatReadSummaryLimiter(req, res, next);
-  }
-  return chatReadLimiter(req, res, next);
+  const limiter = isSummaryMode((req.query as any)?.summary)
+    ? chatReadSummaryLimiter
+    : chatReadLimiter;
+  void Promise.resolve(limiter(req, res, next)).catch(next);
 };
 
 router.get("/", chatReadAdaptiveLimiter, TokenValidation(), myChats);

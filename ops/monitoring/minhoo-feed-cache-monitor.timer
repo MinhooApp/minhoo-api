@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Minhoo Feed Cache Monitor every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=minhoo-feed-cache-monitor.service
+
+[Install]
+WantedBy=timers.target
+

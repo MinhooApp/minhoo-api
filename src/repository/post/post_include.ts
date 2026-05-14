@@ -18,7 +18,7 @@ const galeryInclude: Includeable[] = [
 const userInclude: Includeable = {
   model: User,
   as: "user",
-  include: [...followIncludes(), ...galeryInclude, ...userIncludes()],
+  include: [...followIncludes(), ...galeryInclude, ...userIncludes(-1, { includeFollowGraph: false })],
   attributes: [
     "id",
     "name",
@@ -27,6 +27,8 @@ const userInclude: Includeable = {
     "email",
     "image_profil",
     "verified",
+    "profile_verified",
+    "profile_verification_status",
     "available",
   ],
 
@@ -57,7 +59,15 @@ export const postInclude: Includeable[] = [
       {
         model: User,
         as: "commentator",
-        attributes: ["id", "name", "last_name", "username", "image_profil"],
+        attributes: [
+          "id",
+          "name",
+          "last_name",
+          "username",
+          "image_profil",
+          "profile_verified",
+          "profile_verification_status",
+        ],
         required: false,
       },
     ],

@@ -15,6 +15,7 @@ import {
   toChatMessageSummary,
   toChatSummary,
 } from "../../../libs/summary_response";
+import * as followerRepo from "../../../repository/follower/follower_repository";
 import * as userRepository from "../../../repository/user/user_repository";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
 import { formatRelativeTime } from "../../../libs/localization/relative_time";
@@ -49,6 +50,260 @@ const setValue = (target: any, key: string, value: any) => {
     return;
   }
   target[key] = value;
+};
+
+const toOptionalPositiveInt = (value: any): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.trunc(parsed);
+};
+
+const toPlain = (value: any) =>
+  value && typeof value.toJSON === "function" ? value.toJSON() : value ?? null;
+
+const buildCounterpartPermissions = (isAdminCounterpart: boolean) => ({
+  can_open_counterpart_profile: !isAdminCounterpart,
+  canOpenCounterpartProfile: !isAdminCounterpart,
+  can_report_counterpart: !isAdminCounterpart,
+  canReportCounterpart: !isAdminCounterpart,
+  can_follow_counterpart: !isAdminCounterpart,
+  canFollowCounterpart: !isAdminCounterpart,
+  can_open_more: !isAdminCounterpart,
+  canOpenMore: !isAdminCounterpart,
+  show_more_actions: !isAdminCounterpart,
+  showMoreActions: !isAdminCounterpart,
+});
+
+const buildCounterpartPayload = (params: {
+  userRaw: any;
+  fallbackUserIdRaw: any;
+  isAdminCounterpart: boolean;
+}) => {
+  const user = toPlain(params.userRaw) ?? {};
+  const fallbackUserId = toOptionalPositiveInt(params.fallbackUserIdRaw);
+  const userId = toOptionalPositiveInt((user as any)?.id) ?? fallbackUserId;
+  const defaultName = params.isAdminCounterpart ? "Soporte" : "";
+  const defaultLastName = params.isAdminCounterpart ? "Minhoo" : "";
+  const name =
+    String((user as any)?.name ?? "").trim() || defaultName;
+  const lastName =
+    String((user as any)?.last_name ?? (user as any)?.lastName ?? "").trim() || defaultLastName;
+  const usernameRaw = params.isAdminCounterpart
+    ? ""
+    : String((user as any)?.username ?? "").trim();
+  const imageProfil = String((user as any)?.image_profil ?? "").trim() || null;
+  const canInteract = !params.isAdminCounterpart;
+  const roles = params.isAdminCounterpart
+    ? [{ id: 8088, role: "admin", description: "admin role" }]
+    : Array.isArray((user as any)?.roles)
+    ? (user as any).roles
+    : [];
+
+  return {
+    id: userId,
+    user_type: params.isAdminCounterpart ? "admin" : "user",
+    is_admin: params.isAdminCounterpart,
+    isAdmin: params.isAdminCounterpart,
+    roles,
+    name: name || null,
+    last_name: lastName || "",
+    username: usernameRaw || null,
+    image_profil: imageProfil,
+    can_open_profile: canInteract,
+    canOpenProfile: canInteract,
+    can_report: canInteract,
+    canReport: canInteract,
+    can_follow: canInteract,
+    canFollow: canInteract,
+    can_open_more: canInteract,
+    canOpenMore: canInteract,
+    show_more_actions: canInteract,
+    showMoreActions: canInteract,
+  };
+};
+
+const enrichChatSummariesWithCounterpartPermissions = async (itemsRaw: any[]) => {
+  const items = Array.isArray(itemsRaw) ? itemsRaw : [];
+  const counterpartIds = Array.from(
+    new Set(
+      items
+        .map((item: any) => toOptionalPositiveInt((item as any)?.user?.id))
+        .filter((id): id is number => Boolean(id))
+    )
+  );
+  const adminMap = await userRepository.getAdminRoleMapByUserIds(counterpartIds);
+
+  items.forEach((item: any) => {
+    const user = (item as any)?.user ?? null;
+    const userId = toOptionalPositiveInt((user as any)?.id);
+    const isAdminCounterpart = userId ? Boolean(adminMap.get(userId)) : false;
+    const counterpart = buildCounterpartPayload({
+      userRaw: user,
+      fallbackUserIdRaw: userId,
+      isAdminCounterpart,
+    });
+    const permissions = buildCounterpartPermissions(isAdminCounterpart);
+    const canInteract = !isAdminCounterpart;
+
+    (item as any).counterpart = counterpart;
+    (item as any).permissions = permissions;
+    (item as any).conversation_type = isAdminCounterpart ? "support_admin" : "direct";
+    (item as any).conversationType = (item as any).conversation_type;
+    (item as any).can_follow = canInteract;
+    (item as any).canFollow = canInteract;
+    (item as any).can_report = canInteract;
+    (item as any).canReport = canInteract;
+    (item as any).can_open_profile = canInteract;
+    (item as any).canOpenProfile = canInteract;
+    (item as any).can_open_more = canInteract;
+    (item as any).canOpenMore = canInteract;
+    (item as any).show_more_actions = canInteract;
+    (item as any).showMoreActions = canInteract;
+    if (user) {
+      (item as any).user.user_type = counterpart.user_type;
+      (item as any).user.is_admin = isAdminCounterpart;
+      (item as any).user.isAdmin = isAdminCounterpart;
+      (item as any).user.roles = counterpart.roles;
+      (item as any).user.can_open_profile = counterpart.can_open_profile;
+      (item as any).user.canOpenProfile = counterpart.can_open_profile;
+      (item as any).user.can_report = counterpart.can_report;
+      (item as any).user.canReport = counterpart.can_report;
+      (item as any).user.can_follow = counterpart.can_follow;
+      (item as any).user.canFollow = counterpart.can_follow;
+      (item as any).user.can_open_more = canInteract;
+      (item as any).user.canOpenMore = canInteract;
+      (item as any).user.show_more_actions = canInteract;
+      (item as any).user.showMoreActions = canInteract;
+      (item as any).user.isFollowing = false;
+      (item as any).user.is_following = false;
+      (item as any).user.viewerFollowsUser = false;
+      (item as any).user.viewer_follows_user = false;
+      (item as any).user.isFollowedBy = false;
+      (item as any).user.is_followed_by = false;
+      (item as any).user.userFollowsViewer = false;
+      (item as any).user.user_follows_viewer = false;
+      (item as any).user.isMutual = false;
+      (item as any).user.is_mutual = false;
+    }
+  });
+};
+
+const enrichLegacyChatsWithCounterpartPermissions = async (itemsRaw: any[]) => {
+  const items = Array.isArray(itemsRaw) ? itemsRaw : [];
+  const counterpartIds = Array.from(
+    new Set(
+      items
+        .map((item: any) =>
+          toOptionalPositiveInt((item as any)?.Chat?.users?.[0]?.id)
+        )
+        .filter((id): id is number => Boolean(id))
+    )
+  );
+  const adminMap = await userRepository.getAdminRoleMapByUserIds(counterpartIds);
+
+  items.forEach((item: any) => {
+    const chat = (item as any)?.Chat ?? null;
+    const user = (chat as any)?.users?.[0] ?? null;
+    const userId = toOptionalPositiveInt((user as any)?.id);
+    const isAdminCounterpart = userId ? Boolean(adminMap.get(userId)) : false;
+    const counterpart = buildCounterpartPayload({
+      userRaw: user,
+      fallbackUserIdRaw: userId,
+      isAdminCounterpart,
+    });
+    const permissions = buildCounterpartPermissions(isAdminCounterpart);
+    const canInteract = !isAdminCounterpart;
+
+    setValue(chat, "counterpart", counterpart);
+    setValue(chat, "permissions", permissions);
+    setValue(chat, "conversation_type", isAdminCounterpart ? "support_admin" : "direct");
+    setValue(chat, "conversationType", (chat as any)?.conversation_type);
+    setValue(chat, "can_follow", canInteract);
+    setValue(chat, "canFollow", canInteract);
+    setValue(chat, "can_report", canInteract);
+    setValue(chat, "canReport", canInteract);
+    setValue(chat, "can_open_profile", canInteract);
+    setValue(chat, "canOpenProfile", canInteract);
+    setValue(chat, "can_open_more", canInteract);
+    setValue(chat, "canOpenMore", canInteract);
+    setValue(chat, "show_more_actions", canInteract);
+    setValue(chat, "showMoreActions", canInteract);
+    setValue(item, "counterpart", counterpart);
+    setValue(item, "permissions", permissions);
+    setValue(item, "conversation_type", isAdminCounterpart ? "support_admin" : "direct");
+    setValue(item, "conversationType", (item as any)?.conversation_type);
+    setValue(item, "can_follow", canInteract);
+    setValue(item, "canFollow", canInteract);
+    setValue(item, "can_report", canInteract);
+    setValue(item, "canReport", canInteract);
+    setValue(item, "can_open_profile", canInteract);
+    setValue(item, "canOpenProfile", canInteract);
+    setValue(item, "can_open_more", canInteract);
+    setValue(item, "canOpenMore", canInteract);
+    setValue(item, "show_more_actions", canInteract);
+    setValue(item, "showMoreActions", canInteract);
+    if (user) {
+      setValue(user, "user_type", counterpart.user_type);
+      setValue(user, "is_admin", isAdminCounterpart);
+      setValue(user, "isAdmin", isAdminCounterpart);
+      setValue(user, "roles", counterpart.roles);
+      setValue(user, "can_open_profile", counterpart.can_open_profile);
+      setValue(user, "canOpenProfile", counterpart.can_open_profile);
+      setValue(user, "can_report", counterpart.can_report);
+      setValue(user, "canReport", counterpart.can_report);
+      setValue(user, "can_follow", counterpart.can_follow);
+      setValue(user, "canFollow", counterpart.can_follow);
+      setValue(user, "can_open_more", canInteract);
+      setValue(user, "canOpenMore", canInteract);
+      setValue(user, "show_more_actions", canInteract);
+      setValue(user, "showMoreActions", canInteract);
+      setValue(user, "isFollowing", false);
+      setValue(user, "is_following", false);
+      setValue(user, "viewerFollowsUser", false);
+      setValue(user, "viewer_follows_user", false);
+      setValue(user, "isFollowedBy", false);
+      setValue(user, "is_followed_by", false);
+      setValue(user, "userFollowsViewer", false);
+      setValue(user, "user_follows_viewer", false);
+      setValue(user, "isMutual", false);
+      setValue(user, "is_mutual", false);
+    }
+  });
+};
+
+const enrichMessagesWithSenderType = (params: {
+  messagesRaw: any[];
+  viewerIdRaw: any;
+  counterpartUserIdRaw: any;
+  counterpartIsAdmin: boolean;
+}) => {
+  const viewerId = toOptionalPositiveInt(params.viewerIdRaw);
+  const counterpartUserId = toOptionalPositiveInt(params.counterpartUserIdRaw);
+  const messages = Array.isArray(params.messagesRaw) ? params.messagesRaw : [];
+
+  return messages.map((messageRaw: any) => {
+    const message = toPlain(messageRaw) ?? {};
+    const senderId =
+      toOptionalPositiveInt(
+        (message as any)?.senderId ??
+          (message as any)?.sender_id ??
+          (message as any)?.sender?.id
+      ) ?? null;
+    const isFromAdmin =
+      Boolean(params.counterpartIsAdmin) &&
+      Boolean(counterpartUserId) &&
+      Boolean(senderId) &&
+      senderId === counterpartUserId;
+    const direction =
+      viewerId && senderId && senderId === viewerId ? "outgoing" : "incoming";
+
+    return {
+      ...message,
+      sender_type: isFromAdmin ? "admin" : "user",
+      sender_is_admin: isFromAdmin,
+      direction,
+    };
+  });
 };
 
 const applyRelativeToLegacyChats = (rows: any[], locale: AppLocale) => {
@@ -333,11 +588,10 @@ type ChatListCursorPayload = {
   chatId: number;
 };
 
+const CHAT_LIST_FIXED_LIMIT = 50;
+
 const parseChatListLimit = (raw: any): number | null => {
-  if (raw == null || String(raw).trim() === "") return null;
-  const parsed = parseInt(String(raw), 10);
-  if (!Number.isFinite(parsed)) return null;
-  return Math.max(1, Math.min(parsed, 100));
+  return CHAT_LIST_FIXED_LIMIT;
 };
 
 const isValidChatListCursorPayload = (
@@ -389,6 +643,68 @@ const decodeChatListCursor = (raw: any): ChatListCursorPayload | null => {
   return null;
 };
 
+const collectChatCounterpartIds = (chatsRaw: any[]): number[] =>
+  Array.from(
+    new Set(
+      (Array.isArray(chatsRaw) ? chatsRaw : [])
+        .map((chatRow: any) =>
+          Number(
+            chatRow?.Chat?.users?.[0]?.id ??
+              chatRow?.chat?.users?.[0]?.id ??
+              chatRow?.user?.id
+          )
+        )
+        .filter((id: number) => Number.isFinite(id) && id > 0)
+    )
+  );
+
+const attachRelationshipAliases = (target: any, relationshipRaw: any) => {
+  if (!target) return;
+  const isFollowing = Boolean(relationshipRaw?.isFollowing);
+  const isFollowedBy = Boolean(relationshipRaw?.isFollowedBy);
+  const isMutual = isFollowing && isFollowedBy;
+  const fields = {
+    relationship: { isFollowing, isFollowedBy, isMutual },
+    isFollowing,
+    is_following: isFollowing,
+    viewerFollowsUser: isFollowing,
+    viewer_follows_user: isFollowing,
+    isFollowedBy,
+    is_followed_by: isFollowedBy,
+    userFollowsViewer: isFollowedBy,
+    user_follows_viewer: isFollowedBy,
+    isMutual,
+    is_mutual: isMutual,
+  };
+
+  if (typeof target.setDataValue === "function") {
+    Object.entries(fields).forEach(([key, value]) => {
+      target.setDataValue(key, value);
+    });
+    return;
+  }
+
+  Object.assign(target, fields);
+};
+
+const attachRelationshipsToChatRows = async (viewerIdRaw: any, chatsRaw: any[]) => {
+  const relationshipByUserId = await followerRepo.getRelationshipMap(
+    viewerIdRaw,
+    collectChatCounterpartIds(chatsRaw)
+  );
+
+  (Array.isArray(chatsRaw) ? chatsRaw : []).forEach((chatRow: any) => {
+    const user = (chatRow as any)?.Chat?.users?.[0];
+    const userId = Number(user?.id);
+    const relationship =
+      relationshipByUserId[userId] ??
+      ({ isFollowing: false, isFollowedBy: false, isMutual: false } as const);
+    attachRelationshipAliases(user, relationship);
+  });
+
+  return relationshipByUserId;
+};
+
 export const myChats = async (req: Request, res: Response) => {
   const startedAt = Date.now();
   try {
@@ -432,9 +748,14 @@ export const myChats = async (req: Request, res: Response) => {
           cursor,
         });
         const chats = Array.isArray((response as any)?.chats) ? (response as any).chats : [];
+        const relationshipByUserId = await attachRelationshipsToChatRows(req.userId, chats);
         const nextCursor = encodeChatListCursor((response as any)?.paging?.nextCursor ?? null);
+        const summarizedChats = (chats ?? []).map((chat: any) =>
+          toChatSummary(chat, locale, req.userId, relationshipByUserId)
+        );
+        await enrichChatSummariesWithCounterpartPermissions(summarizedChats);
         const body: any = {
-          chatsByUser: (chats ?? []).map((chat: any) => toChatSummary(chat, locale)),
+          chatsByUser: summarizedChats,
         };
         if ((response as any)?.paging?.limit != null || nextCursor) {
           body.paging = {
@@ -472,13 +793,16 @@ export const myChats = async (req: Request, res: Response) => {
 
     const response = await repository.getUserChats(req.userId, req.userId, { limit, cursor });
     const chats = Array.isArray((response as any)?.chats) ? (response as any).chats : [];
+    await attachRelationshipsToChatRows(req.userId, chats);
     console.log(
       `[perf][myChats] userId=${req.userId} chats=${Array.isArray(chats) ? chats.length : 0} totalMs=${Date.now() - startedAt}`
     );
 
     const nextCursor = encodeChatListCursor((response as any)?.paging?.nextCursor ?? null);
+    const chatsByUser = applyRelativeToLegacyChats(chats ?? [], locale);
+    await enrichLegacyChatsWithCounterpartPermissions(chatsByUser);
     const body: any = {
-      chatsByUser: applyRelativeToLegacyChats(chats ?? [], locale),
+      chatsByUser,
     };
     if ((response as any)?.paging?.limit != null || nextCursor) {
       body.paging = {
@@ -528,12 +852,14 @@ export const starredChats = async (req: Request, res: Response) => {
       beforePinnedAt,
       beforeChatId,
     });
+    const chatsByUser = Array.isArray((response as any)?.chats) ? (response as any).chats : [];
+    await enrichLegacyChatsWithCounterpartPermissions(chatsByUser);
 
     return formatResponse({
       res,
       success: true,
       body: {
-        chatsByUser: response.chats,
+        chatsByUser,
         paging: {
           limit,
           beforePinnedAt,
@@ -571,6 +897,18 @@ export const messages = async (req: Request, res: Response) => {
   try {
     setNoCacheHeaders(res);
     const locale = await resolveRequestLocale(req);
+    const otherUserIsAdmin = await userRepository.isUserAdminById(otherUserId);
+    const otherUser = Number.isFinite(otherUserId)
+      ? await userRepository.getUserById(otherUserId)
+      : null;
+    const counterpart = buildCounterpartPayload({
+      userRaw: otherUser,
+      fallbackUserIdRaw: otherUserId,
+      isAdminCounterpart: otherUserIsAdmin,
+    });
+    const permissions = buildCounterpartPermissions(otherUserIsAdmin);
+    const conversationType = otherUserIsAdmin ? "support_admin" : "direct";
+    const canInteract = !otherUserIsAdmin;
 
     const messageRows = summary
       ? await repository.getChatByUserSummary(req.userId, id, {
@@ -661,10 +999,29 @@ export const messages = async (req: Request, res: Response) => {
     );
 
     const payload = {
+      conversation_id: chatId ?? null,
+      conversation_type: conversationType,
+      counterpart,
+      permissions,
+      can_follow: canInteract,
+      canFollow: canInteract,
+      can_report: canInteract,
+      canReport: canInteract,
+      can_open_profile: canInteract,
+      canOpenProfile: canInteract,
+      can_open_more: canInteract,
+      canOpenMore: canInteract,
+      show_more_actions: canInteract,
+      showMoreActions: canInteract,
       chatId,
-      messages: summary
-        ? messageRows.map((message: any) => toChatMessageSummary(message, locale))
-        : serializeMessagesToCanonical(messageRows, { includeLegacy: true, locale }),
+      messages: enrichMessagesWithSenderType({
+        messagesRaw: summary
+          ? messageRows.map((message: any) => toChatMessageSummary(message, locale))
+          : serializeMessagesToCanonical(messageRows, { includeLegacy: true, locale }),
+        viewerIdRaw: req.userId,
+        counterpartUserIdRaw: otherUserId,
+        counterpartIsAdmin: otherUserIsAdmin,
+      }),
       paging: {
         limit,
         beforeMessageId,
@@ -708,6 +1065,32 @@ export const getUserByMessage = async (req: Request, res: Response) => {
         success: false,
         code: 404,
         message: "message not found",
+      });
+    }
+
+    if (response?.conversationType === "direct" && response?.peerUserId) {
+      const peerUserId = Number(response.peerUserId);
+      const isAdminCounterpart = await userRepository.isUserAdminById(peerUserId);
+      const counterpartUser = Number.isFinite(peerUserId)
+        ? await userRepository.getUserById(peerUserId)
+        : null;
+      const counterpart = buildCounterpartPayload({
+        userRaw: counterpartUser,
+        fallbackUserIdRaw: peerUserId,
+        isAdminCounterpart,
+      });
+      const permissions = buildCounterpartPermissions(isAdminCounterpart);
+      return formatResponse({
+        res,
+        success: true,
+        body: {
+          ...response,
+          conversation_type: isAdminCounterpart ? "support_admin" : "direct",
+          conversationType: isAdminCounterpart ? "support_admin" : "direct",
+          counterpart,
+          permissions,
+          user: counterpart,
+        },
       });
     }
 

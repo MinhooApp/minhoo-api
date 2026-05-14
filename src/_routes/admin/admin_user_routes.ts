@@ -14,6 +14,7 @@ import {
   admin_list_users,
   admin_location_summary,
   admin_update_birthdate,
+  admin_delete_account,
   admin_disable_account,
   admin_enable_account,
   admin_restore_account,
@@ -25,6 +26,15 @@ import {
   admin_get_user_post,
   admin_list_user_post_comments,
   admin_delete_user_post,
+  admin_list_user_reports,
+  admin_push_users,
+  admin_push_user,
+  admin_list_chat_history,
+  admin_list_user_chat_messages,
+  admin_send_user_chat_message,
+  admin_finalize_user_chat,
+  admin_list_user_worker_applications,
+  admin_list_user_services,
   admin_list_user_service_offers,
   admin_delete_user_service,
   admin_list_user_reels,
@@ -78,6 +88,38 @@ const ADMIN_ACTION_RATE_MAX_ENTRIES = parsePositiveInt(
   5_000,
   500
 );
+const ADMIN_CHAT_RATE_WINDOW_MS = parsePositiveInt(
+  process.env.ADMIN_CHAT_RATE_WINDOW_MS,
+  60_000
+);
+const ADMIN_CHAT_RATE_MAX_READ = parsePositiveInt(
+  process.env.ADMIN_CHAT_RATE_MAX_READ,
+  240
+);
+const ADMIN_CHAT_RATE_MAX_WRITE = parsePositiveInt(
+  process.env.ADMIN_CHAT_RATE_MAX_WRITE,
+  80
+);
+const ADMIN_CHAT_RATE_BLOCK_MS = parsePositiveInt(
+  process.env.ADMIN_CHAT_RATE_BLOCK_MS,
+  60_000,
+  0
+);
+const ADMIN_CHAT_RATE_MAX_ENTRIES = parsePositiveInt(
+  process.env.ADMIN_CHAT_RATE_MAX_ENTRIES,
+  10_000,
+  500
+);
+
+const buildAdminRateLimitActorKey = (req: any) => {
+  const actorId = Number((req as any)?.userId ?? 0);
+  if (Number.isFinite(actorId) && actorId > 0) {
+    // Scope by actor id (not by actor+ip) to avoid limiter bypass via rotating IPs.
+    return `actor:${Math.trunc(actorId)}`;
+  }
+  const ip = normalizeIp(req.ip ?? (req as any)?.socket?.remoteAddress);
+  return `ip:${ip}`;
+};
 
 const adminActionLimiter = createRequestRateLimiter({
   windowMs: ADMIN_ACTION_RATE_WINDOW_MS,
@@ -86,14 +128,60 @@ const adminActionLimiter = createRequestRateLimiter({
   maxEntries: ADMIN_ACTION_RATE_MAX_ENTRIES,
   keyPrefix: "admin:user:actions",
   message: "too many admin account actions, try later",
-  keyGenerator: (req) => {
-    const actorId = Number((req as any)?.userId ?? 0);
-    const ip = normalizeIp(req.ip ?? (req as any)?.socket?.remoteAddress);
-    return `${Number.isFinite(actorId) && actorId > 0 ? actorId : "unknown"}:${ip}`;
-  },
+  keyGenerator: buildAdminRateLimitActorKey,
   onLimit: (context) => {
     writeSecurityAuditFromRequest(context.req, {
       event: "admin.user.rate_limited",
+      level: "warn",
+      actorUserId: Number((context.req as any)?.userId ?? 0),
+      success: false,
+      reason: "rate_limit",
+      meta: {
+        keyPrefix: context.keyPrefix,
+        hits: context.hits,
+        limit: context.limit,
+        retryAfterSeconds: context.retryAfterSeconds,
+      },
+    });
+  },
+});
+
+const adminChatReadLimiter = createRequestRateLimiter({
+  windowMs: ADMIN_CHAT_RATE_WINDOW_MS,
+  max: ADMIN_CHAT_RATE_MAX_READ,
+  blockDurationMs: ADMIN_CHAT_RATE_BLOCK_MS,
+  maxEntries: ADMIN_CHAT_RATE_MAX_ENTRIES,
+  keyPrefix: "admin:user:chat:read",
+  message: "too many admin chat read requests, try later",
+  keyGenerator: buildAdminRateLimitActorKey,
+  onLimit: (context) => {
+    writeSecurityAuditFromRequest(context.req, {
+      event: "admin.user.chat.rate_limited",
+      level: "warn",
+      actorUserId: Number((context.req as any)?.userId ?? 0),
+      success: false,
+      reason: "rate_limit",
+      meta: {
+        keyPrefix: context.keyPrefix,
+        hits: context.hits,
+        limit: context.limit,
+        retryAfterSeconds: context.retryAfterSeconds,
+      },
+    });
+  },
+});
+
+const adminChatWriteLimiter = createRequestRateLimiter({
+  windowMs: ADMIN_CHAT_RATE_WINDOW_MS,
+  max: ADMIN_CHAT_RATE_MAX_WRITE,
+  blockDurationMs: ADMIN_CHAT_RATE_BLOCK_MS,
+  maxEntries: ADMIN_CHAT_RATE_MAX_ENTRIES,
+  keyPrefix: "admin:user:chat:write",
+  message: "too many admin chat write requests, try later",
+  keyGenerator: buildAdminRateLimitActorKey,
+  onLimit: (context) => {
+    writeSecurityAuditFromRequest(context.req, {
+      event: "admin.user.chat.rate_limited",
       level: "warn",
       actorUserId: Number((context.req as any)?.userId ?? 0),
       success: false,
@@ -132,6 +220,40 @@ router.get(
   EnsureAdmin(),
   adminActionLimiter,
   admin_location_summary
+);
+
+/**
+ * 🗑️ Elimina (soft delete) una cuenta a nivel empresa.
+ * - Solo los administradores pueden realizar esta acción.
+ * Endpoint: DELETE /api/v1/admin/users/:id/delete
+ */
+router.delete(
+  "/:id/delete",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminActionLimiter,
+  admin_delete_account
+);
+
+/**
+ * ♻️ Compatibilidad legado para eliminación desde admin.
+ * Endpoints:
+ * - DELETE /api/v1/admin/users/:id
+ * - DELETE /api/v1/admin/users/delete/:id
+ */
+router.delete(
+  "/:id",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminActionLimiter,
+  admin_delete_account
+);
+router.delete(
+  "/delete/:id",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminActionLimiter,
+  admin_delete_account
 );
 
 /**
@@ -282,6 +404,90 @@ router.get(
 );
 
 /**
+ * ✅ Lista reportes para admin.
+ * Endpoint: GET /api/v1/admin/users/reports?reported_user_id=&page=1&limit=100&type=all&action_status=all
+ */
+router.get(
+  "/reports",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminActionLimiter,
+  admin_list_user_reports
+);
+
+/**
+ * ✅ Push masivo desde admin.
+ * Endpoint: POST /api/v1/admin/users/push
+ */
+router.post(
+  "/push",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminActionLimiter,
+  admin_push_users
+);
+
+/**
+ * ✅ Push individual desde admin.
+ * Endpoint: POST /api/v1/admin/users/:id/push
+ */
+router.post(
+  "/:id/push",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminActionLimiter,
+  admin_push_user
+);
+
+/**
+ * ✅ Lista historial de chats admin (activos/finalizados).
+ * Endpoint: GET /api/v1/admin/users/chat/history?page=1&limit=20&status=all|active|finalized&q=
+ */
+router.get(
+  "/chat/history",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminChatReadLimiter,
+  admin_list_chat_history
+);
+
+/**
+ * ✅ Lista mensajes del chat admin por usuario.
+ * Endpoint: GET /api/v1/admin/users/:id/chat/messages?limit=50&sort=desc&before_message_id=&include_finalized=1
+ */
+router.get(
+  "/:id/chat/messages",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminChatReadLimiter,
+  admin_list_user_chat_messages
+);
+
+/**
+ * ✅ Envía mensaje de chat admin por usuario.
+ * Endpoint: POST /api/v1/admin/users/:id/chat/messages
+ */
+router.post(
+  "/:id/chat/messages",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminChatWriteLimiter,
+  admin_send_user_chat_message
+);
+
+/**
+ * ✅ Finaliza chat admin por usuario.
+ * Endpoint: PATCH /api/v1/admin/users/:id/chat/finalize
+ */
+router.patch(
+  "/:id/chat/finalize",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminChatWriteLimiter,
+  admin_finalize_user_chat
+);
+
+/**
  * ✅ Lista admin de seguidores de un usuario.
  * Endpoint: GET /api/v1/admin/users/:id/followers?limit=20&cursor=
  */
@@ -351,6 +557,30 @@ router.delete(
   EnsureAdmin(),
   adminActionLimiter,
   admin_delete_user_post
+);
+
+/**
+ * ✅ Lista postulaciones a trabajos de un usuario (worker applications).
+ * Endpoint: GET /api/v1/admin/users/:id/worker-applications?page=1&limit=50&status=all
+ */
+router.get(
+  "/:id/worker-applications",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminActionLimiter,
+  admin_list_user_worker_applications
+);
+
+/**
+ * ✅ Lista services por usuario (tarjeta Ofertas de trabajo en admin).
+ * Endpoint: GET /api/v1/admin/users/:id/services?page=1&limit=20&status=all&include_deleted=0
+ */
+router.get(
+  "/:id/services",
+  TokenValidation(),
+  EnsureAdmin(),
+  adminActionLimiter,
+  admin_list_user_services
 );
 
 /**

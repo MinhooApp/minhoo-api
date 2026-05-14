@@ -1,0 +1,27 @@
+[Unit]
+Description=Minhoo Chat SLO Monitor (API contract + latency/error budgets)
+After=network-online.target
+Wants=network-online.target
+OnFailure=minhoo-chat-slo-alert.service
+
+[Service]
+Type=oneshot
+User=appuser
+Group=appuser
+WorkingDirectory=/var/www/minhoo-api/minhoo_api
+Environment=NODE_ENV=production
+Environment=CHAT_SLO_STRICT=1
+Environment=CHAT_SLO_WINDOW=300
+Environment=CHAT_SLO_MIN_WINDOW_REQUESTS=30
+Environment=CHAT_SLO_MIN_ROUTE_SAMPLES=10
+Environment=CHAT_SLO_CHAT_SUMMARY_P95_MS=260
+Environment=CHAT_SLO_CHAT_MESSAGE_SUMMARY_P95_MS=150
+Environment=CHAT_SLO_CHAT_SEND_P95_MS=380
+Environment=CHAT_SLO_CHAT_FULL_P95_MS=700
+Environment=CHAT_SLO_MAX_5XX_PERCENT=1
+Environment=CHAT_SLO_MAX_429_PERCENT=6
+Environment=CHAT_SLO_MAX_4XX_PERCENT=35
+Environment=CHAT_SLO_STRICT_429=0
+Environment=CHAT_SLO_STRICT_4XX=0
+Environment=CHAT_SLO_REQUIRE_TRAFFIC=0
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/scripts/monitor-chat-slo.js

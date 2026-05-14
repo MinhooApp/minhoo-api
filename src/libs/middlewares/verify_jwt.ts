@@ -2,7 +2,13 @@
 import { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import User from "../../_models/user/user";
-import { isUserAuthSessionActive } from "../auth/user_auth_session";
+import {
+  hasUserActivePersistentAuthSession,
+  isUserAuthSessionActive,
+  isUserAuthSessionExplicitlyRevoked,
+  registerUserAuthSession,
+} from "../auth/user_auth_session";
+import { sendAuthError } from "./auth_error_response";
 
 export interface IPayload {
   userId: number;
@@ -71,10 +77,21 @@ const verifyTokenWithKnownSecrets = (
 const normalizeTokenCandidate = (raw: any): string => {
   const value = String(raw ?? "").trim();
   if (!value) return "";
-  if (value.toLowerCase().startsWith("bearer ")) {
-    return value.slice(7).trim();
+  const lowered = value.toLowerCase();
+  if (lowered === "null" || lowered === "undefined" || lowered === "nan" || lowered === "none") {
+    return "";
   }
-  return value;
+  const token = lowered.startsWith("bearer ") ? value.slice(7).trim() : value;
+  const tokenLowered = token.toLowerCase();
+  if (
+    tokenLowered === "null" ||
+    tokenLowered === "undefined" ||
+    tokenLowered === "nan" ||
+    tokenLowered === "none"
+  ) {
+    return "";
+  }
+  return token;
 };
 
 const extractAuthToken = (req: Request): string => {
@@ -125,7 +142,7 @@ const extractAuthToken = (req: Request): string => {
  * - 401 solo si la firma del token es inválida, no existe, o está revocado.
  * - Gracia de expiración (0 por defecto; solo aplica si se configura por env).
  * - Si la DB falla, no forzamos logout (modo degradado).
- * - Si el usuario está deshabilitado -> 403 siempre.
+ * - Si el usuario está deshabilitado/no disponible -> 401 AUTH_SESSION_REVOKED.
  */
 export const TokenValidation = (
   allowedRoles?: number[],
@@ -141,10 +158,12 @@ export const TokenValidation = (
       // 0) Obtener token (Authorization Bearer + compatibilidad legacy)
       const token = extractAuthToken(req);
       if (!token) {
-        return res.status(401).json({
-          header: { success: false, authenticated: false },
-          messages: ["Access denied, token missing"],
-        });
+        return sendAuthError(
+          res,
+          401,
+          "AUTH_TOKEN_REQUIRED",
+          "Access denied, token missing"
+        );
       }
 
       // 1) Verificar firma real; si expiró, aplicar gracia SOLO con firma válida
@@ -155,20 +174,24 @@ export const TokenValidation = (
       } else {
         const verifiedIgnoringExp = verifyTokenWithKnownSecrets(token, true);
         if (!verifiedIgnoringExp || !verifiedIgnoringExp.exp) {
-          return res.status(401).json({
-            header: { success: false, authenticated: false },
-            messages: ["Access denied, invalid token"],
-          });
+          return sendAuthError(
+            res,
+            401,
+            "AUTH_TOKEN_INVALID",
+            "Access denied, invalid token"
+          );
         }
         const expMs = Number(verifiedIgnoringExp.exp) * 1000;
         const now = Date.now();
         if (now - expMs <= GRACE_MS) {
           payload = verifiedIgnoringExp;
         } else {
-          return res.status(401).json({
-            header: { success: false, authenticated: false },
-            messages: ["Access denied, token expired"],
-          });
+          return sendAuthError(
+            res,
+            401,
+            "AUTH_TOKEN_EXPIRED",
+            "Access denied, token expired"
+          );
         }
       }
 
@@ -178,10 +201,12 @@ export const TokenValidation = (
         .trim()
         .toLowerCase();
       if (tokenType && tokenType !== "access") {
-        return res.status(401).json({
-          header: { success: false, authenticated: false },
-          messages: ["Access denied, invalid token type"],
-        });
+        return sendAuthError(
+          res,
+          401,
+          "AUTH_TOKEN_EXPIRED",
+          "Access denied, token expired"
+        );
       }
 
       const { userId, roles, workerId } = payload!;
@@ -190,14 +215,16 @@ export const TokenValidation = (
       try {
         const user = await User.findOne({
           where: { id: userId, available: true },
-          attributes: ["id", "disabled", "available", "auth_token"],
+          attributes: ["id", "disabled", "available", "auth_token", "uuid"],
         });
 
         if (!user) {
-          return res.status(401).json({
-            header: { success: false, authenticated: false },
-            messages: ["Access denied, user not found"],
-          });
+          return sendAuthError(
+            res,
+            401,
+            "AUTH_SESSION_REVOKED",
+            "Access denied, user not found"
+          );
         }
 
         const storedAuthToken = String((user as any).auth_token ?? "").trim();
@@ -206,18 +233,57 @@ export const TokenValidation = (
           ? true
           : await isUserAuthSessionActive(userId, token);
         if (!tokenMatchesSession) {
-          return res.status(401).json({
-            header: { success: false, authenticated: false },
-            messages: ["Access denied, token revoked"],
-          });
+          // Distinguish: was this token explicitly revoked, or is the record just missing?
+          // A missing record (app reinstall, session pruned, DB gap) must NOT force logout —
+          // the token is still cryptographically valid. Only an explicit revocation blocks access.
+          const isExplicitlyRevoked = await isUserAuthSessionExplicitlyRevoked(userId, token).catch(() => false);
+          if (!isExplicitlyRevoked) {
+            // Token is valid but has no session record — auto-heal by re-registering it
+            // so future requests find it normally.
+            void registerUserAuthSession(userId, token).catch(() => null);
+            (req as any).authSessionHealed = true;
+            // Fall through — allow the request to continue.
+          } else {
+            // Token was explicitly cancelled (logout, rotation, admin action).
+            const userDeviceUuid = String((user as any)?.uuid ?? "").trim();
+            let hasRecoverableSession = false;
+            if (userDeviceUuid) {
+              hasRecoverableSession = await hasUserActivePersistentAuthSession(userId, {
+                deviceUuid: userDeviceUuid,
+              }).catch(() => false);
+            }
+            if (!hasRecoverableSession) {
+              hasRecoverableSession = await hasUserActivePersistentAuthSession(userId).catch(
+                () => false
+              );
+            }
+            if (hasRecoverableSession) {
+              return sendAuthError(
+                res,
+                401,
+                "AUTH_TOKEN_EXPIRED",
+                "Access denied, token expired"
+              );
+            }
+            return sendAuthError(
+              res,
+              401,
+              "AUTH_SESSION_REVOKED",
+              "Access denied, token revoked"
+            );
+          }
         }
 
         // Cuenta deshabilitada por admin
         if ((user as any).disabled === true || (user as any).available === false) {
-          return res.status(403).json({
-            header: { success: false, authenticated: true },
-            messages: ["This account has been disabled by an administrator"],
-          });
+          return sendAuthError(
+            res,
+            401,
+            "AUTH_SESSION_REVOKED",
+            "This account has been disabled by an administrator",
+            false,
+            "account_disabled"
+          );
         }
 
         // Campo legacy opcional; el control principal usa req.roles desde JWT verificado.
@@ -227,19 +293,24 @@ export const TokenValidation = (
           // Modo degradado controlado por env (solo recomendado fuera de producción)
           (req as any).authDegraded = true;
         } else {
-          return res.status(503).json({
-            header: { success: false, authenticated: false },
-            messages: ["Authentication backend unavailable"],
-          });
+          return sendAuthError(
+            res,
+            503,
+            "AUTH_BACKEND_UNAVAILABLE",
+            "Authentication backend unavailable"
+          );
         }
       }
 
       // 3) Filtro de roles si la ruta lo pidió
       if (allowedRoles && !roles?.some((r) => allowedRoles.includes(r))) {
-        return res.status(403).json({
-          header: { success: false, authenticated: true },
-          messages: ["Access denied, role not allowed"],
-        });
+        return sendAuthError(
+          res,
+          403,
+          "AUTH_FORBIDDEN",
+          "Access denied, role not allowed",
+          true
+        );
       }
 
       // 4) Contexto para el resto de middlewares/controladores
@@ -250,10 +321,12 @@ export const TokenValidation = (
       return next();
     } catch (error) {
       console.error("Auth middleware error:", error);
-      return res.status(500).json({
-        header: { success: false, authenticated: false },
-        messages: ["Internal server error"],
-      });
+      return sendAuthError(
+        res,
+        500,
+        "AUTH_INTERNAL_ERROR",
+        "Internal server error"
+      );
     }
   };
 };

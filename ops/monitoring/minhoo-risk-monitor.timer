@@ -1,13 +1,12 @@
 [Unit]
-Description=Run Minhoo Risk Monitor every minute
+Description=Run Minhoo Risk Monitor every 5 minutes
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=1min
+OnUnitActiveSec=5min
 AccuracySec=15s
 Persistent=true
 Unit=minhoo-risk-monitor.service
 
 [Install]
 WantedBy=timers.target
-

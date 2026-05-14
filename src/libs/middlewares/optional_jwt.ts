@@ -3,7 +3,11 @@ import { Request, Response, NextFunction, RequestHandler } from "express";
 import jwt from "jsonwebtoken";
 import User from "../../_models/user/user";
 import { IPayload } from "./verify_jwt";
-import { isUserAuthSessionActive } from "../auth/user_auth_session";
+import {
+  hasUserActivePersistentAuthSession,
+  isUserAuthSessionActive,
+} from "../auth/user_auth_session";
+import { sendAuthError } from "./auth_error_response";
 
 // Extiende el tipo Request para tus campos
 declare global {
@@ -27,6 +31,15 @@ const getJwtSecrets = (): string[] => {
 
 const IS_PRODUCTION =
   String(process.env.NODE_ENV ?? "").trim().toLowerCase() === "production";
+const OPTIONAL_JWT_GRACE_DAYS = Math.max(
+  0,
+  Number(
+    process.env.OPTIONAL_JWT_EXPIRATION_GRACE_DAYS ??
+      process.env.JWT_EXPIRATION_GRACE_DAYS ??
+      0
+  ) || 0
+);
+const OPTIONAL_JWT_GRACE_MS = OPTIONAL_JWT_GRACE_DAYS * 24 * 60 * 60 * 1000;
 
 const isTruthy = (value: any): boolean => {
   const normalized = String(value ?? "")
@@ -49,10 +62,21 @@ const ALLOW_LEGACY_TOKEN_TRANSPORT = (() => {
 const normalizeTokenCandidate = (raw: any): string => {
   const value = String(raw ?? "").trim();
   if (!value) return "";
-  if (value.toLowerCase().startsWith("bearer ")) {
-    return value.slice(7).trim();
+  const lowered = value.toLowerCase();
+  if (lowered === "null" || lowered === "undefined" || lowered === "nan" || lowered === "none") {
+    return "";
   }
-  return value;
+  const token = lowered.startsWith("bearer ") ? value.slice(7).trim() : value;
+  const tokenLowered = token.toLowerCase();
+  if (
+    tokenLowered === "null" ||
+    tokenLowered === "undefined" ||
+    tokenLowered === "nan" ||
+    tokenLowered === "none"
+  ) {
+    return "";
+  }
+  return token;
 };
 
 const extractOptionalAuthToken = (req: Request): string => {
@@ -96,15 +120,32 @@ const extractOptionalAuthToken = (req: Request): string => {
   return "";
 };
 
-const verifyTokenWithKnownSecrets = (token: string): IPayload | null => {
+const verifyTokenWithKnownSecrets = (
+  token: string,
+  ignoreExpiration = false
+): IPayload | null => {
   for (const secret of getJwtSecrets()) {
     try {
-      return jwt.verify(token, secret) as IPayload;
+      return jwt.verify(token, secret, { ignoreExpiration }) as IPayload;
     } catch (_err) {
       // try next configured secret
     }
   }
   return null;
+};
+
+const verifyOptionalTokenWithGrace = (token: string): IPayload | null => {
+  const strict = verifyTokenWithKnownSecrets(token, false);
+  if (strict) return strict;
+  if (OPTIONAL_JWT_GRACE_MS <= 0) return null;
+
+  const relaxed = verifyTokenWithKnownSecrets(token, true);
+  if (!relaxed) return null;
+
+  const expMs = Number((relaxed as any)?.exp ?? 0) * 1000;
+  if (!Number.isFinite(expMs) || expMs <= 0) return null;
+  if (Date.now() - expMs > OPTIONAL_JWT_GRACE_MS) return null;
+  return relaxed;
 };
 
 /**
@@ -118,6 +159,19 @@ const verifyTokenWithKnownSecrets = (token: string): IPayload | null => {
  */
 export const TokenOptional = (allowedRoles?: number[]): RequestHandler => {
   return async (req: Request, res: Response, next: NextFunction) => {
+    const reqAny = req as any;
+    const setOptionalState = (
+      state: string,
+      tokenPresent: boolean,
+      code?: string,
+      action?: string
+    ) => {
+      reqAny.authOptionalState = state;
+      reqAny.authOptionalTokenPresent = tokenPresent ? 1 : 0;
+      reqAny.authOptionalCode = code ?? "";
+      reqAny.authOptionalAction = action ?? "";
+    };
+
     req.authenticated = false; // por defecto anónimo
 
     // 1) Obtener token (headers por defecto; query/body solo si está habilitado)
@@ -125,89 +179,167 @@ export const TokenOptional = (allowedRoles?: number[]): RequestHandler => {
 
     // 2) Si no hay token -> anónimo (salvo que allowedRoles obligue auth)
     if (!token) {
+      setOptionalState("missing", false);
       if (allowedRoles && allowedRoles.length > 0) {
-        return res.status(401).json({
-          header: { success: false, authenticated: false },
-          messages: ["Access denied, authentication required"],
-        });
+        return sendAuthError(
+          res,
+          401,
+          "AUTH_TOKEN_REQUIRED",
+          "Access denied, authentication required"
+        );
       }
       return next();
     }
 
-    // 3) Intentar verificar token; si falla, seguimos anónimos salvo allowedRoles
+    // 3) Verificar token (si falla, seguimos anónimos salvo allowedRoles)
+    const verified = verifyOptionalTokenWithGrace(token);
+    if (!verified) {
+      setOptionalState("invalid_token", true, "AUTH_TOKEN_INVALID", "refresh");
+      if (allowedRoles && allowedRoles.length > 0) {
+        return sendAuthError(res, 401, "AUTH_TOKEN_INVALID", "Access denied, invalid token");
+      }
+      return next();
+    }
+
+    const tokenType = String(
+      (verified as any)?.tokenType ?? (verified as any)?.token_type ?? ""
+    )
+      .trim()
+      .toLowerCase();
+    if (tokenType && tokenType !== "access") {
+      setOptionalState("expired_token", true, "AUTH_TOKEN_EXPIRED", "refresh");
+      if (allowedRoles && allowedRoles.length > 0) {
+        return sendAuthError(res, 401, "AUTH_TOKEN_EXPIRED", "Access denied, token expired");
+      }
+      return next();
+    }
+
+    const { userId, roles, workerId } = verified;
+    const normalizedRoles = Array.isArray(roles) ? roles : [];
+
+    // 4) Verificaciones de usuario en BD (si la DB falla: no devolver 401 por error temporal)
+    let user: any = null;
     try {
-      const verified = verifyTokenWithKnownSecrets(token);
-      if (!verified) {
-        throw new Error("invalid token signature");
-      }
-      const tokenType = String(
-        (verified as any)?.tokenType ?? (verified as any)?.token_type ?? ""
-      )
-        .trim()
-        .toLowerCase();
-      if (tokenType && tokenType !== "access") {
-        throw new Error("invalid token type");
-      }
-      const { userId, roles, workerId } = verified;
-      const normalizedRoles = Array.isArray(roles) ? roles : [];
-
-      // 4) Verificaciones de usuario en BD (opcional pero recomendable)
-      const user = await User.findOne({
+      user = await User.findOne({
         where: { id: userId },
-        attributes: ["id", "available", "disabled", "auth_token"],
+        attributes: ["id", "available", "disabled", "auth_token", "uuid"],
       });
-      if (!user || !(user as any).available || Boolean((user as any).disabled)) {
-        // Token válido pero usuario no existe / no disponible -> tratar como no autenticado
-        if (allowedRoles && allowedRoles.length > 0) {
-          return res.status(401).json({
-            header: { success: false, authenticated: false },
-            messages: ["Access denied, user not available"],
-          });
-        }
-        return next();
+    } catch (_dbErr) {
+      setOptionalState(
+        "backend_unavailable",
+        true,
+        "AUTH_BACKEND_UNAVAILABLE",
+        "retry"
+      );
+      if (allowedRoles && allowedRoles.length > 0) {
+        return sendAuthError(
+          res,
+          503,
+          "AUTH_BACKEND_UNAVAILABLE",
+          "Authentication backend unavailable"
+        );
       }
+      (req as any).authDegraded = true;
+      return next();
+    }
 
+    if (!user || !(user as any).available || Boolean((user as any).disabled)) {
+      setOptionalState(
+        "user_unavailable",
+        true,
+        "AUTH_SESSION_REVOKED",
+        "logout"
+      );
+      // Token válido pero usuario no disponible/revocado -> anónimo salvo ruta protegida
+      if (allowedRoles && allowedRoles.length > 0) {
+        return sendAuthError(
+          res,
+          401,
+          "AUTH_SESSION_REVOKED",
+          "Access denied, user not available"
+        );
+      }
+      return next();
+    }
+
+    let tokenMatchesSession = false;
+    try {
       const storedAuthToken = String((user as any).auth_token ?? "").trim();
       const tokenMatchesLegacy = Boolean(storedAuthToken && storedAuthToken === token);
-      const tokenMatchesSession = tokenMatchesLegacy
+      tokenMatchesSession = tokenMatchesLegacy
         ? true
         : await isUserAuthSessionActive(userId, token);
-      if (!tokenMatchesSession) {
-        // Token válido pero usuario no existe / no disponible -> tratar como no autenticado
-        if (allowedRoles && allowedRoles.length > 0) {
-          return res.status(401).json({
-            header: { success: false, authenticated: false },
-            messages: ["Access denied, invalid session"],
-          });
-        }
-        return next();
-      }
-
-      // 5) Adjuntar datos al request
-      req.userId = userId;
-      req.workerId = workerId;
-      req.roles = normalizedRoles;
-      req.authenticated = true;
-
-      // 6) Si hay allowedRoles, validar
-      if (allowedRoles && !normalizedRoles.some((r) => allowedRoles.includes(r))) {
-        return res.status(403).json({
-          header: { success: false, authenticated: true },
-          messages: ["Access denied, role not allowed"],
-        });
-      }
-
-      return next();
-    } catch {
-      // Token inválido -> anónimo salvo que allowedRoles obligue auth
+    } catch (_dbErr) {
+      setOptionalState(
+        "backend_unavailable",
+        true,
+        "AUTH_BACKEND_UNAVAILABLE",
+        "retry"
+      );
       if (allowedRoles && allowedRoles.length > 0) {
-        return res.status(401).json({
-          header: { success: false, authenticated: false },
-          messages: ["Access denied, invalid token"],
-        });
+        return sendAuthError(
+          res,
+          503,
+          "AUTH_BACKEND_UNAVAILABLE",
+          "Authentication backend unavailable"
+        );
+      }
+      (req as any).authDegraded = true;
+      return next();
+    }
+
+    if (!tokenMatchesSession) {
+      setOptionalState("session_miss", true, "AUTH_TOKEN_EXPIRED", "refresh");
+      if (allowedRoles && allowedRoles.length > 0) {
+        const userDeviceUuid = String((user as any)?.uuid ?? "").trim();
+        let hasRecoverableSession = false;
+        if (userDeviceUuid) {
+          hasRecoverableSession = await hasUserActivePersistentAuthSession(userId, {
+            deviceUuid: userDeviceUuid,
+          }).catch(() => false);
+        }
+        if (!hasRecoverableSession) {
+          hasRecoverableSession = await hasUserActivePersistentAuthSession(userId).catch(
+            () => false
+          );
+        }
+        if (hasRecoverableSession) {
+          return sendAuthError(
+            res,
+            401,
+            "AUTH_TOKEN_EXPIRED",
+            "Access denied, token expired"
+          );
+        }
+        return sendAuthError(
+          res,
+          401,
+          "AUTH_SESSION_REVOKED",
+          "Access denied, invalid session"
+        );
       }
       return next();
     }
+
+    // 5) Adjuntar datos al request
+    req.userId = userId;
+    req.workerId = workerId;
+    req.roles = normalizedRoles;
+    req.authenticated = true;
+    setOptionalState("verified", true);
+
+    // 6) Si hay allowedRoles, validar
+    if (allowedRoles && !normalizedRoles.some((r) => allowedRoles.includes(r))) {
+      return sendAuthError(
+        res,
+        403,
+        "AUTH_FORBIDDEN",
+        "Access denied, role not allowed",
+        true
+      );
+    }
+
+    return next();
   };
 };
 

@@ -13,6 +13,12 @@ import {
   PROFILE_RECOMMENDATION_MESSAGE_PREFIX,
 } from "../../../repository/notification/notification_repository";
 
+const setPrivateNoStore = (res: Response) => {
+  res.set("Cache-Control", "private, no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Vary", "Accept-Encoding, Authorization");
+};
+
 const attachFollowCountAliases = (entity: any, followersCount: number, followingCount: number) => {
   if (!entity) return;
 
@@ -33,6 +39,66 @@ const attachFollowCountAliases = (entity: any, followersCount: number, following
   }
 
   Object.assign(entity, fields);
+};
+
+const attachRelationshipAliases = (entity: any, relationshipRaw: any) => {
+  if (!entity) return;
+  const isFollowing = Boolean(relationshipRaw?.isFollowing);
+  const isFollowedBy = Boolean(relationshipRaw?.isFollowedBy);
+  const isMutual = isFollowing && isFollowedBy;
+  const fields = {
+    relationship: {
+      isFollowing,
+      isFollowedBy,
+      isMutual,
+    },
+    isFollowing,
+    is_following: isFollowing,
+    viewerFollowsUser: isFollowing,
+    viewer_follows_user: isFollowing,
+    isFollowedBy,
+    is_followed_by: isFollowedBy,
+    userFollowsViewer: isFollowedBy,
+    user_follows_viewer: isFollowedBy,
+    isMutual,
+    is_mutual: isMutual,
+  };
+
+  if (typeof entity.setDataValue === "function") {
+    Object.entries(fields).forEach(([key, value]) => {
+      entity.setDataValue(key, value);
+    });
+    return;
+  }
+
+  Object.assign(entity, fields);
+};
+
+const collectWorkerTargetUserIds = (workersRaw: any[]): number[] =>
+  Array.from(
+    new Set(
+      (Array.isArray(workersRaw) ? workersRaw : [])
+        .map((worker: any) =>
+          Number((worker as any)?.userId ?? (worker as any)?.personal_data?.id)
+        )
+        .filter((id: number) => Number.isFinite(id) && id > 0)
+    )
+  );
+
+const attachRelationshipsToWorkers = async (viewerIdRaw: any, workersRaw: any[]) => {
+  const relationshipByUserId = await followerRepo.getRelationshipMap(
+    viewerIdRaw,
+    collectWorkerTargetUserIds(workersRaw)
+  );
+
+  (Array.isArray(workersRaw) ? workersRaw : []).forEach((worker: any) => {
+    const targetUserId = Number((worker as any)?.userId ?? (worker as any)?.personal_data?.id);
+    const relationship =
+      relationshipByUserId[targetUserId] ??
+      ({ isFollowing: false, isFollowedBy: false, isMutual: false } as const);
+    attachRelationshipAliases(worker, relationship);
+    attachRelationshipAliases((worker as any)?.personal_data, relationship);
+  });
 };
 
 const toSessionKey = (req: Request) => {
@@ -141,10 +207,12 @@ const maybeDispatchProfileRecommendationNotification = async ({
 
 export const workers = async (req: Request, res: Response) => {
   try {
+    setPrivateNoStore(res);
     const { page = 0, size = 5 } = req.query;
     const workers: any = await repository.workers(page, size, req.userId, {
       sessionKey: toSessionKey(req),
     });
+    await attachRelationshipsToWorkers(req.userId, workers?.rows ?? []);
 
     // Non-blocking: recommendation push should never slow down feed response.
     void maybeDispatchProfileRecommendationNotification({
@@ -175,18 +243,25 @@ export const worker = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   try {
+    setPrivateNoStore(res);
     const worker: any = await repository.worker(id ?? req.userId, req.userId);
     let counts: { followersCount: number; followingCount: number } | null = null;
 
     const targetUserId = Number((worker as any)?.userId ?? (worker as any)?.personal_data?.id);
     if (Number.isFinite(targetUserId) && targetUserId > 0) {
-      counts = await followerRepo.getCounts(targetUserId);
+      const [resolvedCounts, relationship] = await Promise.all([
+        followerRepo.getCounts(targetUserId),
+        followerRepo.getRelationship(req.userId, targetUserId),
+      ]);
+      counts = resolvedCounts;
       attachFollowCountAliases(worker, counts.followersCount, counts.followingCount);
       attachFollowCountAliases(
         (worker as any)?.personal_data,
         counts.followersCount,
         counts.followingCount
       );
+      attachRelationshipAliases(worker, relationship);
+      attachRelationshipAliases((worker as any)?.personal_data, relationship);
     }
 
     return formatResponse({

@@ -109,6 +109,18 @@ Service.init(
       allowNull: false,
       defaultValue: true,
     },
+
+    closedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "closed_at",
+    },
+
+    manualClosedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "manual_closed_at",
+    },
   },
   {
     sequelize,

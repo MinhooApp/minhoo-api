@@ -102,6 +102,31 @@ Category.afterSync(async () => {
     { id: 25, name: "Others", es_name: "Otras" },
     { id: 26, name: "Freelancer", es_name: "Freelancer" },
     { id: 27, name: "On Site", es_name: "En sitio" },
+    {
+      id: 28,
+      name: "Artificial Intelligence & Automation",
+      es_name: "Inteligencia artificial y automatizacion",
+    },
+    {
+      id: 29,
+      name: "Development & Programming",
+      es_name: "Desarrollo y programacion",
+    },
+    {
+      id: 30,
+      name: "Business & Consulting Services",
+      es_name: "Servicios de negocio y consultoria",
+    },
+    {
+      id: 31,
+      name: "Sales & Customer Support",
+      es_name: "Ventas y soporte al cliente",
+    },
+    {
+      id: 32,
+      name: "Professional Services",
+      es_name: "Servicios profesionales",
+    },
   ];
 
   try {

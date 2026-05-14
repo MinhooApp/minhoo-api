@@ -18,6 +18,8 @@ export const workerIncludes: Includeable[] = [
       "username",
       "image_profil",
       "verified",
+      "profile_verified",
+      "profile_verification_status",
     ],
   },
 

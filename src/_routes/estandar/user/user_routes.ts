@@ -2,11 +2,12 @@ import Router from "express";
 import User from "../../../_models/user/user";
 import TokenOptional from "../../../libs/middlewares/optional_jwt";
 import { TokenValidation } from "../../../libs/middlewares/verify_jwt";
-import { createRequestRateLimiter } from "../../../libs/middlewares/request_rate_limiter";
+import { createDistributedRateLimiter as createRequestRateLimiter } from "../../../libs/security/redis_rate_limiter";
 import {
   get,
   gets,
   search_profiles,
+  validatePhone,
   myData,
   follow,
   follow_by_id,
@@ -23,6 +24,7 @@ import {
   unfollow_by_id,
   check_username,
   get_username,
+  reputation,
   update_username,
   delete_profile_image,
   update_profile,
@@ -30,6 +32,8 @@ import {
   update_visibility,
   delete_account,
   get_blocked_users,
+  submit_profile_verification,
+  get_profile_verification_status,
 } from "../../../useCases/user/_controller/controller";
 import {
   buildCanonicalShareUrl,
@@ -154,6 +158,8 @@ router.get("/search", TokenOptional(), search_profiles);
 router.post("/follow", TokenValidation(), follow);
 router.post("/:id/follow", TokenValidation(), follow_by_id);
 router.delete("/:id/follow", TokenValidation(), unfollow_by_id);
+router.delete("/follow/:id", TokenValidation(), unfollow_by_id);
+router.delete("/follow", TokenValidation(), unfollow_by_id);
 router.post("/:id/report", TokenValidation(), report);
 router.put("/:id/report", TokenValidation(), report);
 router.patch("/:id/report", TokenValidation(), report);
@@ -167,8 +173,12 @@ router.get("/:id/following", TokenOptional(), followGraphReadLimiter, following_
 router.get("/:id/relationship", TokenOptional(), relationship);
 router.get("/username/check", TokenOptional(), check_username);
 router.get("/username/:username", TokenOptional(), get_username);
+router.get("/:userId/reputation", TokenOptional(), reputation);
+router.post("/verification/submit", TokenValidation(), submit_profile_verification);
+router.get("/verification/status", TokenValidation(), get_profile_verification_status);
 router.get("/one/:id?", TokenOptional(), get);
 router.get("/myData", TokenValidation(), myData);
+router.post("/phone/validate", TokenValidation(), validatePhone);
 router.get("/alert", TokenValidation(), activeAlerts);
 router.get("/profile-completion", TokenValidation(), profile_completion);
 router.patch("/username", TokenValidation(), update_username);

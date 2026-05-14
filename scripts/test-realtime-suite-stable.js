@@ -81,6 +81,7 @@ const testsAll = [
   { script: "test:chat:realtime", retries: 1 },
   { script: "test:chat:message-summary", retries: 0 },
   { script: "test:chat:list-pagination", retries: 0 },
+  { script: "test:chat:slo-traffic", retries: 0 },
   { script: "test:profile:saved-state", retries: 1 },
   { script: "test:notification:locale", retries: 0 },
   { script: "test:orbit:find:no-consecutive-creator", retries: 0 },

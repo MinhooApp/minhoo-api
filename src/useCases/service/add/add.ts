@@ -10,6 +10,10 @@ import {
   sendNotification,
 } from "../_module/module";
 import { bumpHomeContentSectionVersion } from "../../../libs/cache/bootstrap_home_cache_version";
+import {
+  attachServiceRoutingFields,
+  toServiceUpdatedSocketPayload,
+} from "../../../libs/service_client_bucket";
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
@@ -51,6 +55,164 @@ function normalizeCurrency(body: any) {
     body.currency_prefix = "AU$";
   }
 }
+
+const isNil = (value: unknown) => value === undefined || value === null;
+
+const toTrimmedTextOrNull = (value: unknown): string | null => {
+  if (isNil(value)) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+  const lowered = normalized.toLowerCase();
+  if (["null", "undefined", "none", "n/a", "na"].includes(lowered)) return null;
+  return normalized;
+};
+
+const parseBool = (value: unknown): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return null;
+  }
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  if (["1", "true", "yes", "y", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "n", "off"].includes(normalized)) return false;
+  return null;
+};
+
+const parseCoordinate = (
+  value: unknown,
+  min: number,
+  max: number
+): { ok: true; value: number | null } | { ok: false } => {
+  const raw = toTrimmedTextOrNull(value);
+  if (raw === null) return { ok: true, value: null };
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) return { ok: false };
+  if (parsed < min || parsed > max) return { ok: false };
+  return { ok: true, value: parsed };
+};
+
+const resolveOnSiteValue = (
+  body: any
+): { ok: true; onSite: boolean } | { ok: false; message: string } => {
+  const onSiteCandidate = !isNil(body?.on_site) ? body.on_site : body?.onSite;
+  if (!isNil(onSiteCandidate)) {
+    const parsed = parseBool(onSiteCandidate);
+    if (parsed === null) {
+      return {
+        ok: false,
+        message: "on_site must be boolean",
+      };
+    }
+    return { ok: true, onSite: parsed };
+  }
+
+  const isRemoteCandidate = !isNil(body?.is_remote)
+    ? body.is_remote
+    : !isNil(body?.isRemote)
+    ? body.isRemote
+    : body?.remote;
+  if (!isNil(isRemoteCandidate)) {
+    const parsed = parseBool(isRemoteCandidate);
+    if (parsed === null) {
+      return {
+        ok: false,
+        message: "is_remote must be boolean",
+      };
+    }
+    return { ok: true, onSite: !parsed };
+  }
+
+  const mode = toTrimmedTextOrNull(
+    body?.service_mode ?? body?.serviceMode ?? body?.mode ?? body?.work_mode ?? body?.workMode
+  )?.toLowerCase();
+  if (mode) {
+    if (["remote", "remoto", "virtual", "online", "freelance"].includes(mode)) {
+      return { ok: true, onSite: false };
+    }
+    if (
+      ["on_site", "onsite", "on-site", "on site", "in_person", "presencial"].includes(
+        mode
+      )
+    ) {
+      return { ok: true, onSite: true };
+    }
+  }
+
+  const addressCandidate = toTrimmedTextOrNull(body?.address);
+  const hasCoordinatesCandidate =
+    toTrimmedTextOrNull(body?.latitude) !== null ||
+    toTrimmedTextOrNull(body?.longitude) !== null;
+
+  // Safe default: if client did not send mode but did send a location,
+  // treat as on-site; otherwise keep remote to avoid accidental address leakage.
+  return { ok: true, onSite: Boolean(addressCandidate || hasCoordinatesCandidate) };
+};
+
+const normalizeServiceLocation = (
+  body: any
+): { ok: true } | { ok: false; code: number; message: string } => {
+  const onSiteResolved = resolveOnSiteValue(body);
+  if (!onSiteResolved.ok) {
+    return { ok: false, code: 400, message: onSiteResolved.message };
+  }
+
+  const onSite = onSiteResolved.onSite;
+  const address = toTrimmedTextOrNull(body?.address);
+  const latitudeParsed = parseCoordinate(body?.latitude, -90, 90);
+  if (!latitudeParsed.ok) {
+    return { ok: false, code: 400, message: "latitude must be a valid number between -90 and 90" };
+  }
+  const longitudeParsed = parseCoordinate(body?.longitude, -180, 180);
+  if (!longitudeParsed.ok) {
+    return {
+      ok: false,
+      code: 400,
+      message: "longitude must be a valid number between -180 and 180",
+    };
+  }
+
+  const latitude = latitudeParsed.value;
+  const longitude = longitudeParsed.value;
+  const hasAnyCoordinate = latitude !== null || longitude !== null;
+  const hasBothCoordinates = latitude !== null && longitude !== null;
+  if (hasAnyCoordinate && !hasBothCoordinates) {
+    return {
+      ok: false,
+      code: 400,
+      message: "latitude and longitude must be sent together",
+    };
+  }
+
+  body.on_site = onSite;
+  body.onSite = onSite;
+  body.is_remote = !onSite;
+  body.isRemote = !onSite;
+
+  if (!onSite) {
+    body.address = null;
+    body.latitude = null;
+    body.longitude = null;
+    return { ok: true };
+  }
+
+  if (!address && !hasBothCoordinates) {
+    return {
+      ok: false,
+      code: 400,
+      message: "On-site services require address or both latitude/longitude",
+    };
+  }
+
+  body.address = address;
+  body.latitude = latitude;
+  body.longitude = longitude;
+  return { ok: true };
+};
 
 const normalizePushLocale = (raw: any): PushLocale | null => {
   const normalized = String(raw ?? "").trim().toLowerCase();
@@ -145,6 +307,16 @@ const sendNewServicePushByLocale = async (
 
 export const add = async (req: Request, res: Response) => {
   try {
+    const locationNormalized = normalizeServiceLocation(req.body);
+    if (!locationNormalized.ok) {
+      return formatResponse({
+        res,
+        success: false,
+        code: locationNormalized.code,
+        message: locationNormalized.message,
+      });
+    }
+
     const pushTargets: NewServicePushTarget[] = await sendNotificationByNewService(
       req.body.categoryId,
       req.userId
@@ -162,8 +334,10 @@ export const add = async (req: Request, res: Response) => {
 
     // ✅ evita circular JSON
     const safeService = toPlain(service);
+    attachServiceRoutingFields(safeService);
 
     socket.emit("services", safeService);
+    socket.emit("service.updated", toServiceUpdatedSocketPayload(safeService));
     void sendNewServicePushByLocale(pushTargets, safeService.id).catch((pushError) => {
       console.log("[service][newServicePush] skipped", pushError);
     });

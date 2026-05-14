@@ -59,6 +59,9 @@ const GREEN_API_BASE_URL = String(process.env.GREEN_API_BASE_URL || "http://127.
   ""
 );
 const RISK_CHECK_GREEN_ENABLED = isTruthy(String(process.env.RISK_CHECK_GREEN_ENABLED || "1"));
+const RISK_INTERNAL_PERF_CHECK_ENABLED = isTruthy(
+  String(process.env.RISK_INTERNAL_PERF_CHECK_ENABLED || "0")
+);
 const SMOKE_BOOTSTRAP_PATH =
   "/api/v1/bootstrap/home?include=posts,reels,services,notifications&posts_size=5&reels_size=6&services_size=4&notifications_limit=5";
 const TELEGRAM_BOT_TOKEN = String(process.env.TELEGRAM_BOT_TOKEN || "").trim();
@@ -148,6 +151,38 @@ const OBSERVABILITY_HOTSPOT_P95_WARN_MS = toPositiveNumber(
   1800,
   100
 );
+const OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS = toPositiveNumber(
+  process.env.RISK_OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS,
+  1800,
+  100
+);
+const OBSERVABILITY_MEDIA_CONFIRM_ROUTE_FRAGMENT = String(
+  process.env.RISK_OBSERVABILITY_MEDIA_CONFIRM_ROUTE_FRAGMENT || "/api/v1/media/image/confirm"
+)
+  .trim()
+  .toLowerCase();
+const PUBLIC_PING_WARN_MS = toPositiveNumber(
+  process.env.RISK_PUBLIC_PING_WARN_MS,
+  700,
+  100
+);
+const PUBLIC_PING_SAMPLE_SIZE = Math.min(
+  5,
+  Math.max(1, Math.trunc(toPositiveNumber(process.env.RISK_PUBLIC_PING_SAMPLE_SIZE, 3, 1)))
+);
+const PUBLIC_PING_REQUIRED_SLOW_SAMPLES = Math.min(
+  PUBLIC_PING_SAMPLE_SIZE,
+  Math.max(
+    1,
+    Math.trunc(
+      toPositiveNumber(process.env.RISK_PUBLIC_PING_REQUIRED_SLOW_SAMPLES, 2, 1)
+    )
+  )
+);
+const PUBLIC_PING_SAMPLE_PAUSE_MS = Math.max(
+  0,
+  Math.trunc(toPositiveNumber(process.env.RISK_PUBLIC_PING_SAMPLE_PAUSE_MS, 120, 0))
+);
 const MIN_MEM_AVAILABLE_MB = toPositiveNumber(process.env.RISK_MIN_MEM_AVAILABLE_MB, 700, 64);
 const LOAD_WARN_FACTOR = toPositiveNumber(process.env.RISK_LOAD_WARN_FACTOR, 1.75, 0.5);
 const LOAD_CRITICAL_FACTOR = toPositiveNumber(process.env.RISK_LOAD_CRITICAL_FACTOR, 2.2, 0.5);
@@ -164,6 +199,22 @@ const toByteLength = (value) => {
   if (typeof value === "string") return Buffer.byteLength(value);
   if (value == null) return 0;
   return Buffer.byteLength(JSON.stringify(value));
+};
+const sleepMs = (ms) =>
+  new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, Number(ms) || 0));
+  });
+const median = (values) => {
+  const normalized = Array.isArray(values)
+    ? values
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value))
+        .sort((a, b) => a - b)
+    : [];
+  if (!normalized.length) return null;
+  const mid = Math.floor(normalized.length / 2);
+  if (normalized.length % 2 === 1) return normalized[mid];
+  return (normalized[mid - 1] + normalized[mid]) / 2;
 };
 const telegramConfigured = TELEGRAM_BOT_TOKEN.length > 0 && TELEGRAM_CHAT_ID.length > 0;
 const telegramReady = TELEGRAM_ENABLED && telegramConfigured;
@@ -258,6 +309,25 @@ const buildRiskSignature = (risks) => {
     .join("\n");
   if (!canonical) return "";
   return crypto.createHash("sha1").update(canonical).digest("hex");
+};
+const formatHotspotRoute = (hotspot) => {
+  if (!hotspot || typeof hotspot !== "object") return null;
+  return `${String(hotspot.method || "GET")} ${String(hotspot.route || "")}:${
+    hotspot.summary ? "summary" : "full"
+  }`;
+};
+const hotspotMatchesRouteFragment = (hotspot, routeFragment) => {
+  const fragment = String(routeFragment || "")
+    .trim()
+    .toLowerCase();
+  if (!fragment) return false;
+  const route = String(hotspot?.route || "")
+    .trim()
+    .toLowerCase();
+  const formatted = String(formatHotspotRoute(hotspot) || "")
+    .trim()
+    .toLowerCase();
+  return route.includes(fragment) || formatted.includes(fragment);
 };
 const readAlertState = () => {
   const state = readMonitorState();
@@ -506,6 +576,67 @@ const probeHttp = async ({ name, url, expected = [200], timeout = 15000, headers
   }
 };
 
+const probeHttpStable = async ({
+  name,
+  url,
+  expected = [200],
+  timeout = 15000,
+  headers = {},
+  warnMs = 1000,
+  samples = 3,
+  requiredSlowSamples = 2,
+  samplePauseMs = 120,
+}) => {
+  const sampleCount = Math.max(1, Math.trunc(Number(samples) || 1));
+  if (sampleCount <= 1) {
+    return probeHttp({ name, url, expected, timeout, headers, warnMs });
+  }
+
+  const requiredSlow = Math.min(
+    sampleCount,
+    Math.max(1, Math.trunc(Number(requiredSlowSamples) || 1))
+  );
+  const checks = [];
+
+  for (let i = 0; i < sampleCount; i += 1) {
+    checks.push(await probeHttp({ name, url, expected, timeout, headers, warnMs }));
+    if (i < sampleCount - 1 && samplePauseMs > 0) {
+      await sleepMs(samplePauseMs);
+    }
+  }
+
+  const allOk = checks.every((check) => check && check.ok === true);
+  const firstFailure = checks.find((check) => !check || check.ok !== true);
+  const durations = checks
+    .map((check) => Number(check?.duration_ms))
+    .filter((value) => Number.isFinite(value));
+  const bytes = checks
+    .map((check) => Number(check?.bytes))
+    .filter((value) => Number.isFinite(value));
+  const medianDuration = median(durations);
+  const slowSamples = checks.filter(
+    (check) => check && check.ok === true && Number(check.duration_ms) > warnMs
+  ).length;
+
+  return {
+    type: "http",
+    name,
+    url,
+    ok: allOk,
+    slow: allOk && slowSamples >= requiredSlow,
+    warn_ms: warnMs,
+    status: allOk ? Number(checks[checks.length - 1]?.status || 0) : Number(firstFailure?.status || 0),
+    duration_ms: round2(medianDuration ?? 0),
+    bytes: bytes.length ? Math.round(bytes.reduce((acc, value) => acc + value, 0) / bytes.length) : 0,
+    sample_count: sampleCount,
+    required_slow_samples: requiredSlow,
+    slow_samples: slowSamples,
+    sample_durations_ms: durations,
+    sample_statuses: checks.map((check) => Number(check?.status || 0)),
+    error: firstFailure?.error,
+  };
+};
+
 const probePing = async ({ name, url, expected = [200], timeout = 15000, warnMs = 400, instance }) => {
   const started = nowMs();
   try {
@@ -615,6 +746,10 @@ const probeObservabilityOverview = ({ headers = {}, baseUrl = BLUE_API_BASE_URL,
       toFiniteNumber(bootstrapNotificationsCache.other, 0);
     const hotspots = Array.isArray(metrics.hotspots) ? metrics.hotspots : [];
     const topHotspot = hotspots[0] || null;
+    const mediaConfirmHotspot =
+      hotspots.find((hotspot) =>
+        hotspotMatchesRouteFragment(hotspot, OBSERVABILITY_MEDIA_CONFIRM_ROUTE_FRAGMENT)
+      ) || null;
 
     return {
       type: "observability",
@@ -642,12 +777,10 @@ const probeObservabilityOverview = ({ headers = {}, baseUrl = BLUE_API_BASE_URL,
       bootstrap_notifications_samples_total: Number.isFinite(bootstrapNotificationsSamplesTotal)
         ? bootstrapNotificationsSamplesTotal
         : 0,
-      hotspot_route: topHotspot
-        ? `${String(topHotspot.method || "GET")} ${String(topHotspot.route || "")}:${
-            topHotspot.summary ? "summary" : "full"
-          }`
-        : null,
+      hotspot_route: formatHotspotRoute(topHotspot),
       hotspot_p95_ms: toFiniteNumber(topHotspot?.p95_ms, null),
+      media_confirm_hotspot_route: formatHotspotRoute(mediaConfirmHotspot),
+      media_confirm_hotspot_p95_ms: toFiniteNumber(mediaConfirmHotspot?.p95_ms, null),
     };
   } catch (error) {
     return {
@@ -665,25 +798,34 @@ const probeObservabilityOverview = ({ headers = {}, baseUrl = BLUE_API_BASE_URL,
   })();
 };
 
-const probeServiceActive = (service) => {
+const resolveSystemctlActiveState = (service) => {
   try {
-    const result = String(execSync(`systemctl is-active ${service}`, { encoding: "utf8" })).trim();
-    return {
-      type: "service",
-      name: `service_${service}`,
-      service,
-      ok: result === "active",
-      state: result,
-    };
-  } catch (_error) {
-    return {
-      type: "service",
-      name: `service_${service}`,
-      service,
-      ok: false,
-      state: "unknown",
-    };
+    return String(execSync(`systemctl is-active ${service}`, { encoding: "utf8" })).trim();
+  } catch (error) {
+    // `systemctl is-active` returns non-zero for states like "inactive" or "activating",
+    // but still writes the real state to stdout.
+    const fromStdout = String(error?.stdout ?? "").trim().toLowerCase();
+    if (fromStdout) return fromStdout.split(/\s+/)[0];
+
+    const fromStderr = String(error?.stderr ?? "").trim().toLowerCase();
+    const stateMatch = fromStderr.match(
+      /\b(active|inactive|failed|activating|deactivating|reloading|maintenance|unknown)\b/
+    );
+    if (stateMatch && stateMatch[1]) return stateMatch[1];
+
+    return "unknown";
   }
+};
+
+const probeServiceActive = (service) => {
+  const state = resolveSystemctlActiveState(service);
+  return {
+    type: "service",
+    name: `service_${service}`,
+    service,
+    ok: state === "active",
+    state,
+  };
 };
 
 const formatRiskRows = (risks) => {
@@ -746,6 +888,13 @@ const formatTelegramRiskMessage = ({ summary, checks, risks, reason }) => {
         observability.bootstrap_hit_rate_percent
       )}% notif_hit=${escapeHtml(observability.bootstrap_notifications_hit_rate_percent)}%`
     );
+    if (Number.isFinite(observability.media_confirm_hotspot_p95_ms)) {
+      lines.push(
+        `Media confirm p95=${escapeHtml(
+          observability.media_confirm_hotspot_p95_ms
+        )}ms umbral=${escapeHtml(OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS)}ms`
+      );
+    }
   }
   const byInstance = summary?.observability_by_instance || {};
   const instanceKeys = Object.keys(byInstance);
@@ -837,11 +986,14 @@ const main = async () => {
     })
   );
   checks.push(
-    await probeHttp({
+    await probeHttpStable({
       name: "public_ping",
       url: `${PUBLIC_BASE_URL}/api/v1/ping`,
       expected: [200],
-      warnMs: 700,
+      warnMs: PUBLIC_PING_WARN_MS,
+      samples: PUBLIC_PING_SAMPLE_SIZE,
+      requiredSlowSamples: PUBLIC_PING_REQUIRED_SLOW_SAMPLES,
+      samplePauseMs: PUBLIC_PING_SAMPLE_PAUSE_MS,
     })
   );
 
@@ -879,16 +1031,18 @@ const main = async () => {
       warnMs: 1000,
     })
   );
-  checks.push(
-    await probeHttp({
-      name: "blue_internal_perf_check",
-      url: `${BLUE_API_BASE_URL}/api/v1/internal/perf-check`,
-      headers: internalHeaders,
-      expected: [200],
-      timeout: 30000,
-      warnMs: 2500,
-    })
-  );
+  if (RISK_INTERNAL_PERF_CHECK_ENABLED) {
+    checks.push(
+      await probeHttp({
+        name: "blue_internal_perf_check",
+        url: `${BLUE_API_BASE_URL}/api/v1/internal/perf-check`,
+        headers: internalHeaders,
+        expected: [200],
+        timeout: 30000,
+        warnMs: 2500,
+      })
+    );
+  }
   checks.push(
     await probeObservabilityOverview({
       headers: internalHeaders,
@@ -932,16 +1086,18 @@ const main = async () => {
         warnMs: 1000,
       })
     );
-    checks.push(
-      await probeHttp({
-        name: "green_internal_perf_check",
-        url: `${GREEN_API_BASE_URL}/api/v1/internal/perf-check`,
-        headers: internalHeaders,
-        expected: [200],
-        timeout: 30000,
-        warnMs: 2500,
-      })
-    );
+    if (RISK_INTERNAL_PERF_CHECK_ENABLED) {
+      checks.push(
+        await probeHttp({
+          name: "green_internal_perf_check",
+          url: `${GREEN_API_BASE_URL}/api/v1/internal/perf-check`,
+          headers: internalHeaders,
+          expected: [200],
+          timeout: 30000,
+          warnMs: 2500,
+        })
+      );
+    }
     checks.push(
       await probeObservabilityOverview({
         headers: internalHeaders,
@@ -961,7 +1117,7 @@ const main = async () => {
   for (const check of checks) {
     if (!check.ok) {
       if (check.type === "service") {
-        risks.push(`[ALTA] Servicio caido o desconocido: ${check.service} (estado=${check.state})`);
+        risks.push(`[ALTA] Servicio no activo: ${check.service} (estado=${check.state})`);
         addAction(`Reiniciar y validar ${check.service} inmediatamente.`);
       } else if (check.type === "observability") {
         risks.push(
@@ -1044,9 +1200,13 @@ const main = async () => {
           );
           addAction("Revisar invalidaciones de notifications cache en eventos de follow/chat.");
         }
+        const isTopHotspotMediaConfirm = String(check.hotspot_route || "")
+          .toLowerCase()
+          .includes(OBSERVABILITY_MEDIA_CONFIRM_ROUTE_FRAGMENT);
         if (
           Number.isFinite(check.hotspot_p95_ms) &&
-          check.hotspot_p95_ms > OBSERVABILITY_HOTSPOT_P95_WARN_MS
+          check.hotspot_p95_ms > OBSERVABILITY_HOTSPOT_P95_WARN_MS &&
+          !isTopHotspotMediaConfirm
         ) {
           risks.push(
             `[MEDIA] Hotspot lento detectado: route=${check.hotspot_route || "n/a"} p95_ms=${
@@ -1055,12 +1215,29 @@ const main = async () => {
           );
           addAction("Optimizar endpoint hotspot (indices, payload y cache selectivo).");
         }
+        if (
+          Number.isFinite(check.media_confirm_hotspot_p95_ms) &&
+          check.media_confirm_hotspot_p95_ms > OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS
+        ) {
+          risks.push(
+            `[MEDIA] Hotspot lento detectado: route=${
+              check.media_confirm_hotspot_route || "POST /api/v1/media/image/confirm:full"
+            } p95_ms=${check.media_confirm_hotspot_p95_ms} umbral_ms=${OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS}`
+          );
+          addAction(
+            "Optimizar /api/v1/media/image/confirm (imagenes grandes, IO, payload y cache selectivo)."
+          );
+        }
       }
       continue;
     }
     if (check.type === "http" && check.slow) {
+      const hasSampling = Number.isFinite(toFiniteNumber(check.sample_count, null));
+      const sampleSuffix = hasSampling
+        ? ` samples=${check.sample_count} slow_samples=${check.slow_samples}/${check.required_slow_samples}`
+        : "";
       risks.push(
-        `[MEDIA] Endpoint lento: ${check.name} duration_ms=${check.duration_ms} umbral_ms=${check.warn_ms}`
+        `[MEDIA] Endpoint lento: ${check.name} duration_ms=${check.duration_ms} umbral_ms=${check.warn_ms}${sampleSuffix}`
       );
       addAction("Pausar deploys y vigilar tendencia de latencia por 15 minutos.");
     }
@@ -1141,6 +1318,8 @@ const main = async () => {
           bootstrap_notifications_samples_total: check.bootstrap_notifications_samples_total,
           hotspot_route: check.hotspot_route,
           hotspot_p95_ms: check.hotspot_p95_ms,
+          media_confirm_hotspot_route: check.media_confirm_hotspot_route,
+          media_confirm_hotspot_p95_ms: check.media_confirm_hotspot_p95_ms,
         };
       return acc;
     }, {});
@@ -1193,6 +1372,7 @@ const main = async () => {
       risk_reminder_minutes: RISK_ALERT_REMINDER_MINUTES,
       sends_only_on_risk_or_recovery: true,
       check_green_enabled: RISK_CHECK_GREEN_ENABLED,
+      internal_perf_check_enabled: RISK_INTERNAL_PERF_CHECK_ENABLED,
       low_sample_grace_minutes: OBSERVABILITY_MIN_REQUESTS_GRACE_MINUTES,
     },
     alert_decision: {
@@ -1222,6 +1402,8 @@ const main = async () => {
             observabilityCheck.bootstrap_notifications_hit_rate_percent,
           hotspot_route: observabilityCheck.hotspot_route,
           hotspot_p95_ms: observabilityCheck.hotspot_p95_ms,
+          media_confirm_hotspot_route: observabilityCheck.media_confirm_hotspot_route,
+          media_confirm_hotspot_p95_ms: observabilityCheck.media_confirm_hotspot_p95_ms,
         }
       : null,
     observability_by_instance: observabilityByInstance,

@@ -8,6 +8,12 @@ import {
   sendNotification,
   socket,
 } from "../_module/module";
+import {
+  attachApplicantsCountAliases,
+  enrichServiceApplicantsStatus,
+  resolveApplicantsCount,
+} from "../../../libs/applicants_status";
+import { toServiceUpdatedSocketPayload } from "../../../libs/service_client_bucket";
 
 export const removeOffer = async (req: Request, res: Response) => {
   const { offerId } = req.params;
@@ -43,12 +49,24 @@ export const removeOffer = async (req: Request, res: Response) => {
       });
     }
 
-    // ✅ SOLO SI SERVICIO ACTIVO (regla definitiva)
-    if (tempService.statusId != 1 || tempService.is_available != true) {
+    // ✅ Cliente puede remover un trabajador sin cancelar la orden completa
+    // mientras el servicio esté activo en flujo de trabajo.
+    // statusId: 1=searching, 2=assigned, 3=in_progress
+    // y también en 4 cuando aún no hubo cierre manual del cliente.
+    const statusId = Number(tempService.statusId);
+    const manualClosedAt =
+      (tempService as any)?.manual_closed_at ?? (tempService as any)?.manualClosedAt;
+    const canRemoveInFinalizedPendingClose = statusId === 4 && !manualClosedAt;
+    const allowedStatuses = new Set([1, 2, 3]);
+    const canRemoveWorker =
+      tempService.is_available == true &&
+      (allowedStatuses.has(statusId) || canRemoveInFinalizedPendingClose);
+
+    if (!canRemoveWorker) {
       return formatResponse({
         res,
         success: false,
-        message: "Service is not active.",
+        message: "Service cannot remove workers in the current status.",
         code: 400,
       });
     }
@@ -67,7 +85,26 @@ export const removeOffer = async (req: Request, res: Response) => {
       canceled: false,
     });
 
-    const service = await serviceRepository.get(offer.serviceId);
+    const service = enrichServiceApplicantsStatus(
+      await serviceRepository.get(offer.serviceId)
+    );
+    const offersCount = attachApplicantsCountAliases(
+      service,
+      resolveApplicantsCount(service)
+    );
+    const refreshLists = [
+      "offers",
+      "offers/pending",
+      "offers/accepted",
+      "myonGoing",
+      "onGoing/worker",
+      "history/worker",
+      "worker/canceled",
+    ];
+    const routing = toServiceUpdatedSocketPayload(service ?? null);
+    const ownerUserId = Number(tempService?.userId ?? service?.userId ?? 0);
+    const workerUserId = Number(offer?.offerer?.userId ?? 0);
+    const targetUserIds = [ownerUserId, workerUserId].filter((id) => id > 0);
 
     //SEND EMAIL
     const emailParams = {
@@ -97,18 +134,52 @@ export const removeOffer = async (req: Request, res: Response) => {
     // ✅ emitir para refresco en tiempo real (global + por serviceId)
     socket.emit("offers", {
       action: "removed",
+      eventAction: "offer_removed",
       serviceId: Number(offer?.serviceId ?? 0),
-      ownerUserId: Number(tempService?.userId ?? service?.userId ?? 0),
+      ownerUserId,
+      targetUserIds,
+      target_user_ids: targetUserIds,
       offerId: Number(offer?.id ?? 0),
       workerId: Number(offer?.workerId ?? 0),
       service: service ?? null,
+      offersCount,
+      offers_count: offersCount,
+      applicantsCount: offersCount,
+      applicants_count: offersCount,
+      ...routing,
+      refreshLists,
       updatedAt: new Date().toISOString(),
     });
+    socket.emit("services", {
+      action: "removed",
+      eventAction: "offer_removed",
+      serviceId: Number(offer?.serviceId ?? 0),
+      ownerUserId,
+      targetUserIds,
+      target_user_ids: targetUserIds,
+      offerId: Number(offer?.id ?? 0),
+      workerId: Number(offer?.workerId ?? 0),
+      service: service ?? null,
+      offersCount,
+      offers_count: offersCount,
+      applicantsCount: offersCount,
+      applicants_count: offersCount,
+      ...routing,
+      refreshLists,
+      updatedAt: new Date().toISOString(),
+    });
+    socket.emit("service.updated", routing);
 
     return formatResponse({
       res,
       success: true,
-      body: { service },
+      body: {
+        service,
+        offersCount,
+        offers_count: offersCount,
+        applicantsCount: offersCount,
+        applicants_count: offersCount,
+      },
     });
   } catch (error) {
     console.log(error);

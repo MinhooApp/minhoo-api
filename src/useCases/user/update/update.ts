@@ -7,6 +7,12 @@ import {
   repository,
 } from "../_module/module";
 import { emitProfileUpdatedRealtime } from "../_shared/profile_realtime";
+import multer from "multer";
+import Worker from "../../../_models/worker/worker";
+import {
+  normalizeRemoteHttpUrl,
+  uploadImageBufferToCloudflare,
+} from "../../_utils/cloudflare_images";
 
 export const activeAlerts = async (req: Request, res: Response) => {
   try {
@@ -122,6 +128,15 @@ export const update_username = async (req: Request, res: Response) => {
 
 const PROFILE_DEFAULT =
   "https://imagedelivery.net/byMb3jxLYxr0Esz1Tf7NcQ/ff67a5c9-2984-45be-9502-925d46939100/public";
+const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
+
+const uploadProfileAvatar = multer({
+  storage: multer.memoryStorage(),
+  limits: { files: 1, fileSize: AVATAR_MAX_BYTES },
+}).fields([
+  { name: "image_profile", maxCount: 1 },
+  { name: "image_profil", maxCount: 1 },
+]);
 
 const resolveProfileAbsolutePath = (storedPath: string | null | undefined) => {
   if (!storedPath) return null;
@@ -245,89 +260,402 @@ const normalizePreferredLanguage = (value: any): "es" | "en" | null | undefined 
   return null;
 };
 
+const isNullishLocationValue = (value: any) => {
+  if (value === null) return true;
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "" ||
+    normalized === "null" ||
+    normalized === "undefined" ||
+    normalized === "none"
+  );
+};
+
+type ParsedLocationField<T> = {
+  provided: boolean;
+  value: T | null | undefined;
+};
+
+const parseLocationPositiveInt = (value: any): ParsedLocationField<number> => {
+  if (value === undefined) return { provided: false, value: undefined };
+  if (isNullishLocationValue(value)) return { provided: true, value: null };
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return { provided: true, value: undefined };
+  }
+  return { provided: true, value: Math.trunc(parsed) };
+};
+
+const parseLocationString = (value: any): ParsedLocationField<string> => {
+  if (value === undefined) return { provided: false, value: undefined };
+  if (isNullishLocationValue(value)) return { provided: true, value: null };
+  const parsed = String(value).trim();
+  if (!parsed) return { provided: true, value: null };
+  return { provided: true, value: parsed };
+};
+
+const readPath = (source: any, path: string): any => {
+  if (!source || typeof source !== "object") return undefined;
+  if (!path.includes(".")) return (source as any)?.[path];
+  const segments = path.split(".");
+  let cursor: any = source;
+  for (const segment of segments) {
+    if (cursor === null || cursor === undefined || typeof cursor !== "object") {
+      return undefined;
+    }
+    cursor = cursor[segment];
+  }
+  return cursor;
+};
+
+const pickFirstLocationValue = (body: any, candidates: readonly string[]): any => {
+  for (const candidate of candidates) {
+    const value = readPath(body, candidate);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+};
+
+const LOCATION_FIELD_ALIASES = {
+  countryOriginId: [
+    "country_origin_id",
+    "countryOriginId",
+    "origin_country_id",
+    "originCountryId",
+    "country_of_origin_id",
+    "countryOfOriginId",
+    "country_origin",
+    "countryOrigin",
+    "location.country_origin_id",
+    "location.countryOriginId",
+    "location.origin_country_id",
+    "location.originCountryId",
+    "location.country_of_origin_id",
+    "location.countryOfOriginId",
+    "origin.country_id",
+    "origin.countryId",
+    "origin.country.id",
+  ],
+  countryOriginCode: [
+    "country_origin_code",
+    "countryOriginCode",
+    "origin_country_code",
+    "originCountryCode",
+    "country_of_origin_code",
+    "countryOfOriginCode",
+    "country_origin_iso",
+    "countryOriginIso",
+    "location.country_origin_code",
+    "location.countryOriginCode",
+    "location.origin_country_code",
+    "location.originCountryCode",
+    "origin.country_code",
+    "origin.countryCode",
+    "origin.country.code",
+    "origin.country.iso_code",
+  ],
+  countryResidenceId: [
+    "country_residence_id",
+    "countryResidenceId",
+    "residence_country_id",
+    "residenceCountryId",
+    "country_id",
+    "countryId",
+    "country_residence",
+    "countryResidence",
+    "location.country_residence_id",
+    "location.countryResidenceId",
+    "location.residence_country_id",
+    "location.residenceCountryId",
+    "location.country_id",
+    "location.countryId",
+    "residence.country_id",
+    "residence.countryId",
+    "residence.country.id",
+    "residence.country",
+  ],
+  stateResidenceId: [
+    "state_residence_id",
+    "stateResidenceId",
+    "residence_state_id",
+    "residenceStateId",
+    "state_id",
+    "stateId",
+    "state_residence",
+    "stateResidence",
+    "location.state_residence_id",
+    "location.stateResidenceId",
+    "location.residence_state_id",
+    "location.residenceStateId",
+    "location.state_id",
+    "location.stateId",
+    "residence.state_id",
+    "residence.stateId",
+    "residence.state.id",
+    "residence.state",
+  ],
+  stateResidenceCode: [
+    "state_residence_code",
+    "stateResidenceCode",
+    "residence_state_code",
+    "residenceStateCode",
+    "state_code",
+    "stateCode",
+    "location.state_residence_code",
+    "location.stateResidenceCode",
+    "location.state_code",
+    "location.stateCode",
+    "residence.state_code",
+    "residence.stateCode",
+    "residence.state.code",
+  ],
+  cityResidenceId: [
+    "city_residence_id",
+    "cityResidenceId",
+    "residence_city_id",
+    "residenceCityId",
+    "city_id",
+    "cityId",
+    "city_residence",
+    "cityResidence",
+    "location.city_residence_id",
+    "location.cityResidenceId",
+    "location.residence_city_id",
+    "location.residenceCityId",
+    "location.city_id",
+    "location.cityId",
+    "residence.city_id",
+    "residence.cityId",
+    "residence.city.id",
+    "residence.city",
+  ],
+  cityResidenceName: [
+    "city_residence_name",
+    "cityResidenceName",
+    "residence_city_name",
+    "residenceCityName",
+    "city_name",
+    "cityName",
+    "city",
+    "location.city_residence_name",
+    "location.cityResidenceName",
+    "location.city_name",
+    "location.cityName",
+    "location.city",
+    "residence.city_name",
+    "residence.cityName",
+    "residence.city.name",
+    "address.city",
+    "address.city_name",
+  ],
+} as const;
+
+const extractNormalizedLocationFromBody = (body: any) => {
+  const countryOriginId = parseLocationPositiveInt(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.countryOriginId)
+  );
+  const countryOriginCode = parseLocationString(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.countryOriginCode)
+  );
+  const countryResidenceId = parseLocationPositiveInt(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.countryResidenceId)
+  );
+  const stateResidenceId = parseLocationPositiveInt(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.stateResidenceId)
+  );
+  const stateResidenceCode = parseLocationString(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.stateResidenceCode)
+  );
+  const cityResidenceId = parseLocationPositiveInt(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.cityResidenceId)
+  );
+  const cityResidenceName = parseLocationString(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.cityResidenceName)
+  );
+
+  return {
+    countryOriginId,
+    countryOriginCode,
+    countryResidenceId,
+    stateResidenceId,
+    stateResidenceCode,
+    cityResidenceId,
+    cityResidenceName,
+  };
+};
+
 export const update_profile = async (req: Request, res: Response) => {
-  try {
-    const body: any = {};
-
-    const jobCategoryIds = normalizeIdArray((req.body as any)?.job_category_ids);
-    if (jobCategoryIds) body.job_category_ids = jobCategoryIds;
-    const jobCategoryLabels = normalizeStringArray(
-      (req.body as any)?.job_categories_labels
-    );
-    if (jobCategoryLabels) body.job_categories_labels = jobCategoryLabels;
-
-    const languageIds = normalizeIdArray((req.body as any)?.language_ids);
-    if (languageIds) {
-      if (languageIds.length > 3) {
+  const applyUpdate = async () => {
+    try {
+      const body: any = {};
+      const filesAny: any = (req as any).files || {};
+      const singleFile: any = (req as any).file || null;
+      const arrProfile: any[] = filesAny.image_profile ?? [];
+      const arrProfil: any[] = filesAny.image_profil ?? [];
+      const totalFiles =
+        (singleFile ? 1 : 0) +
+        (arrProfile?.length || 0) +
+        (arrProfil?.length || 0);
+      if ((arrProfile.length > 0 && arrProfil.length > 0) || totalFiles > 1) {
         return formatResponse({
           res,
           success: false,
           code: 400,
-          message: "language_ids max 3",
+          message:
+            "Solo se permite 1 archivo con el campo image_profile O image_profil.",
         });
       }
-      body.language_ids = languageIds;
-    }
-    const languageCodes = normalizeStringArray((req.body as any)?.language_codes);
-    if (languageCodes) body.language_codes = languageCodes;
-    const languageNames = normalizeStringArray((req.body as any)?.language_names);
-    if (languageNames) body.language_names = languageNames;
 
-    const languageRaw =
-      (req.body as any)?.language ??
-      (req.body as any)?.preferred_language ??
-      (req.body as any)?.preferredLanguage ??
-      (req.body as any)?.app_language ??
-      (req.body as any)?.appLanguage ??
-      (req.body as any)?.locale ??
-      (req.body as any)?.lang;
-    const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
-    if (languageRaw !== undefined && normalizedPreferredLanguage === null) {
+      const fileObj = singleFile ?? arrProfile[0] ?? arrProfil[0] ?? null;
+      const rawAvatarUrl =
+        (req.body as any)?.avatar_url ??
+        (req.body as any)?.image_profil ??
+        (req.body as any)?.image_profile;
+      const normalizedAvatarUrl = normalizeRemoteHttpUrl(rawAvatarUrl);
+      const hasAvatarUrlField =
+        rawAvatarUrl !== undefined && String(rawAvatarUrl ?? "").trim() !== "";
+      if (hasAvatarUrlField && !normalizedAvatarUrl) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 400,
+          message: "avatar_url must be a valid http(s) URL",
+        });
+      }
+
+      let avatarUrl = normalizedAvatarUrl || undefined;
+      if (fileObj?.buffer) {
+        const uploadedAvatar = await uploadImageBufferToCloudflare({
+          buffer: fileObj.buffer,
+          filename: fileObj.originalname,
+          mimeType: fileObj.mimetype,
+          metadata: {
+            app: "minhoo",
+            context: "avatar",
+            userId: String(req.userId ?? ""),
+          },
+        });
+        avatarUrl = uploadedAvatar.url;
+      }
+
+      const shouldDeleteImage =
+        (req.body as any)?.delete_image === true ||
+        String((req.body as any)?.delete_image ?? "").trim().toLowerCase() ===
+          "true" ||
+        String((req.body as any)?.delete_image ?? "").trim() === "1";
+      if (shouldDeleteImage) {
+        body.image_profil = PROFILE_DEFAULT;
+      } else if (avatarUrl !== undefined) {
+        body.image_profil = avatarUrl;
+      }
+
+      const jobCategoryIds = normalizeIdArray((req.body as any)?.job_category_ids);
+      if (jobCategoryIds) body.job_category_ids = jobCategoryIds;
+      const jobCategoryLabels = normalizeStringArray(
+        (req.body as any)?.job_categories_labels
+      );
+      if (jobCategoryLabels) body.job_categories_labels = jobCategoryLabels;
+
+      const languageIds = normalizeIdArray((req.body as any)?.language_ids);
+      if (languageIds) {
+        if (languageIds.length > 3) {
+          return formatResponse({
+            res,
+            success: false,
+            code: 400,
+            message: "language_ids max 3",
+          });
+        }
+        body.language_ids = languageIds;
+      }
+      const languageCodes = normalizeStringArray((req.body as any)?.language_codes);
+      if (languageCodes) body.language_codes = languageCodes;
+      const languageNames = normalizeStringArray((req.body as any)?.language_names);
+      if (languageNames) body.language_names = languageNames;
+
+      const languageRaw =
+        (req.body as any)?.language ??
+        (req.body as any)?.preferred_language ??
+        (req.body as any)?.preferredLanguage ??
+        (req.body as any)?.app_language ??
+        (req.body as any)?.appLanguage ??
+        (req.body as any)?.locale ??
+        (req.body as any)?.lang;
+      const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
+      if (languageRaw !== undefined && normalizedPreferredLanguage === null) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 400,
+          message: "language must be 'es' or 'en'",
+        });
+      }
+      if (normalizedPreferredLanguage) body.language = normalizedPreferredLanguage;
+
+      const location = extractNormalizedLocationFromBody(req.body);
+      if (location.countryOriginId.provided && location.countryOriginId.value !== undefined) {
+        body.country_origin_id = location.countryOriginId.value;
+      }
+      if (location.countryOriginCode.provided && location.countryOriginCode.value !== undefined) {
+        body.country_origin_code = location.countryOriginCode.value;
+      }
+      if (
+        location.countryResidenceId.provided &&
+        location.countryResidenceId.value !== undefined
+      ) {
+        body.country_residence_id = location.countryResidenceId.value;
+      }
+      if (location.stateResidenceId.provided && location.stateResidenceId.value !== undefined) {
+        body.state_residence_id = location.stateResidenceId.value;
+      }
+      if (
+        location.stateResidenceCode.provided &&
+        location.stateResidenceCode.value !== undefined
+      ) {
+        body.state_residence_code = location.stateResidenceCode.value;
+      }
+      if (location.cityResidenceId.provided && location.cityResidenceId.value !== undefined) {
+        body.city_residence_id = location.cityResidenceId.value;
+      }
+      if (location.cityResidenceName.provided && location.cityResidenceName.value !== undefined) {
+        body.city_residence_name = location.cityResidenceName.value;
+      }
+
+      await repository.update(req.userId, body);
+      const user = await repository.get(req.userId);
+      await emitProfileUpdatedRealtime({
+        user,
+        userId: req.userId,
+        includeRelatedUsers: true,
+        emitChatsRefresh: true,
+      });
+
+      return formatResponse({
+        res,
+        success: true,
+        body: { user },
+      });
+    } catch (error) {
+      console.log(error);
+      return formatResponse({ res: res, success: false, message: error });
+    }
+  };
+
+  const isMultipart = !!req.is("multipart/form-data");
+  if (!isMultipart) return applyUpdate();
+
+  return uploadProfileAvatar(req, res, (err: any) => {
+    if (err) {
       return formatResponse({
         res,
         success: false,
         code: 400,
-        message: "language must be 'es' or 'en'",
+        message: err?.message ?? "Error uploading file",
       });
     }
-    if (normalizedPreferredLanguage) body.language = normalizedPreferredLanguage;
-
-    const countryOriginId = Number((req.body as any)?.country_origin_id);
-    if (Number.isFinite(countryOriginId)) body.country_origin_id = countryOriginId;
-    const countryOriginCode = String((req.body as any)?.country_origin_code ?? "");
-    if (countryOriginCode) body.country_origin_code = countryOriginCode;
-
-    const countryResidenceId = Number((req.body as any)?.country_residence_id);
-    if (Number.isFinite(countryResidenceId))
-      body.country_residence_id = countryResidenceId;
-    const stateResidenceId = Number((req.body as any)?.state_residence_id);
-    if (Number.isFinite(stateResidenceId)) body.state_residence_id = stateResidenceId;
-    const stateResidenceCode = String((req.body as any)?.state_residence_code ?? "");
-    if (stateResidenceCode) body.state_residence_code = stateResidenceCode;
-
-    const cityResidenceId = Number((req.body as any)?.city_residence_id);
-    if (Number.isFinite(cityResidenceId)) body.city_residence_id = cityResidenceId;
-    const cityResidenceName = String((req.body as any)?.city_residence_name ?? "");
-    if (cityResidenceName) body.city_residence_name = cityResidenceName;
-
-    await repository.update(req.userId, body);
-    const user = await repository.get(req.userId);
-    await emitProfileUpdatedRealtime({
-      user,
-      userId: req.userId,
-      includeRelatedUsers: true,
-      emitChatsRefresh: true,
-    });
-
-    return formatResponse({
-      res,
-      success: true,
-      body: { user },
-    });
-  } catch (error) {
-    console.log(error);
-    return formatResponse({ res: res, success: false, message: error });
-  }
+    return applyUpdate();
+  });
 };
 
 const toBool = (v: any) => {
@@ -344,6 +672,17 @@ export const update_visibility = async (req: Request, res: Response) => {
     const showPhone = toBool((req.body as any)?.show_phone);
     const showLanguages = toBool((req.body as any)?.show_languages);
     const showLocation = toBool((req.body as any)?.show_location);
+    const visibleDirectory = toBool(
+      (req.body as any)?.visible ??
+        (req.body as any)?.worker_visible ??
+        (req.body as any)?.directory_visible ??
+        (req.body as any)?.show_in_directory
+    );
+    const workerAlert = toBool(
+      (req.body as any)?.alert ??
+        (req.body as any)?.worker_alert ??
+        (req.body as any)?.directory_alert
+    );
 
     if (showEmail !== undefined) body.show_email = showEmail;
     if (showPhone !== undefined) body.show_phone = showPhone;
@@ -370,11 +709,30 @@ export const update_visibility = async (req: Request, res: Response) => {
     if (normalizedPreferredLanguage) body.language = normalizedPreferredLanguage;
 
     await repository.update(req.userId, body);
+    if (visibleDirectory !== undefined || workerAlert !== undefined) {
+      const workerBody: any = {};
+      if (visibleDirectory !== undefined) workerBody.visible = visibleDirectory;
+      if (workerAlert !== undefined) workerBody.alert = workerAlert;
+      await Worker.update(workerBody, {
+        where: {
+          userId: req.userId,
+          available: true,
+        },
+      });
+    }
     const user = await repository.get(req.userId);
+    const worker = await Worker.findOne({
+      where: {
+        userId: req.userId,
+        available: true,
+      },
+      order: [["id", "DESC"]],
+      attributes: ["id", "visible", "alert", "available", "updatedAt"],
+    });
     return formatResponse({
       res,
       success: true,
-      body: { user },
+      body: { user, worker },
     });
   } catch (error) {
     console.log(error);

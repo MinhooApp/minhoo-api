@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Minhoo Idempotency Monitor every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=minhoo-idempotency-monitor.service
+
+[Install]
+WantedBy=timers.target

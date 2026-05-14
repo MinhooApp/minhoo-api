@@ -4,6 +4,7 @@ type ResponseMetricsSample = {
   route: string;
   method: string;
   summary: boolean;
+  excluded_from_slo?: boolean;
   status_code: number;
   response_time_ms: number;
   response_size_bytes: number;
@@ -62,6 +63,9 @@ const isTruthy = (value: any) => {
     normalized === "on"
   );
 };
+const RESP_METRICS_EXCLUDE_INTERNAL_DEBUG = isTruthy(
+  process.env.RESP_METRICS_EXCLUDE_INTERNAL_DEBUG ?? "1"
+);
 const normalizeRoutePath = (routeRaw: string) => {
   const route = String(routeRaw ?? "")
     .split("?")[0]
@@ -86,6 +90,29 @@ const reductionPercent = (legacy: number, current: number) => {
   if (!Number.isFinite(legacy) || legacy <= 0) return null;
   return round2(((legacy - current) / legacy) * 100);
 };
+const headerToString = (value: unknown) => {
+  if (Array.isArray(value)) {
+    return value
+      .map((entry) => String(entry ?? "").trim())
+      .filter(Boolean)
+      .join(", ");
+  }
+  if (value === null || value === undefined) return "";
+  return String(value).trim();
+};
+const appendServerTimingMetric = (res: Response, metric: string) => {
+  const existingHeader = headerToString(
+    res.getHeader("server-timing") ?? res.getHeader("Server-Timing")
+  );
+  const metrics = existingHeader
+    ? existingHeader
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean)
+    : [];
+  metrics.push(metric);
+  res.setHeader("Server-Timing", metrics.join(", "));
+};
 const parseBootstrapSections = (req: Request) => {
   const rawInclude = (req.query as any)?.include;
   const defaults = ["posts", "reels", "services", "notifications"];
@@ -97,11 +124,29 @@ const parseBootstrapSections = (req: Request) => {
   return (parts.length ? parts : defaults).join(",");
 };
 
+const isAttachmentDownloadRoute = (route: string, contentDispositionRaw: unknown) => {
+  const contentDisposition = headerToString(contentDispositionRaw).toLowerCase();
+  if (!contentDisposition.includes("attachment")) return false;
+  return (
+    route === "/api/v1/media/video/download" ||
+    route === "/api/v1/media/document/download" ||
+    route === "/api/v1/media/audio/play"
+  );
+};
+
 const getResolvedRoute = (req: Request) => {
   const routePath = req.route?.path ? String(req.route.path) : "";
   const baseUrl = req.baseUrl ? String(req.baseUrl) : "";
   if (routePath) return normalizeRoutePath(`${baseUrl}${routePath}`);
   return normalizeRoutePath(req.originalUrl || req.url || req.path || "unknown");
+};
+
+const shouldExcludeFromSlo = (req: Request, route: string) => {
+  if (!RESP_METRICS_EXCLUDE_INTERNAL_DEBUG) return false;
+  if (route.startsWith("/api/v1/internal/")) return true;
+  if (isTruthy(req.header("x-internal-debug"))) return true;
+  if (isTruthy(req.header("x-monitor-probe"))) return true;
+  return false;
 };
 
 const trackSample = (sample: ResponseMetricsSample) => {
@@ -366,9 +411,34 @@ export const responseMetricsMiddleware = (
   const startedAt = nowMs();
   const summary = isTruthy((req.query as any)?.summary);
   let responseSizeBytes = 0;
+  let serverTimingInjected = false;
+  let ttfbMs: number | null = null;
 
   const originalWrite = res.write.bind(res);
   const originalEnd = res.end.bind(res);
+  const originalWriteHead: any = res.writeHead.bind(res);
+  const originalFlushHeaders =
+    typeof (res as any).flushHeaders === "function"
+      ? (res as any).flushHeaders.bind(res)
+      : null;
+  const injectServerTimingTtfb = () => {
+    if (serverTimingInjected) return;
+    serverTimingInjected = true;
+    ttfbMs = round2(nowMs() - startedAt);
+    appendServerTimingMetric(res, `app_ttfb;dur=${ttfbMs}`);
+  };
+
+  (res as any).writeHead = (...args: any[]) => {
+    injectServerTimingTtfb();
+    return originalWriteHead(...args);
+  };
+
+  if (originalFlushHeaders) {
+    (res as any).flushHeaders = (...args: any[]) => {
+      injectServerTimingTtfb();
+      return originalFlushHeaders(...args);
+    };
+  }
 
   res.write = ((chunk: any, encoding?: any, callback?: any) => {
     if (chunk) {
@@ -395,12 +465,19 @@ export const responseMetricsMiddleware = (
         ? contentLengthHeader
         : responseSizeBytes;
     const route = getResolvedRoute(req);
+    const excludedFromSlo = shouldExcludeFromSlo(req, route);
+    const totalDurationMs = round2(nowMs() - startedAt);
+    const measureAsTtfb = isAttachmentDownloadRoute(
+      route,
+      res.getHeader("content-disposition")
+    );
     const sample: ResponseMetricsSample = {
       route,
       method: req.method,
       summary,
+      excluded_from_slo: excludedFromSlo,
       status_code: res.statusCode,
-      response_time_ms: round2(nowMs() - startedAt),
+      response_time_ms: measureAsTtfb ? ttfbMs ?? totalDurationMs : totalDurationMs,
       response_size_bytes: finalSizeBytes,
       content_encoding: String(res.getHeader("content-encoding") ?? "identity"),
       bootstrap_cache: String(res.getHeader("x-bootstrap-cache") ?? ""),
@@ -410,9 +487,11 @@ export const responseMetricsMiddleware = (
     };
     const routeKey = `${sample.method}:${sample.route}`;
 
+    console.log(`[resp-metrics] ${JSON.stringify(sample)}`);
+    if (excludedFromSlo) return;
+
     trackSample(sample);
     evaluateRouteBudgetWarnings(sample);
-    console.log(`[resp-metrics] ${JSON.stringify(sample)}`);
 
     if (!sample.summary && is2xx(sample.status_code)) {
       latestLegacyByRoute.set(routeKey, sample);

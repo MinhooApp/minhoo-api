@@ -5,14 +5,18 @@ import { Server as SocketIOServer } from "socket.io";
 import { createAdapter } from "@socket.io/redis-adapter";
 import { createClient } from "redis";
 import { randomUUID } from "crypto";
+import fs from "fs";
+import path from "path";
 import express, { Router } from "express";
 import { socketController } from "../_sockets/socket_controller";
 import { setSocketInstance } from "../_sockets/socket_instance";
 import { responseMetricsMiddleware } from "./middleware/response_metrics";
+import { requestLoggerMiddleware } from "../libs/middlewares/request_logger";
 const compression = require("compression");
 
 interface Options {
   port: number;
+  host?: string;
   public_path?: string;
 }
 
@@ -35,6 +39,13 @@ const parseAllowedCorsOrigins = (): string[] => {
     .split(",")
     .map((entry) => entry.trim())
     .filter(Boolean);
+};
+
+const buildCorsDeniedError = (message = "origin not allowed by CORS") => {
+  const error: any = new Error(message);
+  error.status = 403;
+  error.statusCode = 403;
+  return error;
 };
 
 const isProduction = () =>
@@ -109,6 +120,7 @@ class Server {
   private server: HttpServer;
   private io: SocketIOServer;
   private readonly port: number;
+  private readonly host: string;
   private readonly publicPath: string;
   private redisPubClient: ReturnType<typeof createClient> | null = null;
   private redisSubClient: ReturnType<typeof createClient> | null = null;
@@ -118,8 +130,16 @@ class Server {
   //private host: string;
 
   constructor(options: Options) {
-    const { port, public_path = "public" } = options;
+    const {
+      port,
+      host = process.env.HOST ||
+        (String(process.env.NODE_ENV ?? "").trim().toLowerCase() === "production"
+          ? "127.0.0.1"
+          : "0.0.0.0"),
+      public_path = "public",
+    } = options;
     this.port = port;
+    this.host = host;
     this.publicPath = public_path;
     this.app.set("query parser", "simple");
     this.app.set("json escape", true);
@@ -179,7 +199,7 @@ class Server {
       cors: {
         origin: (origin, callback) => {
           if (allowOrigin(origin)) return callback(null, true);
-          return callback(new Error("socket origin not allowed by CORS"), false);
+          return callback(buildCorsDeniedError("socket origin not allowed by CORS"), false);
         },
         methods: ["GET", "POST"],
         credentials: false,
@@ -195,12 +215,49 @@ class Server {
     this.server.requestTimeout = 30_000;
     void this.configureSocketAdapter();
     setSocketInstance(this.io);
+    this.registerAppleAppSiteAssociationRoutes();
     this.middlewares();
     this.dbConnection();
     this.configure();
 
     /////////Sockets/////////////socketController
     this.sockets();
+  }
+
+  private registerAppleAppSiteAssociationRoutes() {
+    const resolveAasaPath = () => {
+      const candidates = [
+        path.resolve(process.cwd(), "src/public/.well-known/apple-app-site-association"),
+        path.resolve(process.cwd(), "src/public/apple-app-site-association"),
+        path.resolve(process.cwd(), "dist/public/.well-known/apple-app-site-association"),
+        path.resolve(process.cwd(), "dist/public/apple-app-site-association"),
+      ];
+      for (const candidate of candidates) {
+        if (fs.existsSync(candidate)) return candidate;
+      }
+      return null;
+    };
+
+    const sendAppleAppSiteAssociation = (_req: any, res: any) => {
+      const filePath = resolveAasaPath();
+      if (!filePath) {
+        return res.status(404).json({
+          header: { success: false },
+          body: { message: "apple-app-site-association not found" },
+          request_id: String(res.locals?.requestId ?? ""),
+        });
+      }
+
+      res.setHeader("Content-Type", "application/json; charset=utf-8");
+      res.setHeader("Cache-Control", "public, max-age=300, stale-while-revalidate=600");
+      return res.sendFile(filePath);
+    };
+
+    this.app.get("/apple-app-site-association", sendAppleAppSiteAssociation);
+    this.app.get(
+      "/.well-known/apple-app-site-association",
+      sendAppleAppSiteAssociation
+    );
   }
 
   async dbConnection() {
@@ -258,6 +315,7 @@ class Server {
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("X-Frame-Options", "DENY");
       res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+      res.setHeader("Timing-Allow-Origin", "*");
       res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
 
       const forwardedProto = String(req.header("x-forwarded-proto") ?? "").trim().toLowerCase();
@@ -268,6 +326,7 @@ class Server {
       return next();
     });
     this.app.use(responseMetricsMiddleware);
+    this.app.use(requestLoggerMiddleware);
     if (shouldEnableHttpCompression()) {
       const level = resolveHttpCompressionLevel();
       const threshold = resolveHttpCompressionThresholdBytes();
@@ -291,7 +350,7 @@ class Server {
           if (corsAllowsAll || allowedCorsOrigins.includes(origin)) {
             return callback(null, true);
           }
-          return callback(new Error("origin not allowed by CORS"));
+          return callback(buildCorsDeniedError("origin not allowed by CORS"));
         },
         credentials: false,
       })
@@ -423,8 +482,8 @@ class Server {
   /////////////////////////////////
   listen() {
     this.registerFinalHandlers();
-    this.server.listen(this.port, () => {
-      console.log("Servidor corriendo en puerto", this.port);
+    this.server.listen(this.port, this.host, () => {
+      console.log("Servidor corriendo en", `${this.host}:${this.port}`);
     });
     return this.server;
   }

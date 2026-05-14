@@ -23,10 +23,22 @@ const dbPoolEvictMs = parsePositiveInt(process.env.DB_POOL_EVICT_MS, 1_000, 100)
 const dbPoolMaxUses = parsePositiveInt(process.env.DB_POOL_MAX_USES, 7_500, 100);
 const dbConnectTimeoutMs = parsePositiveInt(process.env.DB_CONNECT_TIMEOUT_MS, 10_000, 1000);
 
+const dbQueryTimeoutMs = parsePositiveInt(process.env.DB_QUERY_TIMEOUT_MS, 8_000, 1000);
+
 const dialect = String(database.dialect ?? "").trim().toLowerCase();
 const dialectOptions: Record<string, any> = {};
-if (dialect === "mysql" || dialect === "mariadb") {
+if (dialect === "mysql") {
   dialectOptions.connectTimeout = dbConnectTimeoutMs;
+  // Note: MySQL2 does not support a per-query timeout via dialectOptions.
+  // Query timeout is enforced at the application level (DB_QUERY_TIMEOUT_MS
+  // is used by individual repository calls that wrap queries in Promise.race).
+}
+if (dialect === "mariadb") {
+  dialectOptions.connectTimeout = dbConnectTimeoutMs;
+  dialectOptions.queryTimeout = dbQueryTimeoutMs;
+}
+if (dialect === "postgres") {
+  dialectOptions.statement_timeout = dbQueryTimeoutMs;
 }
 
 const sequelizeView = new Sequelize(
@@ -44,6 +56,15 @@ const sequelizeView = new Sequelize(
             idle: dbPoolIdleMs,
             evict: dbPoolEvictMs,
             maxUses: dbPoolMaxUses,
+            // Validates connection before handing it to a query.
+            // Stale/broken connections are discarded instead of causing query errors.
+            validate: (connection: any) => {
+                try {
+                    return connection && !connection._fatalError && !connection._protocolError;
+                } catch {
+                    return false;
+                }
+            },
         },
         dialectOptions,
     }

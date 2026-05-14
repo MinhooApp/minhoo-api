@@ -9,6 +9,7 @@ import Verification from "../../_models/verification/verification";
 import {
   registerUserAuthSession,
 } from "../../libs/auth/user_auth_session";
+import { getCachedAuthUser, invalidateAuthUserCache } from "../../libs/cache/user_cache";
 interface JWTOptions {
   userId: number | null;
   uuid: String;
@@ -120,10 +121,26 @@ export const findByEmail = async (email: String) => {
   });
   return user;
 };
+export const findByEmailLite = async (email: string) => {
+  const user = await User.findOne({
+    where: { email },
+    attributes: ["id", "is_deleted", "disabled", "available"],
+    raw: true,
+  });
+  return user as any;
+};
 export const findByEmailForLogin = async (email: string) => {
   const user = await User.findOne({
     where: { email },
     attributes: ["id", "email", "password", "is_deleted", "disabled", "available"],
+  });
+  return user;
+};
+
+export const findLoginClaimsById = async (id: number) => {
+  const user = await User.findOne({
+    where: { id },
+    attributes: ["id"],
     include: loginIncludes,
   });
   return user;
@@ -134,6 +151,28 @@ export const findById = async (id: number) => {
     include: userIncludes,
   });
   return user;
+};
+
+export const findByIdForRefresh = async (id: number) => {
+  return User.findOne({
+    where: { id },
+    attributes: ["id", "available"],
+    include: [
+      {
+        model: Role,
+        as: "roles",
+        attributes: ["id"],
+        through: { attributes: [] },
+      },
+      {
+        model: Worker,
+        as: "worker",
+        where: { available: true },
+        required: false,
+        attributes: ["id"],
+      },
+    ],
+  });
 };
 import { Op } from "sequelize";
 //
@@ -187,7 +226,18 @@ export const saveToken = async ({
   const normalizedUuid = String(uuid ?? "").trim();
 
   const body: any = { auth_token: token };
-  if (normalizedUuid) body.uuid = normalizedUuid;
+  const uuidChanged = normalizedUuid && normalizedUuid !== previousDeviceUuid;
+  if (uuidChanged) body.uuid = normalizedUuid;
+
+  // Start full user query before update — auth_token is overridden via setDataValue anyway.
+  const numericUserId = Number(userId);
+  const userPromise = getCachedAuthUser(numericUserId, () =>
+    User.findOne({
+      where: { id: numericUserId, available: true },
+      include: userIncludes,
+      attributes: { exclude: excludeKeys },
+    })
+  );
 
   await User.update(body, {
     where: {
@@ -195,37 +245,29 @@ export const saveToken = async ({
       available: true,
     },
   });
-
-  await registerUserAuthSession(userId, token, {
-    deviceUuid: normalizedUuid || null,
-  });
-  if (refreshToken) {
-    await registerUserAuthSession(userId, refreshToken, {
-      deviceUuid: normalizedUuid || null,
-    });
-  }
+  void invalidateAuthUserCache(numericUserId);
 
   const sameDeviceTokenRotation =
     Boolean(normalizedUuid) &&
     Boolean(previousDeviceUuid) &&
     previousDeviceUuid === normalizedUuid;
+
+  const sessionPromises: Promise<void>[] = [
+    registerUserAuthSession(userId, token, { deviceUuid: normalizedUuid || null }),
+  ];
+  if (refreshToken) {
+    sessionPromises.push(registerUserAuthSession(userId, refreshToken, { deviceUuid: normalizedUuid || null }));
+  }
   if (previousAuthToken && previousAuthToken !== token && !sameDeviceTokenRotation) {
     const previousSessionDeviceUuid =
       previousDeviceUuid && previousDeviceUuid !== normalizedUuid
         ? previousDeviceUuid
         : null;
-    await registerUserAuthSession(userId, previousAuthToken, {
-      deviceUuid: previousSessionDeviceUuid,
-    });
+    sessionPromises.push(registerUserAuthSession(userId, previousAuthToken, { deviceUuid: previousSessionDeviceUuid }));
   }
+  await Promise.all(sessionPromises);
 
-  const user = await User.findOne({
-    where: { id: userId, available: true },
-    include: userIncludes,
-    attributes: {
-      exclude: excludeKeys,
-    },
-  });
+  const user = await userPromise;
 
   if (user) {
     if (typeof (user as any).setDataValue === "function") {

@@ -4,6 +4,7 @@ import {
   formatResponse,
   repository,
 } from "../_module/module";
+import * as userRepository from "../../../repository/user/user_repository";
 
 const ALLOWED_REPORT_REASONS = new Set([
   "impersonation_or_identity_fraud",
@@ -27,6 +28,30 @@ const toNullablePositiveInt = (value: any): number | null => {
   const n = Number(value);
   if (!Number.isFinite(n) || n <= 0) return null;
   return Math.trunc(n);
+};
+
+const sendAdminActionForbidden = (
+  req: Request,
+  res: Response,
+  params: { code: string; message: string; status?: number }
+) => {
+  const status = Number(params?.status ?? 403) || 403;
+  const message = String(params?.message ?? "forbidden").trim() || "forbidden";
+  const code = String(params?.code ?? "FORBIDDEN").trim() || "FORBIDDEN";
+  const authenticated = Number(req.userId) > 0;
+  return res.status(status).json({
+    success: false,
+    code,
+    message,
+    header: {
+      success: false,
+      authenticated,
+      message,
+      messages: [message],
+    },
+    messages: [message],
+    body: { code },
+  });
 };
 
 export const report = async (req: Request, res: Response) => {
@@ -56,6 +81,23 @@ export const report = async (req: Request, res: Response) => {
     const messageId = toNullablePositiveInt(
       (req.body as any)?.messageId ?? (req.body as any)?.message_id ?? (req.query as any)?.messageId
     );
+
+    const participantIds = await repository.getChatParticipantUserIds(chatId);
+    const counterpartIds = participantIds.filter(
+      (participantId) => Number.isFinite(participantId) && participantId > 0 && participantId !== reporterId
+    );
+    if (counterpartIds.length > 0) {
+      const adminMap = await userRepository.getAdminRoleMapByUserIds(counterpartIds);
+      const hasAdminCounterpart = counterpartIds.some((counterpartId) =>
+        Boolean(adminMap.get(counterpartId))
+      );
+      if (hasAdminCounterpart) {
+        return sendAdminActionForbidden(req, res, {
+          code: "ADMIN_NOT_REPORTABLE",
+          message: "admin accounts cannot be reported",
+        });
+      }
+    }
 
     const reportResult: any = await repository.reportChat({
       chatIdRaw: chatId,

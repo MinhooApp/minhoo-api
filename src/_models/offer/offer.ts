@@ -54,6 +54,11 @@ Offer.init(
         notEmpty: { msg: "The field 'offer_date' can't be empty" },
       },
     },
+    workerClosedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "worker_closed_at",
+    },
   },
   {
     sequelize,

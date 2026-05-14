@@ -23,6 +23,30 @@ const normalizeReportReason = (value: any): string => {
   return ALLOWED_REPORT_REASONS.has(raw) ? raw : "something_else";
 };
 
+const sendAdminActionForbidden = (
+  req: Request,
+  res: Response,
+  params: { code: string; message: string; status?: number }
+) => {
+  const status = Number(params?.status ?? 403) || 403;
+  const message = String(params?.message ?? "forbidden").trim() || "forbidden";
+  const code = String(params?.code ?? "FORBIDDEN").trim() || "FORBIDDEN";
+  const authenticated = Number(req.userId) > 0;
+  return res.status(status).json({
+    success: false,
+    code,
+    message,
+    header: {
+      success: false,
+      authenticated,
+      message,
+      messages: [message],
+    },
+    messages: [message],
+    body: { code },
+  });
+};
+
 export const report = async (req: Request, res: Response) => {
   try {
     const reportedUserId = Number(req.params?.id);
@@ -47,6 +71,14 @@ export const report = async (req: Request, res: Response) => {
 
     const reason = normalizeReportReason((req.body as any)?.reason);
     const details = String((req.body as any)?.details ?? "").trim().slice(0, 4000);
+
+    const reportedUserIsAdmin = await repository.isUserAdminById(reportedUserId);
+    if (reportedUserIsAdmin) {
+      return sendAdminActionForbidden(req, res, {
+        code: "ADMIN_NOT_REPORTABLE",
+        message: "admin accounts cannot be reported",
+      });
+    }
 
     const reportResult: any = await repository.reportUserProfile({
       reportedUserIdRaw: reportedUserId,

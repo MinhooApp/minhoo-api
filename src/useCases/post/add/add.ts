@@ -4,9 +4,12 @@ import {
   formatResponse,
   repository,
 } from "../_module/module";
+import crypto from "crypto";
 import multer from "multer";
 import { uploadImageBufferToCloudflare } from "../../_utils/cloudflare_images";
 import { bumpHomeContentSectionVersion } from "../../../libs/cache/bootstrap_home_cache_version";
+import { applyCreateContentIdempotency } from "../../../libs/idempotency/content_create_idempotency";
+import { isHashtagValidationError, sendHashtagError } from "../../../libs/hashtags";
 
 const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const POST_MAX_FILES = 20;
@@ -20,6 +23,60 @@ const toArray = (value: any) => {
   if (value === undefined || value === null) return [];
   if (Array.isArray(value)) return value;
   return [value];
+};
+
+const toPlainForIdempotency = (value: any): any => {
+  if (value === undefined || value === null) return null;
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (!trimmed) return "";
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      try {
+        return JSON.parse(trimmed);
+      } catch {
+        return trimmed;
+      }
+    }
+    return trimmed;
+  }
+  return value;
+};
+
+const sha256Buffer = (buffer: Buffer) =>
+  crypto.createHash("sha256").update(buffer).digest("hex");
+
+const buildPostIdempotencyPayload = (params: {
+  postText: string;
+  hashtags: any;
+  directMedia: any;
+  uploadedFiles?: any[];
+}) => {
+  const uploadedFiles = Array.isArray(params.uploadedFiles) ? params.uploadedFiles : [];
+  const uploadFingerprints = uploadedFiles.map((fileObj: any, index: number) => {
+    const buffer: Buffer = fileObj?.buffer;
+    const size = Number(fileObj?.size ?? (Buffer.isBuffer(buffer) ? buffer.length : 0)) || 0;
+    return {
+      index,
+      name: String(fileObj?.originalname ?? "").trim(),
+      mime: String(fileObj?.mimetype ?? "").trim(),
+      size,
+      sha256: Buffer.isBuffer(buffer) ? sha256Buffer(buffer) : "",
+    };
+  });
+
+  return {
+    post: String(params.postText ?? ""),
+    hashtags: toPlainForIdempotency(params.hashtags),
+    media: toPlainForIdempotency(params.directMedia),
+    uploads: uploadFingerprints,
+  };
+};
+
+const resolvePostResourceId = (responsePayload: any): string | number | null => {
+  const id =
+    Number(responsePayload?.body?.id ?? 0) ||
+    Number(responsePayload?.body?.post?.id ?? 0);
+  return Number.isFinite(id) && id > 0 ? id : null;
 };
 
 const isLocalUploadPath = (value: string) => {
@@ -121,10 +178,26 @@ export const add = async (req: Request, res: Response) => {
 
   if (!isMultipart) {
     try {
+      const rawPost = (req.body as any)?.post;
+      const postText = rawPost === undefined || rawPost === null ? "" : String(rawPost);
       const directMedia =
         (req.body as any)?.media_items ??
         (req.body as any)?.media ??
         (req.body as any)?.media_url;
+      const hashtags = (req.body as any)?.hashtags;
+
+      const canProceed = await applyCreateContentIdempotency({
+        req,
+        res,
+        endpoint: "/api/v1/post",
+        payloadForHash: buildPostIdempotencyPayload({
+          postText,
+          hashtags,
+          directMedia,
+        }),
+        resolveResourceId: resolvePostResourceId,
+      });
+      if (!canProceed) return;
 
       const localPath = validateDirectMediaPayload(directMedia);
       if (localPath) {
@@ -138,6 +211,14 @@ export const add = async (req: Request, res: Response) => {
 
       return await createPost(req, res, directMedia);
     } catch (error: any) {
+      if (isHashtagValidationError(error)) {
+        return sendHashtagError(
+          res,
+          error.status ?? 400,
+          error.code,
+          error.message
+        );
+      }
       return formatResponse({
         res,
         success: false,
@@ -160,6 +241,38 @@ export const add = async (req: Request, res: Response) => {
     }
 
     try {
+      const rawPost = (req.body as any)?.post;
+      const postText = rawPost === undefined || rawPost === null ? "" : String(rawPost);
+      const directMedia =
+        (req.body as any)?.media_items ??
+        (req.body as any)?.media ??
+        (req.body as any)?.media_url;
+      const hashtags = (req.body as any)?.hashtags;
+
+      const canProceed = await applyCreateContentIdempotency({
+        req,
+        res,
+        endpoint: "/api/v1/post",
+        payloadForHash: buildPostIdempotencyPayload({
+          postText,
+          hashtags,
+          directMedia,
+          uploadedFiles,
+        }),
+        resolveResourceId: resolvePostResourceId,
+      });
+      if (!canProceed) return;
+
+      const localPath = validateDirectMediaPayload(directMedia);
+      if (localPath) {
+        return formatResponse({
+          res,
+          success: false,
+          code: 400,
+          message: "media_items cannot contain local /uploads paths",
+        });
+      }
+
       const cloudMedia = await Promise.all(
         uploadedFiles.map(async (fileObj: any, index: number) => {
           const uploadedImage = await uploadImageBufferToCloudflare({
@@ -177,26 +290,19 @@ export const add = async (req: Request, res: Response) => {
         })
       );
 
-      const directMedia =
-        (req.body as any)?.media_items ??
-        (req.body as any)?.media ??
-        (req.body as any)?.media_url;
-
-      const localPath = validateDirectMediaPayload(directMedia);
-      if (localPath) {
-        return formatResponse({
-          res,
-          success: false,
-          code: 400,
-          message: "media_items cannot contain local /uploads paths",
-        });
-      }
-
       const mergedMedia = [...toArray(directMedia), ...cloudMedia];
       const mediaPayload = mergedMedia.length ? mergedMedia : undefined;
 
       return await createPost(req, res, mediaPayload);
     } catch (error: any) {
+      if (isHashtagValidationError(error)) {
+        return sendHashtagError(
+          res,
+          error.status ?? 400,
+          error.code,
+          error.message
+        );
+      }
       return formatResponse({
         res,
         success: false,

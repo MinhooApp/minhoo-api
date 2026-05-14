@@ -36,10 +36,78 @@ const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
   30,
   Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 10 * 60) || 10 * 60
 );
+const ADMIN_ROLE_IDS = new Set<number>([8088]);
+const ADMIN_USERNAME_FALLBACKS = Array.from(
+  new Set(
+    String(process.env.ADMIN_USERNAME_FALLBACKS ?? "admin_minhoo_app")
+      .split(",")
+      .map((item) => String(item ?? "").trim().toLowerCase())
+      .filter(Boolean)
+  )
+);
 
 type SignedMediaKind = "audio" | "document" | "video_key" | "video_uid" | "image_id";
 
 const isTrueLike = (value: any) => value === true || value === 1 || value === "1";
+
+const hasAdminRoleByList = (rolesRaw: any): boolean => {
+  const roles = Array.isArray(rolesRaw) ? rolesRaw : [];
+  return roles.some((role: any) => {
+    const roleId = Number((role as any)?.id ?? role);
+    if (Number.isFinite(roleId) && ADMIN_ROLE_IDS.has(Math.trunc(roleId))) return true;
+    const roleName = String((role as any)?.role ?? "").trim().toLowerCase();
+    return roleName.includes("admin");
+  });
+};
+
+const isAdminUsernameFallback = (usernameRaw: any): boolean => {
+  const username = String(usernameRaw ?? "").trim().toLowerCase();
+  if (!username) return false;
+  return ADMIN_USERNAME_FALLBACKS.includes(username);
+};
+
+const isAdminUserShape = (userRaw: any): boolean => {
+  const user = userRaw ?? {};
+  const explicitFlag = (user as any)?.is_admin ?? (user as any)?.isAdmin;
+  if (explicitFlag === true) return true;
+  return (
+    hasAdminRoleByList((user as any)?.roles) ||
+    isAdminUsernameFallback((user as any)?.username)
+  );
+};
+
+const applyPublicSearchAdminExclusion = (and: any[]) => {
+  const adminRoleIds = Array.from(ADMIN_ROLE_IDS)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .map((value) => Math.trunc(value));
+  if (adminRoleIds.length > 0) {
+    and.push(
+      Sequelize.literal(`
+        NOT EXISTS (
+          SELECT 1
+          FROM \`user_role\` ur
+          WHERE ur.\`userId\` = \`user\`.\`id\`
+            AND ur.\`roleId\` IN (${adminRoleIds.join(",")})
+        )
+      `)
+    );
+  }
+
+  const adminUsernamesEscaped = ADMIN_USERNAME_FALLBACKS.map((username) =>
+    sequelize.escape(String(username).trim().toLowerCase())
+  ).filter(Boolean);
+  if (adminUsernamesEscaped.length > 0) {
+    and.push(
+      Sequelize.literal(`
+        (
+          \`user\`.\`username\` IS NULL
+          OR LOWER(\`user\`.\`username\`) NOT IN (${adminUsernamesEscaped.join(",")})
+        )
+      `)
+    );
+  }
+};
 
 const isMissingTableError = (error: any) => {
   const code = String(error?.original?.code ?? error?.code ?? "").toUpperCase();
@@ -256,6 +324,7 @@ export const search_profiles = async (
   };
   const and: any[] = [];
   const order: any[] = [];
+  applyPublicSearchAdminExclusion(and);
 
   if (mode === "username") {
     and.push(
@@ -1318,6 +1387,68 @@ export const getUserById = async (id: number) => {
   return User.findByPk(id);
 };
 
+export const isUserAdminById = async (idRaw: any): Promise<boolean> => {
+  const id = Number(idRaw);
+  if (!Number.isFinite(id) || id <= 0) return false;
+
+  const user = await User.findOne({
+    where: { id: Math.trunc(id) },
+    attributes: ["id"],
+    include: [
+      {
+        model: Role,
+        as: "roles",
+        attributes: ["id", "role"],
+        through: { attributes: [] },
+        required: false,
+      },
+    ],
+  });
+  if (!user) return false;
+
+  const plain = typeof (user as any)?.toJSON === "function" ? (user as any).toJSON() : user;
+  return isAdminUserShape(plain);
+};
+
+export const getAdminRoleMapByUserIds = async (
+  userIdsRaw: any
+): Promise<Map<number, boolean>> => {
+  const ids = Array.from(
+    new Set(
+      (Array.isArray(userIdsRaw) ? userIdsRaw : [])
+        .map((value: any) => Number(value))
+        .filter((value: number) => Number.isFinite(value) && value > 0)
+        .map((value: number) => Math.trunc(value))
+    )
+  );
+  const map = new Map<number, boolean>();
+  ids.forEach((id) => map.set(id, false));
+  if (!ids.length) return map;
+
+  const rows = await User.findAll({
+    where: { id: { [Op.in]: ids } },
+    attributes: ["id", "username"],
+    include: [
+      {
+        model: Role,
+        as: "roles",
+        attributes: ["id", "role"],
+        through: { attributes: [] },
+        required: false,
+      },
+    ],
+  });
+
+  (rows as any[]).forEach((row: any) => {
+    const plain = typeof row?.toJSON === "function" ? row.toJSON() : row;
+    const userId = Number((plain as any)?.id ?? 0);
+    if (!Number.isFinite(userId) || userId <= 0) return;
+    map.set(Math.trunc(userId), isAdminUserShape(plain));
+  });
+
+  return map;
+};
+
 export const findByUsernameLower = async (usernameLower: string, excludeUserId?: number) => {
   const where: any = {
     [Op.and]: [Sequelize.where(Sequelize.fn("lower", Sequelize.col("username")), usernameLower)],
@@ -1447,6 +1578,41 @@ export const reportUserProfile = async ({
       }
       throw error;
     });
+};
+
+/* 🔹 Soft delete global a nivel empresa (solo admin) */
+export const admin_soft_delete = async (idRaw: any) => {
+  const id = Number(idRaw);
+  if (!Number.isFinite(id) || id <= 0) {
+    return { id: idRaw, deleted: false, invalidId: true, notFound: true };
+  }
+
+  const user = await User.findByPk(id, {
+    attributes: ["id", "is_deleted"],
+  });
+  if (!user) return { id, deleted: false, notFound: true };
+
+  const alreadyDeleted = isTrueLike((user as any)?.is_deleted);
+
+  await User.update(
+    {
+      is_deleted: true,
+      deleted_at: new Date(),
+      available: false,
+      disabled: true,
+      auth_token: null,
+    },
+    { where: { id } }
+  );
+
+  void invalidateUserCache(id);
+  void invalidateAuthUserCache(id);
+
+  return {
+    id,
+    deleted: true,
+    alreadyDeleted,
+  };
 };
 
 /* 🔹 Bloqueo global a nivel empresa (solo admin) */

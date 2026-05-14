@@ -1,0 +1,19 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "8JN3ZS8GUQ.com.minhoo.app",
+        "paths": [
+          "/api/v1/post/share/*",
+          "/api/v1/reel/share/*",
+          "/api/v1/post/*",
+          "/api/v1/reel/*",
+          "/post/*",
+          "/reel/*",
+          "/orbit/*"
+        ]
+      }
+    ]
+  }
+}

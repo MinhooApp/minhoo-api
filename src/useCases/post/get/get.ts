@@ -8,12 +8,7 @@ import crypto from "crypto";
 import * as savedRepository from "../../../repository/saved/saved_repository";
 import Like from "../../../_models/like/like";
 import * as followerRepo from "../../../repository/follower/follower_repository";
-import {
-  isCompactMode,
-  isSummaryMode,
-  toPostSummary,
-  toPostSummaryCompact,
-} from "../../../libs/summary_response";
+import { isSummaryMode, toPostSummary } from "../../../libs/summary_response";
 import * as userRepository from "../../../repository/user/user_repository";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
 import { formatRelativeTime } from "../../../libs/localization/relative_time";
@@ -61,6 +56,7 @@ const postSummaryRelationshipCacheTtlMs = Math.max(
   0,
   Number(process.env.POST_SUMMARY_RELATIONSHIP_CACHE_TTL_MS ?? 10000) || 10000
 );
+
 type PostSummaryCacheEntry = {
   cachedAtMs: number;
   body: any | null;
@@ -136,18 +132,17 @@ const buildPostSummaryCacheKey = (params: {
   viewerId: number;
   sessionKey: string;
   includeRankingDebug: boolean;
-  compact: boolean;
 }) => {
   const viewerId = normalizeUserId(params.viewerId) ?? 0;
   if (viewerId <= 0) {
     return `summary:${params.variant}:public:p:${params.page}:s:${params.size}:rd:${
       params.includeRankingDebug ? 1 : 0
-    }:cp:${params.compact ? 1 : 0}`;
+    }`;
   }
   const sessionSuffix = params.sessionKey || "anonymous";
   return `summary:${params.variant}:v:${viewerId}:p:${params.page}:s:${params.size}:sk:${sessionSuffix}:rd:${
     params.includeRankingDebug ? 1 : 0
-  }:cp:${params.compact ? 1 : 0}`;
+  }`;
 };
 
 const cloneCacheValue = <T>(value: T): T => {
@@ -270,6 +265,22 @@ const isAuthenticatedRequest = (req: Request): boolean => {
   const requestAny: any = req as any;
   const userId = Number(requestAny?.userId ?? 0);
   return Boolean(requestAny?.authenticated) || (Number.isFinite(userId) && userId > 0);
+};
+
+const setOptionalAuthDebugHeaders = (req: Request, res: Response) => {
+  const requestAny: any = req as any;
+  const tokenPresent = Number(requestAny?.authOptionalTokenPresent ?? 0) === 1;
+  const stateRaw = String(
+    requestAny?.authOptionalState ?? (requestAny?.authenticated ? "verified" : "missing")
+  ).trim();
+  const state = stateRaw || "missing";
+  const action = String(requestAny?.authOptionalAction ?? "").trim();
+  const code = String(requestAny?.authOptionalCode ?? "").trim();
+
+  res.set("X-Auth-Optional-Token", tokenPresent ? "1" : "0");
+  res.set("X-Auth-Optional-State", state);
+  if (action) res.set("X-Auth-Action-Hint", action);
+  if (code) res.set("X-Auth-Error-Code", code);
 };
 
 const setPostListCacheHeaders = (req: Request, res: Response, summary: boolean) => {
@@ -582,7 +593,6 @@ export const gets = async (req: Request, res: Response) => {
     const page = Math.max(0, Number(req.query.page ?? 0) || 0);
     const size = Math.min(Math.max(Number(req.query.size ?? 10) || 10, 1), 20);
     const summary = isSummaryMode((req.query as any)?.summary);
-    const compact = summary && isCompactMode((req.query as any)?.compact);
     const includeRankingDebug = isTruthy((req.query as any)?.ranking_debug);
     const canUseSummaryServerCache =
       summary &&
@@ -590,6 +600,7 @@ export const gets = async (req: Request, res: Response) => {
       !isAuthenticatedRequest(req) &&
       !hasAuthCredentialsHint(req);
     setPostListCacheHeaders(req, res, summary);
+    setOptionalAuthDebugHeaders(req, res);
     res.set("X-Ranking-Debug", includeRankingDebug ? "1" : "0");
     const sessionKey = toSessionKey(req);
     const viewerId = Number(req.userId ?? 0) || 0;
@@ -602,7 +613,6 @@ export const gets = async (req: Request, res: Response) => {
             viewerId,
             sessionKey,
             includeRankingDebug,
-            compact,
           })
         : "";
     if (summary) {
@@ -671,10 +681,9 @@ export const gets = async (req: Request, res: Response) => {
         size,
         count: posts.count,
         posts: summary
-          ? (posts.rows ?? []).map((post: any) => {
-              const summaryPost = toPostSummary(post, req.userId, relationshipByUserId);
-              return compact ? toPostSummaryCompact(summaryPost) : summaryPost;
-            })
+          ? (posts.rows ?? []).map((post: any) =>
+              toPostSummary(post, req.userId, relationshipByUserId)
+            )
           : posts.rows,
       };
     };
@@ -713,7 +722,6 @@ export const getsSuggested = async (req: Request, res: Response) => {
     const page = Math.max(0, Number(req.query.page ?? 0) || 0);
     const size = Math.min(Math.max(Number(req.query.size ?? 10) || 10, 1), 20);
     const summary = isSummaryMode((req.query as any)?.summary);
-    const compact = summary && isCompactMode((req.query as any)?.compact);
     const includeRankingDebug = isTruthy((req.query as any)?.ranking_debug);
     const canUseSummaryServerCache =
       summary &&
@@ -721,6 +729,7 @@ export const getsSuggested = async (req: Request, res: Response) => {
       !isAuthenticatedRequest(req) &&
       !hasAuthCredentialsHint(req);
     setPostListCacheHeaders(req, res, summary);
+    setOptionalAuthDebugHeaders(req, res);
     res.set("X-Ranking-Debug", includeRankingDebug ? "1" : "0");
     const sessionKey = toSessionKey(req);
     const viewerId = Number(req.userId ?? 0) || 0;
@@ -733,7 +742,6 @@ export const getsSuggested = async (req: Request, res: Response) => {
             viewerId,
             sessionKey,
             includeRankingDebug,
-            compact,
           })
         : "";
     if (summary) {
@@ -802,10 +810,9 @@ export const getsSuggested = async (req: Request, res: Response) => {
         size,
         count: posts.count,
         posts: summary
-          ? (posts.rows ?? []).map((post: any) => {
-              const summaryPost = toPostSummary(post, req.userId, relationshipByUserId);
-              return compact ? toPostSummaryCompact(summaryPost) : summaryPost;
-            })
+          ? (posts.rows ?? []).map((post: any) =>
+              toPostSummary(post, req.userId, relationshipByUserId)
+            )
           : posts.rows,
       };
     };

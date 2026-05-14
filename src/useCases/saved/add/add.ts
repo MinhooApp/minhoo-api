@@ -7,6 +7,7 @@ import {
   socket,
   sendNotification,
 } from "../_module/module";
+import { resolvePushActorLabel } from "../../../libs/push_actor_label";
 
 const parsePostId = (raw: any): number | null => {
   const postId = Number(raw);
@@ -86,12 +87,14 @@ export const save_post = async (req: Request, res: Response) => {
 
     if (shouldNotifyOwner) {
       try {
+        const actorLabel = await resolvePushActorLabel(req.userId);
         await sendNotification({
           postId: Number(visiblePost.id),
           userId: Number(visiblePost.userId),
           interactorId: req.userId,
           type: "like",
-          message: "Has saved your post.",
+          senderName: actorLabel,
+          message: `${actorLabel} has saved your post.`,
         });
         console.log(
           `[saved_post] notification sent ownerId=${Number(

@@ -1,4 +1,5 @@
 import jsonwebtoken from "jsonwebtoken";
+import { randomBytes, randomUUID } from "crypto";
 interface JWTOptions {
 
     userId: number | null;
@@ -22,6 +23,17 @@ const getUniqueSecrets = (values: any[]): string[] => {
 const parseTruthy = (value: any): boolean => {
     const normalized = String(value ?? "").trim().toLowerCase();
     return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
+};
+
+const buildTokenJti = (): string => {
+    try {
+        if (typeof randomUUID === "function") {
+            return randomUUID();
+        }
+    } catch (_error) {
+        // fallback to random bytes below
+    }
+    return randomBytes(16).toString("hex");
 };
 
 export const getAccessJwtSecrets = (): string[] => {
@@ -95,6 +107,7 @@ const generarJWT = ({
             username,
             roles,
             tokenType,
+            jti: buildTokenJti(),
         };
 
         const secrets = tokenType === "refresh"

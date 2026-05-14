@@ -22,6 +22,7 @@ import {
   check_username,
   get_username,
   profile_completion,
+  reputation,
 } from "../get/get";
 import {
   activeAlerts,
@@ -30,6 +31,10 @@ import {
   update_profile,
   update_visibility,
 } from "../update/update";
+import {
+  submit_profile_verification,
+  get_profile_verification_status,
+} from "../verification/profile_verification";
 
 export {
   get,
@@ -54,9 +59,12 @@ export {
   check_username,
   get_username,
   profile_completion,
+  reputation,
   update_username,
   delete_profile_image,
   update_profile,
   update_visibility,
   get_blocked_users, // âœ… NUEVO
+  submit_profile_verification,
+  get_profile_verification_status,
 };

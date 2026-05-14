@@ -1,3 +1,4 @@
+import { createHmac, timingSafeEqual } from "crypto";
 import { Op, Sequelize } from "sequelize";
 import MediaPost from "../../_models/post/media_post";
 import Post from "../../_models/post/post";
@@ -22,13 +23,204 @@ const normalizeCounter = (value: any) => {
   return Math.floor(n);
 };
 
+const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Number(
+  process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 2 * 24 * 60 * 60
+);
+const MEDIA_ACCESS_TOKEN_QUERY_KEY = "sat";
+type SignedMediaKind = "image_id" | "video_uid" | "video_key" | "audio" | "document";
+
+const toBase64Url = (value: Buffer | string) =>
+  Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+
+const bufferFromBase64Url = (value: string) => {
+  const normalized = String(value ?? "")
+    .replace(/-/g, "+")
+    .replace(/_/g, "/");
+  const padding = normalized.length % 4 === 0 ? "" : "=".repeat(4 - (normalized.length % 4));
+  return Buffer.from(normalized + padding, "base64");
+};
+
+const getMediaAccessSigningSecret = () =>
+  String(
+    process.env.MEDIA_ACCESS_SIGNING_SECRET ??
+      process.env.JWT_SECRET ??
+      process.env.SECRETORPRIVATEKEY ??
+      ""
+  ).trim();
+
+const normalizeImageId = (value: any): string | null => {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^[a-zA-Z0-9._-]{6,255}$/.test(normalized)) return null;
+  return normalized;
+};
+
+const normalizeVideoUid = (value: any): string | null => {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^[a-f0-9]{32}$/i.test(normalized)) return null;
+  return normalized.toLowerCase();
+};
+
+const normalizeStorageKey = (value: any): string | null => {
+  const decoded = decodeURIComponent(String(value ?? "").trim());
+  if (!decoded) return null;
+  if (!/^[a-zA-Z0-9/_.,@-]{2,512}$/.test(decoded)) return null;
+  return decoded;
+};
+
+const buildMediaAccessToken = (kind: SignedMediaKind, resourceKey: string): string | null => {
+  const secret = getMediaAccessSigningSecret();
+  const key = String(resourceKey ?? "").trim();
+  if (!secret || !key) return null;
+  const exp = Math.floor(Date.now() / 1000) + MEDIA_ACCESS_TOKEN_TTL_SECONDS;
+  const payload = `${kind}:${key}:${exp}`;
+  const signature = createHmac("sha256", secret).update(payload).digest();
+  return `${exp}.${toBase64Url(signature)}`;
+};
+
+const validateMediaAccessToken = (
+  tokenValue: any,
+  kind: SignedMediaKind,
+  resourceKey: string
+): boolean => {
+  const secret = getMediaAccessSigningSecret();
+  if (!secret) return false;
+
+  const token = String(tokenValue ?? "").trim();
+  if (!token) return false;
+  const [expRaw, signatureRaw] = token.split(".");
+  if (!expRaw || !signatureRaw) return false;
+  const exp = Number(expRaw);
+  if (!Number.isFinite(exp)) return false;
+  if (exp <= Math.floor(Date.now() / 1000)) return false;
+
+  const payload = `${kind}:${resourceKey}:${exp}`;
+  const expectedSignature = createHmac("sha256", secret).update(payload).digest();
+  const providedSignature = bufferFromBase64Url(signatureRaw ?? "");
+  if (expectedSignature.length !== providedSignature.length) return false;
+  return timingSafeEqual(expectedSignature, providedSignature);
+};
+
+const rebuildUrlLikeInput = (rawUrl: string, parsed: URL): string => {
+  const trimmed = String(rawUrl ?? "").trim();
+  if (!trimmed) return trimmed;
+  const query = parsed.searchParams.toString();
+  const pathWithQuery = query ? `${parsed.pathname}?${query}` : parsed.pathname;
+  if (/^https?:\/\//i.test(trimmed)) {
+    return `${parsed.protocol}//${parsed.host}${pathWithQuery}`;
+  }
+  return pathWithQuery;
+};
+
+const ensureFreshMediaAccessToken = (
+  parsed: URL,
+  kind: SignedMediaKind,
+  resourceKey: string
+): boolean => {
+  const existing = String(parsed.searchParams.get(MEDIA_ACCESS_TOKEN_QUERY_KEY) ?? "").trim();
+  if (existing && validateMediaAccessToken(existing, kind, resourceKey)) return false;
+  const token = buildMediaAccessToken(kind, resourceKey);
+  if (!token) return false;
+  parsed.searchParams.set(MEDIA_ACCESS_TOKEN_QUERY_KEY, token);
+  return true;
+};
+
+const refreshSignedMediaUrl = (rawUrl: string): string => {
+  const trimmed = String(rawUrl ?? "").trim();
+  if (!trimmed) return trimmed;
+
+  try {
+    const parsed = new URL(trimmed, "http://local");
+    const pathname = String(parsed.pathname ?? "").trim().toLowerCase();
+
+    let kind: SignedMediaKind | null = null;
+    let resourceKey: string | null = null;
+
+    if (pathname === "/api/v1/media/image/play") {
+      kind = "image_id";
+      resourceKey = normalizeImageId(parsed.searchParams.get("id"));
+    } else if (pathname === "/api/v1/media/video/play") {
+      const key = normalizeStorageKey(parsed.searchParams.get("key"));
+      if (key) {
+        kind = "video_key";
+        resourceKey = key;
+      } else {
+        const uidRaw = String(parsed.searchParams.get("uid") ?? "").trim();
+        const uid = normalizeVideoUid(uidRaw);
+        if (uid) {
+          kind = "video_uid";
+          resourceKey = uid;
+        } else {
+          const fallbackKey = normalizeStorageKey(uidRaw);
+          if (fallbackKey) {
+            kind = "video_key";
+            resourceKey = fallbackKey;
+          }
+        }
+      }
+    } else if (pathname === "/api/v1/media/audio/play") {
+      kind = "audio";
+      resourceKey = normalizeStorageKey(parsed.searchParams.get("key"));
+    } else if (pathname === "/api/v1/media/document/download") {
+      kind = "document";
+      resourceKey = normalizeStorageKey(parsed.searchParams.get("key"));
+    }
+
+    if (!kind || !resourceKey) return trimmed;
+
+    const changed = ensureFreshMediaAccessToken(parsed, kind, resourceKey);
+    if (!changed) return rebuildUrlLikeInput(trimmed, parsed);
+    return rebuildUrlLikeInput(trimmed, parsed);
+  } catch {
+    return trimmed;
+  }
+};
+
+const refreshSavedPostMediaLinks = (post: any) => {
+  if (!post) return;
+
+  const setField = (row: any, field: "url" | "media_url", value: string) => {
+    if (!row) return;
+    if (typeof row?.setDataValue === "function") {
+      row.setDataValue(field, value);
+      return;
+    }
+    row[field] = value;
+  };
+
+  const mediaRows = Array.isArray((post as any)?.post_media) ? (post as any).post_media : [];
+  mediaRows.forEach((media: any) => {
+    const original = String(media?.url ?? "").trim();
+    if (!original) return;
+    const refreshed = refreshSignedMediaUrl(original);
+    if (refreshed !== original) setField(media, "url", refreshed);
+  });
+
+  const commentRows = Array.isArray((post as any)?.comments) ? (post as any).comments : [];
+  commentRows.forEach((comment: any) => {
+    const original = String(comment?.media_url ?? "").trim();
+    if (!original) return;
+    const refreshed = refreshSignedMediaUrl(original);
+    if (refreshed !== original) setField(comment, "media_url", refreshed);
+  });
+};
+
 const setSavedFlag = (post: any, value: boolean) => {
   if (!post) return;
   if (typeof post.setDataValue === "function") {
     post.setDataValue("is_saved", value);
+    post.setDataValue("isSaved", value);
+    post.setDataValue("saved", value);
     return;
   }
   post.is_saved = value;
+  post.isSaved = value;
+  post.saved = value;
 };
 
 const setSavedCount = (post: any, count: number) => {
@@ -253,6 +445,7 @@ const listSaved = async ({
     .map((postId) => postById.get(postId))
     .filter(Boolean);
 
+  orderedPosts.forEach((post: any) => refreshSavedPostMediaLinks(post));
   orderedPosts.forEach((post: any) => setSavedFlag(post, true));
   orderedPosts.forEach((post: any) => {
     setSavedCount(post, normalizeCounter((post as any)?.saves_count));

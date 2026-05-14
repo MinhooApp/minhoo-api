@@ -15,6 +15,12 @@ import {
   loadFindSessionState,
   saveFindSessionState,
 } from "../../libs/cache/find_session_store";
+import { extractHashtagsFromText } from "../../libs/hashtags";
+import {
+  attachHashtagsToRows,
+  normalizeHashtagsForContent,
+  syncHashtagsForContent,
+} from "../hashtag/hashtag_repository";
 
 const reelUserInclude = {
   model: User,
@@ -169,9 +175,29 @@ const ORBIT_NEW_CREATOR_EVERY = 6;
 const ORBIT_TOPK_SHUFFLE_WINDOW = 40;
 const ORBIT_PERSISTENT_FEED =
   String(process.env.ORBIT_PERSISTENT_FEED ?? "1").trim() !== "0";
+const ORBIT_AUTH_SESSION_BY_DEVICE =
+  String(process.env.ORBIT_AUTH_SESSION_BY_DEVICE ?? "0").trim() === "1";
+const ORBIT_SUMMARY_SESSION_STATE_ENABLED =
+  String(process.env.ORBIT_SUMMARY_SESSION_STATE_ENABLED ?? "0").trim() === "1";
+const ORBIT_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS = Math.max(
+  0,
+  Number(process.env.ORBIT_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS ?? 20000) || 20000
+);
+const ORBIT_FEED_TOTAL_COUNT_CACHE_TTL_MS = Math.max(
+  0,
+  Number(process.env.ORBIT_FEED_TOTAL_COUNT_CACHE_TTL_MS ?? 15000) || 15000
+);
 const REEL_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
   15,
   Number(process.env.REEL_REPORT_AUTO_DELETE_THRESHOLD ?? 15) || 15
+);
+const ORBIT_VIEW_DEDUPE_TTL_MS = Math.max(
+  0,
+  Number(process.env.ORBIT_VIEW_DEDUPE_TTL_MS ?? 120000) || 120000
+);
+const ORBIT_VIEW_DEDUPE_MAX_ENTRIES = Math.max(
+  1000,
+  Number(process.env.ORBIT_VIEW_DEDUPE_MAX_ENTRIES ?? 100000) || 100000
 );
 
 type OrbitBucket = "affinity" | "trending" | "social" | "exploration";
@@ -222,6 +248,106 @@ type OrbitCandidate = {
     lowQualityPenalty: number;
   };
   excludedReason?: string;
+};
+
+type FeedTotalCountCacheEntry = {
+  count: number;
+  expiresAtMs: number;
+};
+
+type OrbitViewerContextCacheEntry = {
+  context: OrbitViewerContext;
+  expiresAtMs: number;
+};
+type OrbitViewDedupeEntry = {
+  expiresAtMs: number;
+};
+
+const orbitFeedTotalCountCache = new Map<string, FeedTotalCountCacheEntry>();
+const orbitViewerContextCache = new Map<number, OrbitViewerContextCacheEntry>();
+const orbitViewDedupeCache = new Map<string, OrbitViewDedupeEntry>();
+
+const readCachedOrbitFeedTotalCount = (key: string): number | null => {
+  if (!key || ORBIT_FEED_TOTAL_COUNT_CACHE_TTL_MS <= 0) return null;
+  const cached = orbitFeedTotalCountCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAtMs <= Date.now()) {
+    orbitFeedTotalCountCache.delete(key);
+    return null;
+  }
+  return Number.isFinite(cached.count) ? Math.max(0, Math.floor(cached.count)) : null;
+};
+
+const writeCachedOrbitFeedTotalCount = (key: string, count: number) => {
+  if (!key || ORBIT_FEED_TOTAL_COUNT_CACHE_TTL_MS <= 0) return;
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  orbitFeedTotalCountCache.set(key, {
+    count: safeCount,
+    expiresAtMs: Date.now() + ORBIT_FEED_TOTAL_COUNT_CACHE_TTL_MS,
+  });
+};
+
+const cloneOrbitViewerContext = (context: OrbitViewerContext): OrbitViewerContext => ({
+  followedCreatorIds: new Set<number>(Array.from(context.followedCreatorIds.values())),
+  interestLabels: new Set<string>(Array.from(context.interestLabels.values())),
+});
+
+const readCachedOrbitViewerContext = (viewerId: number | null): OrbitViewerContext | null => {
+  if (!viewerId || ORBIT_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS <= 0) return null;
+  const cached = orbitViewerContextCache.get(viewerId);
+  if (!cached) return null;
+  if (cached.expiresAtMs <= Date.now()) {
+    orbitViewerContextCache.delete(viewerId);
+    return null;
+  }
+  return cloneOrbitViewerContext(cached.context);
+};
+
+const writeCachedOrbitViewerContext = (viewerId: number | null, context: OrbitViewerContext) => {
+  if (!viewerId || ORBIT_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS <= 0) return;
+  orbitViewerContextCache.set(viewerId, {
+    context: cloneOrbitViewerContext(context),
+    expiresAtMs: Date.now() + ORBIT_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS,
+  });
+};
+
+const readOrbitViewDedupe = (key: string): boolean => {
+  if (!key || ORBIT_VIEW_DEDUPE_TTL_MS <= 0) return false;
+  const cached = orbitViewDedupeCache.get(key);
+  if (!cached) return false;
+  if (cached.expiresAtMs <= Date.now()) {
+    orbitViewDedupeCache.delete(key);
+    return false;
+  }
+  return true;
+};
+
+const pruneOrbitViewDedupeCache = () => {
+  if (orbitViewDedupeCache.size < ORBIT_VIEW_DEDUPE_MAX_ENTRIES) return;
+
+  const now = Date.now();
+  for (const [key, value] of orbitViewDedupeCache.entries()) {
+    if (value.expiresAtMs <= now) {
+      orbitViewDedupeCache.delete(key);
+    }
+  }
+  if (orbitViewDedupeCache.size < ORBIT_VIEW_DEDUPE_MAX_ENTRIES) return;
+
+  const overflow = orbitViewDedupeCache.size - ORBIT_VIEW_DEDUPE_MAX_ENTRIES + 1;
+  let removed = 0;
+  for (const key of orbitViewDedupeCache.keys()) {
+    orbitViewDedupeCache.delete(key);
+    removed += 1;
+    if (removed >= overflow) break;
+  }
+};
+
+const writeOrbitViewDedupe = (key: string) => {
+  if (!key || ORBIT_VIEW_DEDUPE_TTL_MS <= 0) return;
+  pruneOrbitViewDedupeCache();
+  orbitViewDedupeCache.set(key, {
+    expiresAtMs: Date.now() + ORBIT_VIEW_DEDUPE_TTL_MS,
+  });
 };
 
 const isTruthy = (value: any) => {
@@ -574,6 +700,20 @@ const mapWithFlagAliases = (rows: any[]) => {
   return rows.map((row) => withFlagAliases(row));
 };
 
+const applyReelHashtags = async (rows: any[]) => {
+  await attachHashtagsToRows({
+    rows: Array.isArray(rows) ? rows : [],
+    contentType: "reel",
+  });
+};
+
+const applyReelCommentHashtags = async (rows: any[]) => {
+  await attachHashtagsToRows({
+    rows: Array.isArray(rows) ? rows : [],
+    contentType: "reel_comment",
+  });
+};
+
 const setInteractionFlags = (
   reel: any,
   {
@@ -761,8 +901,12 @@ const buildOrbitSessionMemoryKey = (
   sessionTokenRaw: any
 ) => {
   const sessionToken = normalizeSessionToken(sessionTokenRaw);
-  if (viewerId && sessionToken) return `u:${viewerId}:${sessionToken}`;
-  if (viewerId) return `u:${viewerId}`;
+  if (viewerId) {
+    // Default to per-user persistence so Orbit continuity survives app/server restarts
+    // even when clients rotate volatile session_key values.
+    if (ORBIT_AUTH_SESSION_BY_DEVICE && sessionToken) return `u:${viewerId}:${sessionToken}`;
+    return `u:${viewerId}`;
+  }
   if (sessionToken) return `a:${sessionToken}`;
   return "";
 };
@@ -877,8 +1021,9 @@ const extractReelTopicKeys = (reel: any): string[] => {
   ];
   const labels = toUniqueTextTokens(labelValues);
 
-  const hashtagMatches = String(reel?.description ?? "").match(/#[a-z0-9_]+/gi) ?? [];
-  const hashtags = hashtagMatches.map((tag) => normalizeTextToken(String(tag).replace(/^#/, "")));
+  const hashtags = extractHashtagsFromText(String(reel?.description ?? "")).map((tag) =>
+    normalizeTextToken(tag)
+  );
 
   const mediaType = normalizeTextToken(
     metadata?.media_type ?? metadata?.mediaType ?? normalizeMediaType(reel)
@@ -1000,10 +1145,9 @@ const fetchOrbitCandidatePool = async ({
   summary?: boolean;
 }) => {
   const pageFactor = Math.max(1, page + 1);
-  const basePoolSize = Math.min(
-    380,
-    Math.max(80, size * 8, pageFactor * size * 6)
-  );
+  const basePoolSize = summary
+    ? Math.min(240, Math.max(60, size * 6, pageFactor * size * 4))
+    : Math.min(380, Math.max(80, size * 8, pageFactor * size * 6));
   const trendingPoolSize = Math.max(size * 3, Math.floor(basePoolSize * 0.55));
   const socialPoolSize = Math.max(size * 3, Math.floor(basePoolSize * 0.45));
   const explorationPoolSize = Math.max(size * 2, Math.floor(basePoolSize * 0.35));
@@ -1717,7 +1861,18 @@ const recountComments = async (reelId: number) => {
 };
 
 export const createReel = async (body: any) => {
-  return Reel.create(body);
+  const hashtags = normalizeHashtagsForContent({
+    text: body?.description,
+    hashtagsRaw: body?.hashtags,
+  });
+  const reel = await Reel.create(body);
+  const hashtagEntries = await syncHashtagsForContent({
+    contentType: "reel",
+    contentId: (reel as any)?.id,
+    tags: hashtags,
+  });
+  setDataValue(reel, "hashtags", hashtagEntries);
+  return reel;
 };
 
 export const listFeed = async (
@@ -1730,35 +1885,59 @@ export const listFeed = async (
   const profiler = createOrbitFindProfiler();
   const page = normalizePage(pageRaw, 0);
   const size = normalizeLimit(sizeRaw, 15, 40);
+  const summary = Boolean(options.summary);
   const viewerId = normalizeUserId(viewerIdRaw);
   const sessionToken = normalizeSessionToken(options?.sessionKey);
-  const sessionMemoryKey = buildOrbitSessionMemoryKey(viewerId, sessionToken);
-  const sessionLoadStartedAtMs = nowMs();
-  const {
-    state: sessionState,
-    backend: sessionLoadBackend,
-  } = await getOrbitSessionState(sessionMemoryKey);
-  profiler.sessionLoadMs = nowMs() - sessionLoadStartedAtMs;
+  const useSessionState = !summary || ORBIT_SUMMARY_SESSION_STATE_ENABLED;
+  const sessionMemoryKey = useSessionState
+    ? buildOrbitSessionMemoryKey(viewerId, sessionToken)
+    : "";
+  let sessionState = buildEmptyOrbitSessionState();
+  let sessionLoadBackend: "redis" | "memory" = "memory";
+  if (useSessionState) {
+    const sessionLoadStartedAtMs = nowMs();
+    const loaded = await getOrbitSessionState(sessionMemoryKey);
+    sessionState = loaded.state;
+    sessionLoadBackend = loaded.backend;
+    profiler.sessionLoadMs = nowMs() - sessionLoadStartedAtMs;
+  }
   profiler.sessionLoadBackend = sessionLoadBackend;
   const start = page * size;
   const end = start + size;
   const desiredCount = Math.max(end, size);
 
   const where = buildFeedWhere(viewerId);
+  const totalCountCacheKey = summary
+    ? `s:${suggested ? 1 : 0}:v:${viewerId ?? 0}`
+    : "";
+  const cachedTotalCount = totalCountCacheKey
+    ? readCachedOrbitFeedTotalCount(totalCountCacheKey)
+    : null;
+  const cachedViewerContext = summary ? readCachedOrbitViewerContext(viewerId) : null;
   const [totalCount, viewerContext, recentlyViewedSet] = await Promise.all([
-    withOrbitDbProfile(profiler, "reels.count(feed_total)", () =>
-      Reel.count({
-        where,
-        replacements: { meId: viewerId ?? -1 },
-        distinct: true,
-        col: "id",
-      } as any)
-    ),
-    loadOrbitViewerContext(viewerId, profiler),
-    ORBIT_PERSISTENT_FEED
+    cachedTotalCount !== null
+      ? Promise.resolve(cachedTotalCount)
+      : withOrbitDbProfile(profiler, "reels.count(feed_total)", () =>
+          Reel.count({
+            where,
+            replacements: { meId: viewerId ?? -1 },
+            distinct: true,
+            col: "id",
+          } as any)
+        ),
+    cachedViewerContext
+      ? Promise.resolve(cachedViewerContext)
+      : loadOrbitViewerContext(viewerId, profiler),
+    ORBIT_PERSISTENT_FEED || !useSessionState
       ? Promise.resolve(new Set<number>())
       : loadRecentlyViewedOrbitIds(viewerId, sessionToken, profiler),
   ]);
+  if (cachedTotalCount === null && totalCountCacheKey) {
+    writeCachedOrbitFeedTotalCount(totalCountCacheKey, Number(totalCount || 0));
+  }
+  if (!cachedViewerContext && summary && viewerId) {
+    writeCachedOrbitViewerContext(viewerId, viewerContext);
+  }
 
   const candidateRows = await fetchOrbitCandidatePool({
     where,
@@ -1767,7 +1946,7 @@ export const listFeed = async (
     page,
     followedCreatorIds: viewerContext.followedCreatorIds,
     profiler,
-    summary: Boolean(options.summary),
+    summary,
   });
 
   const rerankStartedAtMs = nowMs();
@@ -1828,17 +2007,21 @@ export const listFeed = async (
   profiler.rerankMs = nowMs() - rerankStartedAtMs;
   const pageRows = pageCandidates.map((candidate) => candidate.row);
 
+  await attachInteractionFlags(viewerId, pageRows, profiler);
+  await applyReelHashtags(pageRows);
   if (!options.summary) {
-    await attachInteractionFlags(viewerId, pageRows, profiler);
     await attachUserOrbitRing(pageRows, profiler);
   }
-  const sessionSaveStartedAtMs = nowMs();
-  const sessionSaveBackend = await updateOrbitSessionState(
-    sessionMemoryKey,
-    sessionState,
-    pageRows
-  );
-  profiler.sessionSaveMs = nowMs() - sessionSaveStartedAtMs;
+  let sessionSaveBackend: "redis" | "memory" = "memory";
+  if (useSessionState) {
+    const sessionSaveStartedAtMs = nowMs();
+    sessionSaveBackend = await updateOrbitSessionState(
+      sessionMemoryKey,
+      sessionState,
+      pageRows
+    );
+    profiler.sessionSaveMs = nowMs() - sessionSaveStartedAtMs;
+  }
   profiler.sessionSaveBackend = sessionSaveBackend;
   logOrbitFindDebug({
     viewerId,
@@ -1865,7 +2048,7 @@ export const listFeed = async (
     page,
     size,
     count: Number(totalCount || 0),
-    rows: options.summary ? pageRows : mapWithFlagAliases(pageRows),
+    rows: summary ? pageRows : mapWithFlagAliases(pageRows),
   };
 };
 
@@ -1888,6 +2071,7 @@ export const listMine = async (userIdRaw: any, pageRaw: any, sizeRaw: any) => {
   });
 
   await attachInteractionFlags(userId, reels.rows);
+  await applyReelHashtags(reels.rows);
   await attachUserOrbitRing(reels.rows);
 
   return {
@@ -2043,6 +2227,7 @@ export const listByUser = async (
   });
 
   await attachInteractionFlags(viewerId, reels.rows);
+  await applyReelHashtags(reels.rows);
   await attachUserOrbitRing(reels.rows);
 
   return {
@@ -2089,6 +2274,7 @@ export const getById = async (idRaw: any, viewerIdRaw: any) => {
 
   if (!reel) return null;
   await attachInteractionFlags(viewerId, [reel]);
+  await applyReelHashtags([reel]);
   await attachUserOrbitRing([reel]);
   return withFlagAliases(reel);
 };
@@ -2242,6 +2428,7 @@ export const toggleStar = async (userIdRaw: any, idRaw: any) => {
   const likes_count = await recountLikes(reelId);
   const updatedReel = await Reel.findByPk(reelId, { include: [reelUserInclude] });
   await attachInteractionFlags(userId, updatedReel ? [updatedReel] : []);
+  await applyReelHashtags(updatedReel ? [updatedReel] : []);
   await attachUserOrbitRing(updatedReel ? [updatedReel] : []);
 
   return { notFound: false, starred, likes_count, reel: withFlagAliases(updatedReel) };
@@ -2266,6 +2453,7 @@ export const saveReel = async (userIdRaw: any, idRaw: any) => {
   const saves_count = await recountSaves(reelId);
   const updatedReel = await Reel.findByPk(reelId, { include: [reelUserInclude] });
   await attachInteractionFlags(userId, updatedReel ? [updatedReel] : []);
+  await applyReelHashtags(updatedReel ? [updatedReel] : []);
   await attachUserOrbitRing(updatedReel ? [updatedReel] : []);
 
   return {
@@ -2294,6 +2482,7 @@ export const unsaveReel = async (userIdRaw: any, idRaw: any) => {
 
   const updatedReel = await Reel.findByPk(reelId, { include: [reelUserInclude] });
   await attachInteractionFlags(userId, updatedReel ? [updatedReel] : []);
+  await applyReelHashtags(updatedReel ? [updatedReel] : []);
   await attachUserOrbitRing(updatedReel ? [updatedReel] : []);
 
   return {
@@ -2339,6 +2528,7 @@ export const listSaved = async (userIdRaw: any, pageRaw: any, sizeRaw: any) => {
     .filter((row: any) => !!row);
 
   await attachInteractionFlags(userId, rows);
+  await applyReelHashtags(rows);
   await attachUserOrbitRing(rows);
   rows.forEach((row: any) => setInteractionFlags(row, { isStarred: Boolean((row as any)?.is_starred), isSaved: true }));
 
@@ -2348,6 +2538,44 @@ export const listSaved = async (userIdRaw: any, pageRaw: any, sizeRaw: any) => {
     count: Number(saves.count || 0),
     rows: mapWithFlagAliases(rows),
   };
+};
+
+const buildCompactViewReelPayload = (
+  reel: any,
+  reelId: number,
+  viewsCountRaw: any
+) => {
+  const viewsCount = toNonNegativeInt(viewsCountRaw);
+  return {
+    id: reelId,
+    userId: Number((reel as any)?.userId ?? 0) || null,
+    likes_count: toNonNegativeInt((reel as any)?.likes_count),
+    likesCount: toNonNegativeInt((reel as any)?.likes_count),
+    comments_count: toNonNegativeInt((reel as any)?.comments_count),
+    commentsCount: toNonNegativeInt((reel as any)?.comments_count),
+    shares_count: toNonNegativeInt((reel as any)?.shares_count),
+    sharesCount: toNonNegativeInt((reel as any)?.shares_count),
+    saves_count: toNonNegativeInt((reel as any)?.saves_count),
+    savesCount: toNonNegativeInt((reel as any)?.saves_count),
+    views_count: viewsCount,
+    viewsCount,
+  };
+};
+
+const buildOrbitViewDedupeKey = ({
+  reelId,
+  userId,
+  sessionKey,
+  viewedDate,
+}: {
+  reelId: number;
+  userId: number | null;
+  sessionKey: string;
+  viewedDate: string;
+}) => {
+  if (userId) return `u:${userId}:${reelId}:${viewedDate}`;
+  if (sessionKey) return `s:${sessionKey}:${reelId}:${viewedDate}`;
+  return "";
 };
 
 export const recordView = async (
@@ -2360,54 +2588,90 @@ export const recordView = async (
     return { found: false, counted: false, reel: null };
   }
 
-  const reel = await Reel.findOne({ where: { id: reelId, is_delete: false } });
+  const reel = await Reel.findOne({
+    where: { id: reelId, is_delete: false },
+    attributes: [
+      "id",
+      "userId",
+      "views_count",
+      "likes_count",
+      "comments_count",
+      "shares_count",
+      "saves_count",
+    ],
+  });
   if (!reel) return { found: false, counted: false, reel: null };
 
   const userId = normalizeUserId(userIdRaw);
   const sessionKey = String(sessionKeyRaw ?? "").trim();
   const viewedDate = new Date().toISOString().slice(0, 10);
+  const baseViewsCount = toNonNegativeInt((reel as any)?.views_count);
+  const viewDedupeKey = buildOrbitViewDedupeKey({
+    reelId,
+    userId,
+    sessionKey,
+    viewedDate,
+  });
+
+  if (readOrbitViewDedupe(viewDedupeKey)) {
+    const compactReel = buildCompactViewReelPayload(reel, reelId, baseViewsCount);
+    return { found: true, counted: false, views_count: baseViewsCount, reel: compactReel };
+  }
 
   let created = false;
 
   if (userId) {
-    const [, wasCreated] = await ReelView.findOrCreate({
-      where: { reelId, userId, viewed_date: viewedDate },
-      defaults: {
+    try {
+      await ReelView.create({
         reelId,
         userId,
         session_key: sessionKey || null,
         viewed_date: viewedDate,
-      },
-    });
-    created = wasCreated;
+      });
+      created = true;
+    } catch (error: any) {
+      if (error instanceof UniqueConstraintError) {
+        created = false;
+      } else {
+        throw error;
+      }
+    }
   } else {
     if (!sessionKey) {
-      const updated = await Reel.findByPk(reelId, { include: [reelUserInclude] });
-      await attachInteractionFlags(userId, updated ? [updated] : []);
-      await attachUserOrbitRing(updated ? [updated] : []);
-      return { found: true, counted: false, reel: withFlagAliases(updated) };
+      const compactReel = buildCompactViewReelPayload(reel, reelId, baseViewsCount);
+      return { found: true, counted: false, views_count: baseViewsCount, reel: compactReel };
     }
 
-    const [, wasCreated] = await ReelView.findOrCreate({
-      where: { reelId, session_key: sessionKey, viewed_date: viewedDate },
-      defaults: {
+    try {
+      await ReelView.create({
         reelId,
         userId: null,
         session_key: sessionKey,
         viewed_date: viewedDate,
-      },
-    });
-    created = wasCreated;
+      });
+      created = true;
+    } catch (error: any) {
+      if (error instanceof UniqueConstraintError) {
+        created = false;
+      } else {
+        throw error;
+      }
+    }
   }
 
+  if (viewDedupeKey) {
+    writeOrbitViewDedupe(viewDedupeKey);
+  }
+
+  let viewsCount = baseViewsCount;
   if (created) {
     await Reel.increment({ views_count: 1 }, { where: { id: reelId } });
+    const refreshed = await Reel.findByPk(reelId, { attributes: ["views_count"] });
+    viewsCount = toNonNegativeInt((refreshed as any)?.views_count ?? baseViewsCount + 1);
   }
 
-  const updated = await Reel.findByPk(reelId, { include: [reelUserInclude] });
-  await attachInteractionFlags(userId, updated ? [updated] : []);
-  await attachUserOrbitRing(updated ? [updated] : []);
-  return { found: true, counted: created, reel: withFlagAliases(updated) };
+  const compactReel = buildCompactViewReelPayload(reel, reelId, viewsCount);
+  return { found: true, counted: created, views_count: viewsCount, reel: compactReel };
 };
 
 export const shareReel = async (idRaw: any, viewerIdRaw: any) => {
@@ -2422,6 +2686,7 @@ export const shareReel = async (idRaw: any, viewerIdRaw: any) => {
   await Reel.increment({ shares_count: 1 }, { where: { id: reelId } });
   const updated = await Reel.findByPk(reelId, { include: [reelUserInclude] });
   await attachInteractionFlags(viewerIdRaw, updated ? [updated] : []);
+  await applyReelHashtags(updated ? [updated] : []);
   await attachUserOrbitRing(updated ? [updated] : []);
 
   return { found: true, reel: withFlagAliases(updated) };
@@ -2430,6 +2695,10 @@ export const shareReel = async (idRaw: any, viewerIdRaw: any) => {
 export const addComment = async (idRaw: any, userIdRaw: any, body: any) => {
   const reelId = Number(idRaw);
   const userId = normalizeUserId(userIdRaw);
+  const hashtags = normalizeHashtagsForContent({
+    text: body?.comment,
+    hashtagsRaw: body?.hashtags,
+  });
   if (!Number.isFinite(reelId) || reelId <= 0 || !userId) {
     return { notFound: true, comment: null, comments_count: 0, reelUserId: 0 };
   }
@@ -2446,6 +2715,12 @@ export const addComment = async (idRaw: any, userIdRaw: any, body: any) => {
   };
 
   const comment = await ReelComment.create(payload);
+  const hashtagEntries = await syncHashtagsForContent({
+    contentType: "reel_comment",
+    contentId: (comment as any)?.id,
+    tags: hashtags,
+  });
+  setDataValue(comment, "hashtags", hashtagEntries);
   const comments_count = await recountComments(reelId);
 
   const hydrated = await ReelComment.findByPk(comment.id, {
@@ -2457,6 +2732,9 @@ export const addComment = async (idRaw: any, userIdRaw: any, body: any) => {
       },
     ],
   });
+  if (hydrated) {
+    await applyReelCommentHashtags([hydrated]);
+  }
 
   return {
     notFound: false,
@@ -2495,6 +2773,8 @@ export const listComments = async (idRaw: any, pageRaw: any, sizeRaw: any) => {
     offset: page * size,
     distinct: true,
   });
+
+  await applyReelCommentHashtags(comments.rows);
 
   return {
     notFound: false,

@@ -13,6 +13,7 @@ import {
   uploadImageBufferToCloudflare,
 } from "../../_utils/cloudflare_images";
 import { formatRelativeTime } from "../../../libs/localization/relative_time";
+import { isHashtagValidationError, sendHashtagError } from "../../../libs/hashtags";
 
 const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 const uploadCommentMedia = multer({
@@ -218,6 +219,14 @@ export const add = async (req: Request, res: Response) => {
 
         return await createComment(req, res);
       } catch (error: any) {
+        if (isHashtagValidationError(error)) {
+          return sendHashtagError(
+            res,
+            error.status ?? 400,
+            error.code,
+            error.message
+          );
+        }
         return formatResponse({
           res,
           success: false,
@@ -226,6 +235,14 @@ export const add = async (req: Request, res: Response) => {
       }
     });
   } catch (e) {
+    if (isHashtagValidationError(e)) {
+      return sendHashtagError(
+        res,
+        e.status ?? 400,
+        e.code,
+        e.message
+      );
+    }
     return formatResponse({ res, success: false, message: e });
   }
 };

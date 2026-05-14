@@ -1,5 +1,6 @@
 // src/_sockets/socket_controller.ts
 import { Socket } from "socket.io";
+import { getSocketInstance } from "./socket_instance";
 import Service from "../_models/service/service";
 import Message from "../_models/chat/message";
 import Chat_User from "../_models/chat/chat_user";
@@ -10,6 +11,8 @@ import jwt from "jsonwebtoken";
 import { sendNotification } from "../useCases/notification/add/add";
 import { createInMemoryRateLimiter, RateLimitResult } from "../libs/security/inmemory_rate_limiter";
 import { isUserAuthSessionActive } from "../libs/auth/user_auth_session";
+import * as followerRepository from "../repository/follower/follower_repository";
+import { emitUserUpdatedRealtime } from "../libs/helper/realtime_dispatch";
 import {
   decrementUnreadCountForChatUser,
   resetUnreadCountForChatUser,
@@ -59,6 +62,7 @@ type ReactionMap = Record<string, number[]>;
 const chatRoom = (chatId: number) => `chat_${chatId}`;
 const userRoom = (userId: number) => `user_${userId}`;
 const AUTHENTICATED_USERS_ROOM = "auth_users";
+const COMPAT_NAMESPACES = ["/", "/api", "/api/v1"] as const;
 const CHAT_ROOM_REGEX = /^chat_\d+$/;
 const parsePositiveIntEnv = (value: any, fallback: number, min = 1): number => {
   const parsed = Number(value);
@@ -93,6 +97,9 @@ const SOCKET_JWT_GRACE_DAYS = Math.max(
 );
 const SOCKET_JWT_GRACE_MS = SOCKET_JWT_GRACE_DAYS * 24 * 60 * 60 * 1000;
 const SESSION_VALIDATION_TTL_MS = 15 * 1000;
+// Interval at which long-running sockets re-validate their token against the DB.
+// Catches revoked/disabled accounts without waiting for the next event.
+const SOCKET_REVALIDATION_INTERVAL_MS = 15 * 60 * 1000; // 15 min
 const EMIT_REELS_EVENT_ON_REEL_DELETE =
   String(process.env.EMIT_REELS_EVENT_ON_REEL_DELETE ?? "1").trim() === "1";
 const EMIT_POSTS_EVENT_ON_POST_ACTIVITY =
@@ -202,8 +209,64 @@ const emitToAllAuthenticatedUsers = (
   emitToUserIds(socket, event, payload, connectedUserIds, excluded);
 };
 
+const emitToAllAuthenticatedUsersCompat = (
+  event: string,
+  payload: any
+) => {
+  const io = getSocketInstance();
+  if (!io) return;
+  for (const namespace of COMPAT_NAMESPACES) {
+    io.of(namespace).to(AUTHENTICATED_USERS_ROOM).emit(event, payload);
+  }
+};
+
+const emitToUserIdsCompat = (
+  event: string,
+  payload: any,
+  userIds: Array<number | string | null | undefined>
+) => {
+  const io = getSocketInstance();
+  if (!io) return;
+  const targets = toUniquePositiveIds(userIds);
+  if (!targets.length) return;
+  for (const namespace of COMPAT_NAMESPACES) {
+    const nsp = io.of(namespace);
+    for (const uid of targets) {
+      nsp.to(userRoom(uid)).emit(event, payload);
+    }
+  }
+};
+
 const extractOfferTargetUserIds = (normalized: any): number[] => {
+  const serviceOffers = Array.isArray(normalized?.service?.offers)
+    ? normalized.service.offers
+    : [];
+  const serviceWorkers = Array.isArray(normalized?.service?.workers)
+    ? normalized.service.workers
+    : [];
+
+  const workerUserIdsFromOffers = serviceOffers.map((offer: any) => {
+    return (
+      offer?.offerer?.personal_data?.id ??
+      offer?.offerer?.userId ??
+      offer?.offerer?.user_id ??
+      offer?.user?.id ??
+      offer?.userId ??
+      offer?.user_id
+    );
+  });
+  const workerUserIdsFromWorkers = serviceWorkers.map((worker: any) => {
+    return (
+      worker?.personal_data?.id ??
+      worker?.user?.id ??
+      worker?.userId ??
+      worker?.user_id
+    );
+  });
+
   return toUniquePositiveIds(
+    normalized?.targetUserIds,
+    normalized?.target_user_ids,
     normalized?.ownerUserId,
     normalized?.owner_user_id,
     normalized?.service?.userId,
@@ -212,7 +275,9 @@ const extractOfferTargetUserIds = (normalized: any): number[] => {
     normalized?.offer?.offerer?.userId,
     normalized?.offer?.offerer?.user_id,
     normalized?.offer?.offerer?.personal_data?.id,
-    normalized?.offer?.user?.id
+    normalized?.offer?.user?.id,
+    workerUserIdsFromOffers,
+    workerUserIdsFromWorkers
   );
 };
 
@@ -971,7 +1036,14 @@ function normalizeOfferRealtimePayload(payload: any) {
     source.workerId ?? source.worker_id ?? offerSource?.workerId ?? offerSource?.worker_id
   );
   const offersCount = normalizePositiveInt(
-    source.offersCount ?? source.offers_count
+    source.offersCount ??
+      source.offers_count ??
+      source.applicantsCount ??
+      source.applicants_count ??
+      serviceSource?.offersCount ??
+      serviceSource?.offers_count ??
+      serviceSource?.applicantsCount ??
+      serviceSource?.applicants_count
   );
   const actionRaw = String(source.action ?? "updated").trim().toLowerCase();
   const action =
@@ -999,10 +1071,16 @@ function normalizeOfferRealtimePayload(payload: any) {
     worker_id: workerId || null,
     offersCount: offersCount || null,
     offers_count: offersCount || null,
+    applicantsCount: offersCount || null,
+    applicants_count: offersCount || null,
     updatedAt,
     updated_at: updatedAt,
     offer: offerSource ?? null,
     service: serviceSource ?? null,
+    targetUserIds:
+      Array.isArray(source.targetUserIds) || Array.isArray(source.target_user_ids)
+        ? toUniquePositiveIds(source.targetUserIds ?? source.target_user_ids)
+        : undefined,
     refreshLists: Array.isArray(source.refreshLists) ? source.refreshLists : undefined,
   };
 }
@@ -1032,7 +1110,9 @@ function buildStatusPayload(params: {
     id: messageId,
     status,
     deliveredAt: deliveredAt ?? null,
+    delivered_at: deliveredAt ?? null,
     readAt: readAt ?? null,
+    read_at: readAt ?? null,
   };
 }
 
@@ -1527,6 +1607,78 @@ function addUnique(arr: number[], id: number) {
   if (!arr.includes(id)) arr.push(id);
 }
 
+const emitCurrentUserSnapshot = async (
+  userIdRaw: any,
+  source: "handshake" | "bind-user"
+) => {
+  const userId = normalizePositiveInt(userIdRaw);
+  if (!userId) return;
+
+  try {
+    const [user, counts] = await Promise.all([
+      User.findOne({
+        where: { id: userId, available: true, disabled: false, is_deleted: false },
+        attributes: [
+          "id",
+          "name",
+          "last_name",
+          "username",
+          "image_profil",
+          "profile_verified",
+          "profile_verification_status",
+        ],
+        raw: true,
+      }),
+      followerRepository.getCounts(userId).catch(() => ({
+        followersCount: 0,
+        followingCount: 0,
+      })),
+    ]);
+
+    if (!user) return;
+
+    const profileVerified = Boolean((user as any)?.profile_verified ?? false);
+    const profileVerificationStatus = String(
+      (user as any)?.profile_verification_status ?? "unverified"
+    )
+      .trim()
+      .toLowerCase();
+    const followersCount = Number((counts as any)?.followersCount ?? 0) || 0;
+    const followingCount = Number((counts as any)?.followingCount ?? 0) || 0;
+
+    const payload = {
+      type: "user_updated" as const,
+      action: "socket_state_sync" as const,
+      source,
+      userId,
+      name: String((user as any)?.name ?? "").trim() || null,
+      lastName: String((user as any)?.last_name ?? "").trim() || null,
+      last_name: String((user as any)?.last_name ?? "").trim() || null,
+      username: String((user as any)?.username ?? "").trim() || null,
+      avatarUrl: String((user as any)?.image_profil ?? "").trim() || null,
+      avatar_url: String((user as any)?.image_profil ?? "").trim() || null,
+      image_profil: String((user as any)?.image_profil ?? "").trim() || null,
+      followersCount,
+      followers_count: followersCount,
+      followingCount,
+      following_count: followingCount,
+      followingsCount: followingCount,
+      followings_count: followingCount,
+      profile_verified: profileVerified,
+      profileVerified: profileVerified,
+      verified_badge: profileVerified,
+      is_verified_profile: profileVerified,
+      profile_verification_status: profileVerificationStatus,
+      profileVerificationStatus: profileVerificationStatus,
+      updatedAt: new Date().toISOString(),
+    };
+
+    emitUserUpdatedRealtime(payload, [userId]);
+  } catch (error) {
+    console.error("[socket] failed to emit current user snapshot", error);
+  }
+};
+
 export const socketController = (socket: Socket) => {
   console.log(`Cliente conectado ${socket.id}`);
 
@@ -1554,7 +1706,10 @@ export const socketController = (socket: Socket) => {
     if ((socket.data as any).authenticatedByToken) {
       void (async () => {
         const validSession = await validateSocketSession(socket);
-        if (validSession) return;
+        if (validSession) {
+          await emitCurrentUserSnapshot(handshakeUserId, "handshake");
+          return;
+        }
 
         socket.leave(userRoom(handshakeUserId));
         socket.leave(AUTHENTICATED_USERS_ROOM);
@@ -1568,6 +1723,8 @@ export const socketController = (socket: Socket) => {
       })().catch((err) => {
         console.log("❌ handshake session validation error", err);
       });
+    } else {
+      void emitCurrentUserSnapshot(handshakeUserId, "handshake");
     }
   } else {
     socket.leave(AUTHENTICATED_USERS_ROOM);
@@ -1642,18 +1799,43 @@ export const socketController = (socket: Socket) => {
         `[socket] bind userId=${resolvedUserId} source=bind-user tokenAuth=${tokenAuthenticated} socket=${socket.id}`
       );
       socket.emit("bind-user:ok", { userId: resolvedUserId });
+      void emitCurrentUserSnapshot(resolvedUserId, "bind-user");
     } catch (e) {
       console.log("❌ bind-user error", e);
     }
   });
 
+  // Periodic re-validation: catches revoked/disabled accounts on long-running connections.
+  // Interval is cleared immediately on disconnect to prevent memory leaks.
+  const revalidationTimer = setInterval(() => {
+    const isTokenAuth = Boolean((socket.data as any)?.authenticatedByToken);
+    if (!isTokenAuth || !socket.connected) return;
+
+    // Force re-check against DB by clearing the cached validation timestamp
+    (socket.data as any).sessionValidated = false;
+    (socket.data as any).sessionValidatedAt = 0;
+
+    void validateSocketSession(socket).then((valid) => {
+      if (valid) return;
+      const uid = getSocketUserId(socket);
+      console.log(
+        `[socket] periodic revalidation failed — disconnecting socket=${socket.id} userId=${uid}`
+      );
+      socket.emit("auth:error", { event: "revalidation", code: "SESSION_EXPIRED" });
+      socket.disconnect(true);
+    }).catch((err) => {
+      console.error("[socket] periodic revalidation error", err);
+    });
+  }, SOCKET_REVALIDATION_INTERVAL_MS);
+
   socket.on("disconnect", () => {
+    clearInterval(revalidationTimer);
     console.log(`Cliente desconectado ${socket.id}`);
   });
 
   ////////////////////// Services ////////////////////////
   socket.on("services", (service: Service) => {
-    emitToAllAuthenticatedUsers(socket, "services", service);
+    emitToAllAuthenticatedUsersCompat("services", service);
   });
 
   ////////////////////// Offer ///////////////////////////
@@ -1669,16 +1851,16 @@ export const socketController = (socket: Socket) => {
       console.log(
         `[realtime-offers] action=${action} serviceId=${normalized.serviceId} mode=targeted targets=${targetUserIds.join(",")}`
       );
-      emitToUserIds(socket, globalEvent, normalized, targetUserIds);
-      emitToUserIds(socket, scopedEvent, normalized, targetUserIds);
+      emitToUserIdsCompat(globalEvent, normalized, targetUserIds);
+      emitToUserIdsCompat(scopedEvent, normalized, targetUserIds);
       return;
     }
 
     console.log(
       `[realtime-offers] action=${action} serviceId=${normalized.serviceId} mode=broadcast targets=all`
     );
-    emitToAllAuthenticatedUsers(socket, globalEvent, normalized);
-    emitToAllAuthenticatedUsers(socket, scopedEvent, normalized);
+    emitToAllAuthenticatedUsersCompat(globalEvent, normalized);
+    emitToAllAuthenticatedUsersCompat(scopedEvent, normalized);
   });
 
   ////////////////////// Post comments ///////////////////////////

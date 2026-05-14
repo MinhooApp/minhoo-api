@@ -6,6 +6,7 @@ const chatRoom = (chatId: number) => `chat_${chatId}`;
 const chatActiveRoom = (chatId: number) => `chat_active_${chatId}`;
 const COMPAT_NAMESPACES = ["/", "/api", "/api/v1"] as const;
 const chatsRefreshLastEmit = new Map<number, number>();
+const chatsRefreshPendingTimers = new Map<number, NodeJS.Timeout>();
 const chatsRefreshDebounceMs = Math.max(
   0,
   Number(process.env.CHATS_REFRESH_DEBOUNCE_MS ?? 1200) || 1200
@@ -307,14 +308,50 @@ export const emitChatStatusRealtime = (
 
 export const emitChatsRefreshRealtime = (userId: number) => {
   if (!Number.isFinite(userId) || userId <= 0) return;
+  const flush = () => {
+    chatsRefreshLastEmit.set(userId, Date.now());
+    const emittedAt = new Date().toISOString();
+    const payload = {
+      userId,
+      emittedAt,
+      emitted_at: emittedAt,
+      reason: "chat_activity",
+    };
+    console.log(`[realtime-direct] chats refresh userId=${userId}`);
+    emitToUsers(`chats/${userId}`, payload, [userId]);
+    emitToUsers("chats", payload, [userId]);
+  };
+
+  const clearPendingTimer = () => {
+    const timer = chatsRefreshPendingTimers.get(userId);
+    if (!timer) return;
+    clearTimeout(timer);
+    chatsRefreshPendingTimers.delete(userId);
+  };
+
+  if (chatsRefreshDebounceMs <= 0) {
+    clearPendingTimer();
+    flush();
+    return;
+  }
+
   const now = Date.now();
   const last = chatsRefreshLastEmit.get(userId) ?? 0;
-  if (now - last < chatsRefreshDebounceMs) return;
-  chatsRefreshLastEmit.set(userId, now);
+  const elapsedMs = now - last;
+  if (elapsedMs >= chatsRefreshDebounceMs) {
+    clearPendingTimer();
+    flush();
+    return;
+  }
 
-  console.log(`[realtime-direct] chats refresh userId=${userId}`);
-  emitToUsers(`chats/${userId}`, undefined, [userId]);
-  emitToUsers("chats", { userId }, [userId]);
+  if (chatsRefreshPendingTimers.has(userId)) return;
+
+  const waitMs = Math.max(10, chatsRefreshDebounceMs - elapsedMs);
+  const timer = setTimeout(() => {
+    chatsRefreshPendingTimers.delete(userId);
+    flush();
+  }, waitMs);
+  chatsRefreshPendingTimers.set(userId, timer);
 };
 
 export const emitGroupUpdatedRealtime = (
@@ -410,6 +447,47 @@ export const emitOrbitDeletedRealtime = (payload: unknown) => {
   }
 };
 
+export const emitPostDeletedRealtime = (payload: unknown) => {
+  const source =
+    payload && typeof payload === "object"
+      ? ({ ...(payload as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+  const postRaw = source.post;
+  const postObj =
+    postRaw && typeof postRaw === "object"
+      ? ({ ...(postRaw as Record<string, unknown>) } as Record<string, unknown>)
+      : {};
+
+  postObj.is_delete = true;
+  postObj.isDeleted = true;
+  postObj.deleted = true;
+  postObj.removed = true;
+
+  const deletedPayload: Record<string, unknown> = {
+    ...source,
+    action: "deleted",
+    status: "deleted",
+    deleted: true,
+    removed: true,
+    post: postObj,
+  };
+
+  emitToAllAuthenticatedUsers("post/deleted", deletedPayload);
+  emitToAllAuthenticatedUsers("find/post/deleted", deletedPayload);
+  emitToAllAuthenticatedUsers("post/updated", deletedPayload);
+  emitToAllAuthenticatedUsers("find/post/updated", deletedPayload);
+
+  const emitLegacyPosts =
+    String(
+      process.env.EMIT_POSTS_EVENT_ON_POST_ACTIVITY ??
+        process.env.EMIT_POSTS_EVENT_ON_POST_COMMENT ??
+        "1"
+    ).trim() === "1";
+  if (emitLegacyPosts) {
+    emitToAllAuthenticatedUsers("posts", deletedPayload);
+  }
+};
+
 export const emitUserUpdatedRealtime = (
   payload: unknown,
   userIds?: Array<number | string | null | undefined>
@@ -419,8 +497,36 @@ export const emitUserUpdatedRealtime = (
 
   emitToUsers("user:updated", payload, ids);
   emitToUsers("user/updated", payload, ids);
+  // Compatibilidad con clientes que escuchan snake_case.
+  emitToUsers("user_updated", payload, ids);
+
+  const action = String((payload as any)?.action ?? "")
+    .trim()
+    .toLowerCase();
+  if (action === "profile_verification_updated") {
+    // Evento explícito para flujo de verificación de perfil.
+    emitToUsers("profile_verification_updated", payload, ids);
+    emitToUsers("user/profile_verification_updated", payload, ids);
+    emitToUsers("user:profile_verification_updated", payload, ids);
+  }
+
   for (const userId of ids) {
     emitToUsers(`user/${userId}`, payload, [userId]);
+  }
+};
+
+export const emitUserReputationUpdatedRealtime = (
+  payload: unknown,
+  userIds?: Array<number | string | null | undefined>
+) => {
+  const ids = toUserIds(userIds);
+  if (ids.length === 0) return;
+
+  emitToUsers("user:reputation:updated", payload, ids);
+  emitToUsers("user/reputation/updated", payload, ids);
+
+  for (const userId of ids) {
+    emitToUsers(`user/${userId}/reputation`, payload, [userId]);
   }
 };
 

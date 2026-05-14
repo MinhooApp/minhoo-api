@@ -9,16 +9,24 @@ import {
   sendEmail,
 } from "../_module/module";
 import jwt from "jsonwebtoken";
+import crypto from "crypto";
+import { QueryTypes } from "sequelize";
 import { getRefreshJwtSecrets } from "../../../libs/helper/generate_jwt";
 import { getSocketInstance } from "../../../_sockets/socket_instance";
 import User from "../../../_models/user/user";
+import sequelize from "../../../_db/connection";
 import * as followerRepo from "../../../repository/follower/follower_repository";
+import { sendAuthError } from "../../../libs/middlewares/auth_error_response";
 import {
+  hasUserActivePersistentAuthSession,
   isUserAuthSessionActive,
+  isUserAuthSessionExplicitlyRevoked,
+  registerUserAuthSession,
   revokeAllUserAuthSessions,
   revokeAuthSessionsByDeviceUuid,
   revokeUserAuthSessionToken,
 } from "../../../libs/auth/user_auth_session";
+import { buildAuthSessionResponseBody } from "../../../libs/auth/auth_response_contract";
 
 const normalizeDeviceToken = (raw: any): string => {
   const value = String(raw ?? "").trim();
@@ -112,10 +120,21 @@ const extractPreferredLanguage = (req: Request): "es" | "en" | undefined => {
 const normalizeAuthToken = (raw: any): string => {
   const value = String(raw ?? "").trim();
   if (!value) return "";
-  if (value.toLowerCase().startsWith("bearer ")) {
-    return value.slice(7).trim();
+  const lowered = value.toLowerCase();
+  if (lowered === "null" || lowered === "undefined" || lowered === "nan" || lowered === "none") {
+    return "";
   }
-  return value;
+  const token = lowered.startsWith("bearer ") ? value.slice(7).trim() : value;
+  const tokenLowered = token.toLowerCase();
+  if (
+    tokenLowered === "null" ||
+    tokenLowered === "undefined" ||
+    tokenLowered === "nan" ||
+    tokenLowered === "none"
+  ) {
+    return "";
+  }
+  return token;
 };
 
 const extractBearerToken = (req: Request): string => {
@@ -144,26 +163,198 @@ const extractRefreshToken = (req: Request): string => {
   return "";
 };
 
+const extractIssuedRefreshToken = (userLike: any): string => {
+  const sources = [
+    userLike,
+    userLike?.dataValues,
+    typeof userLike?.toJSON === "function" ? userLike.toJSON() : null,
+  ];
+
+  for (const source of sources) {
+    if (!source || typeof source !== "object") continue;
+    const candidates = [
+      source?.refresh_token,
+      source?.refreshToken,
+    ];
+    for (const candidate of candidates) {
+      const token = normalizeAuthToken(candidate);
+      if (token) return token;
+    }
+  }
+
+  return "";
+};
+
 const allowRefreshFromAccessToken = () =>
   !String(process.env.AUTH_ALLOW_ACCESS_TOKEN_REFRESH ?? "0")
     .trim()
     .match(/^(0|false|no|off)$/i);
 
-const verifyJwtWithSecrets = (token: string, secrets: string[]): any | null => {
+const verifyJwtWithSecretsDetailed = (
+  token: string,
+  secrets: string[],
+  ignoreExpiration = false
+): { payload: any | null; expired: boolean } => {
+  let sawExpired = false;
   for (const secret of secrets) {
     try {
-      return jwt.verify(token, secret) as any;
-    } catch (_error) {
-      // continue with next configured secret
+      return { payload: jwt.verify(token, secret, { ignoreExpiration }) as any, expired: false };
+    } catch (error: any) {
+      if (String(error?.name ?? "").trim() === "TokenExpiredError") {
+        sawExpired = true;
+      }
     }
   }
-  return null;
+  return { payload: null, expired: sawExpired };
 };
+
+/**
+ * Grace period for EXPIRED refresh tokens.
+ * Even after the JWT has cryptographically expired, we allow a configurable
+ * window so users who haven't opened the app in a long time can still refresh
+ * instead of being forced to re-login.
+ * Default: 365 days. Set JWT_REFRESH_EXPIRATION_GRACE_DAYS=0 to disable.
+ */
+const REFRESH_TOKEN_GRACE_MS = (() => {
+  const days = Math.max(
+    0,
+    Number(process.env.JWT_REFRESH_EXPIRATION_GRACE_DAYS ?? 365) || 365
+  );
+  return days * 24 * 60 * 60 * 1000;
+})();
 
 const resolveTokenType = (payload: any): string => {
   return String(payload?.tokenType ?? payload?.token_type ?? "")
     .trim()
     .toLowerCase();
+};
+
+const AUTH_OP_SINGLE_FLIGHT_WINDOW_MS = Math.max(
+  0,
+  Math.min(
+    30_000,
+    Number(process.env.AUTH_OP_SINGLE_FLIGHT_WINDOW_MS ?? 10_000) || 10_000
+  )
+);
+const AUTH_OP_DB_LOCK_TIMEOUT_SECONDS = Math.max(
+  0,
+  Math.min(15, Number(process.env.AUTH_OP_DB_LOCK_TIMEOUT_SECONDS ?? 6) || 6)
+);
+const AUTH_OP_SINGLE_FLIGHT_MAX_KEYS = Math.max(
+  100,
+  Number(process.env.AUTH_OP_SINGLE_FLIGHT_MAX_KEYS ?? 1000) || 1000
+);
+
+const authOpInFlight = new Map<string, Promise<any>>();
+const authOpRecent = new Map<string, { atMs: number; value: any }>();
+
+const cloneDeepSafe = <T>(value: T): T => {
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    return value;
+  }
+};
+
+const trimMap = <T>(map: Map<string, T>, maxKeys: number) => {
+  if (map.size <= maxKeys) return;
+  const overflow = map.size - maxKeys;
+  let removed = 0;
+  for (const key of map.keys()) {
+    map.delete(key);
+    removed += 1;
+    if (removed >= overflow) break;
+  }
+};
+
+const toShortHash = (raw: string): string =>
+  crypto.createHash("sha1").update(String(raw ?? "")).digest("hex").slice(0, 16);
+
+const withAuthIssueDbLock = async <T>(
+  userId: number,
+  deviceToken: string,
+  producer: () => Promise<T>
+): Promise<T> => {
+  const isMysql = String(sequelize.getDialect() ?? "").toLowerCase() === "mysql";
+  if (!isMysql || !Number.isFinite(userId) || userId <= 0) {
+    return producer();
+  }
+
+  const lockName = `auth:issue:${Math.trunc(userId)}:${toShortHash(deviceToken || "no-device")}`;
+  let lockAcquired = false;
+  try {
+    const rows = (await sequelize.query(
+      `SELECT GET_LOCK(:lockName, :timeoutSeconds) AS acquired`,
+      {
+        replacements: {
+          lockName,
+          timeoutSeconds: AUTH_OP_DB_LOCK_TIMEOUT_SECONDS,
+        },
+        type: QueryTypes.SELECT,
+      }
+    )) as Array<{ acquired?: number | string | null }>;
+    lockAcquired = Number(rows?.[0]?.acquired ?? 0) === 1;
+  } catch (_error) {
+    lockAcquired = false;
+  }
+
+  if (!lockAcquired) {
+    return producer();
+  }
+
+  try {
+    return await producer();
+  } finally {
+    try {
+      await sequelize.query(`SELECT RELEASE_LOCK(:lockName) AS released`, {
+        replacements: { lockName },
+        type: QueryTypes.SELECT,
+      });
+    } catch (_error) {
+      // ignore lock release failure
+    }
+  }
+};
+
+const runAuthSingleFlight = async <T>(
+  key: string,
+  producer: () => Promise<T>
+): Promise<T> => {
+  const safeKey = String(key ?? "").trim().slice(0, 220);
+  if (!safeKey || AUTH_OP_SINGLE_FLIGHT_WINDOW_MS <= 0) {
+    return producer();
+  }
+
+  const now = Date.now();
+  const cached = authOpRecent.get(safeKey);
+  if (cached && now - cached.atMs <= AUTH_OP_SINGLE_FLIGHT_WINDOW_MS) {
+    return cloneDeepSafe(cached.value);
+  }
+
+  const inFlight = authOpInFlight.get(safeKey);
+  if (inFlight) {
+    const shared = await inFlight;
+    return cloneDeepSafe(shared);
+  }
+
+  const promise = (async () => {
+    const result = await producer();
+    authOpRecent.set(safeKey, {
+      atMs: Date.now(),
+      value: cloneDeepSafe(result),
+    });
+    trimMap(authOpRecent, AUTH_OP_SINGLE_FLIGHT_MAX_KEYS);
+    return result;
+  })();
+
+  authOpInFlight.set(safeKey, promise);
+  trimMap(authOpInFlight, AUTH_OP_SINGLE_FLIGHT_MAX_KEYS);
+  try {
+    const result = await promise;
+    return cloneDeepSafe(result);
+  } finally {
+    authOpInFlight.delete(safeKey);
+  }
 };
 
 export const login = async (req: Request, res: Response) => {
@@ -242,7 +433,8 @@ export const login = async (req: Request, res: Response) => {
     try {
       const looksLikeHash = /^\$2[aby]\$\d{2}\$/.test(storedPassword);
       if (looksLikeHash) {
-        validatePass = bcryptjs.compareSync(inputPassword, storedPassword);
+        // Async compare avoids blocking the event loop under concurrent login load.
+        validatePass = await bcryptjs.compare(inputPassword, storedPassword);
       } else {
         // Compatibilidad con cuentas antiguas que aún tienen clave en texto plano.
         validatePass = storedPassword === inputPassword;
@@ -268,74 +460,91 @@ export const login = async (req: Request, res: Response) => {
         });
       }
 
-      userTemp?.roles.forEach((u: any) => {
+      const loginUserId = Number((userTemp as any)?.id ?? userTemp?.get?.("id"));
+      const loginClaims = Number.isFinite(loginUserId) && loginUserId > 0
+        ? await repository.findLoginClaimsById(loginUserId)
+        : null;
+
+      (loginClaims as any)?.roles?.forEach((u: any) => {
         roles.push(u.id);
       });
-
-      const user = await repository.saveToken({
-        userId: userTemp?.get("id"),
-        uuid,
-        roles: roles,
-        workerId:
-          userTemp?.get("worker") != null
-            ? userTemp?.get("worker")["id"]
-            : null,
-      });
-
-      if (preferredLanguage && preferredLanguage !== String((user as any)?.language ?? "")) {
-        try {
-          await uRepository.update(userTemp.id, { language: preferredLanguage });
-          if (typeof (user as any)?.setDataValue === "function") {
-            (user as any).setDataValue("language", preferredLanguage);
-          } else if (user) {
-            (user as any).language = preferredLanguage;
-          }
-        } catch (languageError) {
-          console.log("[login] preferred language update skipped", languageError);
-        }
-      }
-
-      const loginUserId = Number((user as any)?.id ?? (user as any)?.get?.("id"));
-      let counts: { followersCount: number; followingCount: number } | null = null;
-      if (Number.isFinite(loginUserId) && loginUserId > 0) {
-        counts = await followerRepo.getCounts(loginUserId);
-        const fields = {
-          followers_count: counts.followersCount,
-          followings_count: counts.followingCount,
-          following_count: counts.followingCount,
-          followersCount: counts.followersCount,
-          followingsCount: counts.followingCount,
-          followingCount: counts.followingCount,
-        };
-
-        if (typeof (user as any)?.setDataValue === "function") {
-          Object.entries(fields).forEach(([key, value]) => {
-            (user as any).setDataValue(key, value);
-          });
-        } else if (user) {
-          Object.assign(user as any, fields);
-        }
-      }
 
       const totalMs = Date.now() - startedAt;
       console.log(
         `[perf][login] email=${email} totalMs=${totalMs} lookupMs=${userLookupMs}`
       );
-      return formatResponse({
-        res: res,
-        success: true,
-        body: {
-          user,
-          counts: counts
-            ? {
-                followersCount: counts.followersCount,
-                followingCount: counts.followingCount,
+      const workerId =
+        (loginClaims as any)?.get?.("worker") != null
+          ? (loginClaims as any).get("worker")["id"]
+          : null;
+      const singleFlightKey = `login:${loginUserId}:${toShortHash(uuid || "no-device")}`;
+      const authSessionBody = await runAuthSingleFlight(singleFlightKey, async () =>
+        withAuthIssueDbLock(loginUserId, uuid, async () => {
+          const countsPromise =
+            Number.isFinite(loginUserId) && loginUserId > 0
+              ? followerRepo.getCounts(loginUserId).catch((_error) => null)
+              : Promise.resolve(null as any);
+
+          const user = await repository.saveToken({
+            userId: loginUserId,
+            uuid,
+            roles: roles,
+            workerId,
+          });
+
+          if (preferredLanguage && preferredLanguage !== String((user as any)?.language ?? "")) {
+            try {
+              await uRepository.update(userTemp.id, { language: preferredLanguage });
+              if (typeof (user as any)?.setDataValue === "function") {
+                (user as any).setDataValue("language", preferredLanguage);
+              } else if (user) {
+                (user as any).language = preferredLanguage;
+              }
+            } catch (languageError) {
+              console.log("[login] preferred language update skipped", languageError);
+            }
+          }
+
+          let counts: { followersCount: number; followingCount: number } | null = null;
+          if (Number.isFinite(loginUserId) && loginUserId > 0) {
+            counts = await countsPromise;
+            if (counts) {
+              const fields = {
                 followers_count: counts.followersCount,
                 followings_count: counts.followingCount,
                 following_count: counts.followingCount,
+                followersCount: counts.followersCount,
+                followingsCount: counts.followingCount,
+                followingCount: counts.followingCount,
+              };
+
+              if (typeof (user as any)?.setDataValue === "function") {
+                Object.entries(fields).forEach(([key, value]) => {
+                  (user as any).setDataValue(key, value);
+                });
+              } else if (user) {
+                Object.assign(user as any, fields);
               }
-            : null,
-        },
+            }
+          }
+
+          return buildAuthSessionResponseBody(user, {
+            counts: counts
+              ? {
+                  followersCount: counts.followersCount,
+                  followingCount: counts.followingCount,
+                  followers_count: counts.followersCount,
+                  followings_count: counts.followingCount,
+                  following_count: counts.followingCount,
+                }
+              : null,
+          });
+        })
+      );
+      return formatResponse({
+        res: res,
+        success: true,
+        body: authSessionBody,
       });
     }
   } catch (error) {
@@ -348,90 +557,132 @@ export const refreshToken = async (req: Request, res: Response) => {
   try {
     const rawRefreshToken = extractRefreshToken(req);
     if (!rawRefreshToken) {
-      return formatResponse({
-        res,
-        success: false,
-        code: 401,
-        message: "Refresh token missing.",
-      });
+      return sendAuthError(res, 401, "AUTH_TOKEN_REQUIRED", "Refresh token missing.");
     }
 
-    const payload = verifyJwtWithSecrets(rawRefreshToken, getRefreshJwtSecrets());
+    const refreshSecrets = getRefreshJwtSecrets();
+    const verified = verifyJwtWithSecretsDetailed(rawRefreshToken, refreshSecrets);
+    let payload = verified.payload;
+
+    // If the refresh token has cryptographically expired, apply the grace window.
+    // This lets users who haven't opened the app in a long time still refresh
+    // instead of being forced to re-login from scratch.
+    if (!payload && verified.expired && REFRESH_TOKEN_GRACE_MS > 0) {
+      const verifiedIgnoringExp = verifyJwtWithSecretsDetailed(rawRefreshToken, refreshSecrets, true);
+      if (verifiedIgnoringExp.payload?.exp) {
+        const expMs = Number(verifiedIgnoringExp.payload.exp) * 1000;
+        if (Date.now() - expMs <= REFRESH_TOKEN_GRACE_MS) {
+          payload = verifiedIgnoringExp.payload;
+        }
+      }
+    }
+
     if (!payload) {
-      return formatResponse({
-        res,
-        success: false,
-        code: 401,
-        message: "Invalid refresh token.",
-      });
+      if (verified.expired) {
+        return sendAuthError(
+          res,
+          401,
+          "AUTH_TOKEN_EXPIRED",
+          "Refresh token expired."
+        );
+      }
+      return sendAuthError(res, 401, "AUTH_TOKEN_INVALID", "Invalid refresh token.");
     }
 
     const tokenType = resolveTokenType(payload);
     if (tokenType && tokenType !== "refresh") {
       if (!(allowRefreshFromAccessToken() && tokenType === "access")) {
-        return formatResponse({
+        return sendAuthError(
           res,
-          success: false,
-          code: 401,
-          message: "Invalid refresh token type.",
-        });
+          401,
+          "AUTH_TOKEN_INVALID",
+          "Invalid refresh token type."
+        );
       }
     }
 
     const userId = Number(payload?.userId ?? 0);
     if (!Number.isFinite(userId) || userId <= 0) {
-      return formatResponse({
+      return sendAuthError(
         res,
-        success: false,
-        code: 401,
-        message: "Invalid refresh token payload.",
-      });
+        401,
+        "AUTH_TOKEN_INVALID",
+        "Invalid refresh token payload."
+      );
     }
 
     const userStatus = await User.findOne({
       where: { id: userId },
-      attributes: ["id", "available", "disabled", "auth_token"],
+      attributes: ["id", "available", "disabled", "auth_token", "uuid"],
     });
     if (!userStatus || !(userStatus as any).available) {
-      return formatResponse({
+      return sendAuthError(
         res,
-        success: false,
-        code: 401,
-        message: "Access denied, user not found.",
-      });
+        401,
+        "AUTH_SESSION_REVOKED",
+        "Access denied, user not found."
+      );
     }
     if (Boolean((userStatus as any).disabled)) {
-      return formatResponse({
+      return sendAuthError(
         res,
-        success: false,
-        code: 403,
-        message: "This account has been disabled by an administrator.",
-      });
+        401,
+        "AUTH_SESSION_REVOKED",
+        "This account has been disabled by an administrator."
+      );
     }
 
     const storedAuthToken = normalizeAuthToken((userStatus as any)?.auth_token);
     const tokenMatchesLegacy = Boolean(storedAuthToken && storedAuthToken === rawRefreshToken);
     const tokenMatchesSession = tokenMatchesLegacy
       ? true
-      : await isUserAuthSessionActive(userId, rawRefreshToken);
+      : await isUserAuthSessionActive(userId, rawRefreshToken, {
+          allowRefreshGrace: true,
+        });
 
     if (!tokenMatchesSession) {
-      return formatResponse({
-        res,
-        success: false,
-        code: 401,
-        message: "Refresh token revoked.",
-      });
+      // Only hard-block if the refresh token was explicitly revoked.
+      // If it simply has no session record (app reinstall, DB gap), allow the
+      // refresh so the user gets new tokens without being forced to re-login.
+      const isExplicitlyRevoked = await isUserAuthSessionExplicitlyRevoked(userId, rawRefreshToken).catch(() => false);
+      if (isExplicitlyRevoked) {
+        const requestUuid = extractDeviceToken(req);
+        const storedUuid = normalizeDeviceToken((userStatus as any)?.uuid ?? "");
+        const uuidHint = requestUuid || storedUuid;
+
+        let hasRecoverableSession = false;
+        if (uuidHint) {
+          hasRecoverableSession = await hasUserActivePersistentAuthSession(userId, {
+            deviceUuid: uuidHint,
+          }).catch(() => false);
+        }
+        if (!hasRecoverableSession) {
+          hasRecoverableSession = await hasUserActivePersistentAuthSession(userId).catch(
+            () => false
+          );
+        }
+
+        if (hasRecoverableSession) {
+          return sendAuthError(
+            res,
+            401,
+            "AUTH_TOKEN_EXPIRED",
+            "Refresh token rotated. Retry with latest session token."
+          );
+        }
+        return sendAuthError(res, 401, "AUTH_SESSION_REVOKED", "Refresh token revoked.");
+      }
+      // Refresh token is cryptographically valid but has no session record — allow it.
     }
 
-    const userTemp = await repository.findById(userId);
+    const userTemp = await repository.findByIdForRefresh(userId);
     if (!userTemp) {
-      return formatResponse({
+      return sendAuthError(
         res,
-        success: false,
-        code: 401,
-        message: "Access denied, user not found.",
-      });
+        401,
+        "AUTH_SESSION_REVOKED",
+        "Access denied, user not found."
+      );
     }
 
     const roles: number[] = [];
@@ -446,26 +697,47 @@ export const refreshToken = async (req: Request, res: Response) => {
     }
 
     const uuid = extractDeviceToken(req);
-    const user = await repository.saveToken({
-      userId,
-      uuid,
-      roles,
-      workerId:
-        (userTemp as any)?.worker != null
-          ? Number((userTemp as any)?.worker?.id ?? 0) || null
-          : null,
-    });
+    const workerId =
+      (userTemp as any)?.worker != null
+        ? Number((userTemp as any)?.worker?.id ?? 0) || null
+        : null;
+    const refreshKeyBase = `${userId}:${toShortHash(uuid || normalizeDeviceToken((userStatus as any)?.uuid ?? "") || "no-device")}`;
+    const refreshTokenHash = toShortHash(rawRefreshToken);
+    const singleFlightKey = `refresh:${refreshKeyBase}:${refreshTokenHash}`;
+    const body = await runAuthSingleFlight(singleFlightKey, async () =>
+      withAuthIssueDbLock(userId, uuid || normalizeDeviceToken((userStatus as any)?.uuid ?? ""), async () => {
+        const user = await repository.saveToken({
+          userId,
+          uuid,
+          roles,
+          workerId,
+        });
 
-    await revokeUserAuthSessionToken(userId, rawRefreshToken);
+        const issuedRefreshToken = extractIssuedRefreshToken(user);
+        if (!issuedRefreshToken || issuedRefreshToken !== rawRefreshToken) {
+          await revokeUserAuthSessionToken(userId, rawRefreshToken, "refresh_rotation");
+        } else {
+          console.warn(
+            `[auth][refresh] skip revoke due same refresh token collision userId=${userId}`
+          );
+        }
 
+        return buildAuthSessionResponseBody(user, { refreshed: true });
+      })
+    );
     return formatResponse({
       res,
       success: true,
-      body: { user, refreshed: true },
+      body,
     });
   } catch (error) {
-    console.log(error);
-    return formatResponse({ res, success: false, message: error });
+    console.log("[auth][refresh] unexpected error", error);
+    return sendAuthError(
+      res,
+      500,
+      "AUTH_INTERNAL_ERROR",
+      "Internal auth error"
+    );
   }
 };
 
@@ -517,7 +789,7 @@ export const changePass = async (req: Request, res: Response) => {
     return formatResponse({ res: res, success: false, message: error });
   }
 };
-export const validateSesion = async (req: Request, res: Response) => {
+export const validateSesion = async (_req: Request, res: Response) => {
   try {
     return formatResponse({ res: res, success: true });
   } catch (error) {}
@@ -558,7 +830,7 @@ export const logout = async (req: Request, res: Response) => {
 
     const bearerToken = extractBearerToken(req);
     if (bearerToken) {
-      await revokeUserAuthSessionToken(userId, bearerToken);
+      await revokeUserAuthSessionToken(userId, bearerToken, "manual_logout");
       await User.update(
         { auth_token: null },
         {
@@ -570,7 +842,7 @@ export const logout = async (req: Request, res: Response) => {
       );
       await disconnectUserSockets(userId, bearerToken);
     } else {
-      await revokeAllUserAuthSessions(userId);
+      await revokeAllUserAuthSessions(userId, "manual_logout_all");
       await uRepository.update(userId, {
         auth_token: null,
         uuid: null,
@@ -607,6 +879,7 @@ export const logoutDevice = async (req: Request, res: Response) => {
 
     await revokeAuthSessionsByDeviceUuid(rawUuid, {
       userId,
+      reason: "manual_logout_device",
     });
 
     await User.update(
@@ -643,6 +916,14 @@ export const saveDeviceToken = async (req: Request, res: Response) => {
     }
 
     await uRepository.assignUuid(userId, token);
+    // Keep multi-device auth session table aligned with the latest push token.
+    // This helps when push targeting falls back to active session tokens.
+    const bearerToken = extractBearerToken(req);
+    if (bearerToken) {
+      await registerUserAuthSession(userId, bearerToken, {
+        deviceUuid: token,
+      });
+    }
 
     return formatResponse({
       res,

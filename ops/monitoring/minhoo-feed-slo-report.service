@@ -1,0 +1,14 @@
+[Unit]
+Description=Minhoo Feed SLO 24h Report (email/telegram)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=appuser
+Group=appuser
+WorkingDirectory=/var/www/minhoo-api/minhoo_api
+Environment=NODE_ENV=production
+Environment=FEED_SLO_REPORT_LOOKBACK_HOURS=24
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/scripts/report-feed-slo-24h.js
+

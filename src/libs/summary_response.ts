@@ -155,12 +155,6 @@ const pickFirstBool = (...values: any[]): boolean | null => {
   return null;
 };
 
-const toPlaybackType = (urlRaw: any): string | null => {
-  const url = toText(urlRaw);
-  if (!url) return null;
-  return String(url).toLowerCase().includes(".m3u8") ? "hls" : "url";
-};
-
 const getRelationshipFromLookup = (
   relationshipLookup: any,
   userId: number | null
@@ -261,7 +255,6 @@ const toUserSummary = (userRaw: any, viewerIdRaw?: any, relationshipRaw?: any) =
   );
   const profileVerificationStatus =
     toText(user.profile_verification_status ?? user.profileVerificationStatus) ?? null;
-  const isAdmin = Boolean(user.is_admin ?? user.isAdmin ?? false);
 
   return {
     id: userId,
@@ -275,8 +268,6 @@ const toUserSummary = (userRaw: any, viewerIdRaw?: any, relationshipRaw?: any) =
     is_verified_profile: profileVerified,
     profile_verification_status: profileVerificationStatus,
     profileVerificationStatus: profileVerificationStatus,
-    is_admin: isAdmin,
-    isAdmin,
     relationship,
     isFollowing: relationship.isFollowing,
     is_following: relationship.isFollowing,
@@ -303,24 +294,9 @@ const pickPrimaryMedia = (itemsRaw: any) => {
   const items = Array.isArray(itemsRaw) ? itemsRaw : [];
   const item = items[0] ? toPlain(items[0]) : null;
   if (!item) return null;
-  const isImage = Boolean(item.is_img ?? item.isImage ?? item.is_image ?? false);
-  const videoUid = toText(item.video_uid ?? item.videoUid);
-  const thumbnailUrl =
-    toText(item.thumbnail_url ?? item.thumbnailUrl ?? item.poster_url ?? item.posterUrl) ??
-    (videoUid && !isImage
-      ? `https://videodelivery.net/${videoUid}/thumbnails/thumbnail.jpg?time=1s`
-      : null);
-  const posterUrl = toText(item.poster_url ?? item.posterUrl ?? thumbnailUrl);
   return {
     url: toText(item.url ?? item.mediaUrl),
-    is_image: isImage,
-    is_img: isImage,
-    video_uid: videoUid,
-    videoUid,
-    thumbnail_url: thumbnailUrl,
-    thumbnailUrl,
-    poster_url: posterUrl,
-    posterUrl,
+    is_image: Boolean(item.is_img ?? item.isImage ?? false),
   };
 };
 
@@ -361,8 +337,6 @@ export const isSummaryMode = (value: any) => {
   return normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on";
 };
 
-export const isCompactMode = (value: any) => isSummaryMode(value);
-
 export const toPostSummary = (
   postRaw: any,
   viewerIdRaw?: any,
@@ -382,27 +356,11 @@ export const toPostSummary = (
   const author = toUserSummary(post?.user, viewerIdRaw, relationship);
   const userRaw = toPlain(post?.user);
   const postMediaRaw = Array.isArray(post?.post_media) ? post.post_media : [];
-  const postMedia = postMediaRaw.map((item: any) => {
-    const isImage = Boolean(item?.is_img ?? item?.isImage ?? item?.is_image ?? false);
-    const videoUid = toText(item?.video_uid ?? item?.videoUid);
-    const thumbnailUrl =
-      toText(item?.thumbnail_url ?? item?.thumbnailUrl ?? item?.poster_url ?? item?.posterUrl) ??
-      (videoUid && !isImage
-        ? `https://videodelivery.net/${videoUid}/thumbnails/thumbnail.jpg?time=1s`
-        : null);
-    const posterUrl = toText(item?.poster_url ?? item?.posterUrl ?? thumbnailUrl);
-    return {
-      url: toText(item?.url ?? item?.mediaUrl),
-      is_img: isImage,
-      is_image: isImage,
-      video_uid: videoUid,
-      videoUid,
-      thumbnail_url: thumbnailUrl,
-      thumbnailUrl,
-      poster_url: posterUrl,
-      posterUrl,
-    };
-  });
+  const postMedia = postMediaRaw.map((item: any) => ({
+    url: toText(item?.url ?? item?.mediaUrl),
+    is_img: Boolean(item?.is_img ?? item?.isImage ?? false),
+    is_image: Boolean(item?.is_img ?? item?.isImage ?? false),
+  }));
 
   const user = userRaw
     ? {
@@ -477,62 +435,13 @@ export const toReelSummary = (reelRaw: any, viewerIdRaw?: any, relationshipLooku
     ) ?? false;
   const isSaved =
     pickFirstBool(reel?.is_saved, reel?.isSaved, reel?.saved) ?? false;
-  const videoUid = toText(reel?.video_uid ?? reel?.videoUid);
-  const streamUrl = toText(reel?.stream_url ?? reel?.streamUrl);
-  const downloadUrl = toText(reel?.download_url ?? reel?.downloadUrl);
-  const thumbnailUrl =
-    toText(reel?.thumbnail_url ?? reel?.thumbnailUrl) ??
-    (videoUid ? `https://videodelivery.net/${videoUid}/thumbnails/thumbnail.jpg?time=1s` : null);
-  const posterUrl = toText(reel?.poster_url ?? reel?.posterUrl ?? thumbnailUrl);
-  const previewImageUrl = toText(reel?.image_url ?? reel?.imageUrl ?? thumbnailUrl);
-  const startupPlaybackUrl = downloadUrl ?? streamUrl ?? previewImageUrl;
-  const startupPlaybackType = downloadUrl ? "progressive" : toPlaybackType(startupPlaybackUrl);
-  const handoffPlaybackUrl = streamUrl ?? null;
   return {
     id: Number(reel?.id ?? 0) || null,
     description: truncateText(reel?.description, 140),
     hashtags: toHashtagSummary(reel?.hashtags),
-    thumbnail_url: thumbnailUrl,
-    thumbnailUrl,
-    thumbnail: thumbnailUrl,
-    poster_url: posterUrl,
-    posterUrl,
-    image_url: previewImageUrl,
-    imageUrl: previewImageUrl,
-    cover_url: previewImageUrl,
-    coverUrl: previewImageUrl,
-    stream_url: streamUrl,
-    streamUrl,
-    download_url: downloadUrl,
-    downloadUrl,
-    startup_playback_url: startupPlaybackUrl,
-    startupPlaybackUrl: startupPlaybackUrl,
-    startup_playback_type: startupPlaybackType,
-    startupPlaybackType: startupPlaybackType,
-    handoff_playback_url: handoffPlaybackUrl,
-    handoffPlaybackUrl: handoffPlaybackUrl,
-    video_uid: videoUid,
-    videoUid,
-    media: {
-      url: streamUrl,
-      is_img: false,
-      is_image: false,
-      kind: "video",
-      download_url: downloadUrl,
-      downloadUrl,
-      startup_playback_url: startupPlaybackUrl,
-      startupPlaybackUrl: startupPlaybackUrl,
-      startup_playback_type: startupPlaybackType,
-      startupPlaybackType: startupPlaybackType,
-      handoff_playback_url: handoffPlaybackUrl,
-      handoffPlaybackUrl: handoffPlaybackUrl,
-      thumbnail_url: thumbnailUrl,
-      thumbnailUrl,
-      poster_url: posterUrl,
-      posterUrl,
-      video_uid: videoUid,
-      videoUid,
-    },
+    thumbnail_url: toText(reel?.thumbnail_url),
+    stream_url: toText(reel?.stream_url),
+    video_uid: toText(reel?.video_uid),
     createdAt: toIsoDate(reel?.createdAt ?? reel?.updatedAt),
     counts: {
       likes: toCount(reel?.likes_count),
@@ -550,131 +459,6 @@ export const toReelSummary = (reelRaw: any, viewerIdRaw?: any, relationshipLooku
     isLiked: isStarred,
     is_saved: isSaved,
     isSaved: isSaved,
-  };
-};
-
-const toCompactRelationship = (relationshipRaw: any) => {
-  const relationship = toPlain(relationshipRaw) ?? {};
-  const isFollowing = Boolean(relationship?.isFollowing ?? relationship?.is_following ?? false);
-  const isFollowedBy = Boolean(
-    relationship?.isFollowedBy ?? relationship?.is_followed_by ?? false
-  );
-  return {
-    isFollowing,
-    isFollowedBy,
-    isMutual: isFollowing && isFollowedBy,
-  };
-};
-
-const toCompactUser = (userRaw: any) => {
-  const user = toPlain(userRaw);
-  if (!user) return null;
-  const relationship = toCompactRelationship(user?.relationship);
-  return {
-    id: Number(user?.id ?? 0) || null,
-    username: toText(user?.username ?? user?.user_name),
-    name: toText(user?.name),
-    avatar: toText(user?.avatar ?? user?.image_profil),
-    verified: Boolean(user?.verified),
-    profile_verified: Boolean(
-      user?.profile_verified ?? user?.profileVerified ?? user?.verified_badge ?? false
-    ),
-    is_admin: Boolean(user?.is_admin ?? user?.isAdmin ?? false),
-    relationship,
-    has_active_orbit: Boolean(user?.has_active_orbit ?? user?.hasActiveOrbit ?? false),
-    active_orbit_reel_id: Number(user?.active_orbit_reel_id ?? user?.activeOrbitReelId ?? 0) || null,
-    orbit_ring_until: toIsoDate(user?.orbit_ring_until ?? user?.orbitRingUntil),
-  };
-};
-
-export const toPostSummaryCompact = (postSummaryRaw: any) => {
-  const post = toPlain(postSummaryRaw);
-  if (!post) return null;
-  const media = toPlain(post?.media ?? post?.post_media?.[0]) ?? null;
-  const isImage = Boolean(media?.is_image ?? media?.is_img ?? false);
-  const videoUid = toText(media?.video_uid ?? media?.videoUid);
-  const thumbnailUrl = toText(media?.thumbnail_url ?? media?.thumbnailUrl);
-  const posterUrl = toText(media?.poster_url ?? media?.posterUrl ?? thumbnailUrl);
-
-  return {
-    id: Number(post?.id ?? 0) || null,
-    post: toText(post?.post),
-    excerpt: toText(post?.excerpt),
-    created_at: toIsoDate(post?.created_date ?? post?.createdAt),
-    relative_time_es: toText(post?.relative_time_es),
-    relative_time_en: toText(post?.relative_time_en),
-    hashtags: Array.isArray(post?.hashtags) ? post.hashtags : [],
-    counts: {
-      likes: toCount(post?.counts?.likes ?? post?.likes_count),
-      comments: toCount(post?.counts?.comments ?? post?.comments_count),
-      saves: toCount(post?.counts?.saves ?? post?.saved_count),
-      shares: toCount(post?.counts?.shares ?? post?.shares_count),
-    },
-    media: media
-      ? {
-          kind: isImage ? "image" : videoUid ? "video" : "unknown",
-          url: toText(media?.url),
-          is_image: isImage,
-          video_uid: videoUid,
-          thumbnail_url: thumbnailUrl,
-          poster_url: posterUrl,
-        }
-      : null,
-    author: toCompactUser(post?.author ?? post?.user),
-    liked: Boolean(post?.liked ?? post?.is_liked ?? false),
-    saved: Boolean(post?.saved ?? post?.is_saved ?? false),
-    score:
-      Number.isFinite(Number(post?.score))
-        ? Number(post?.score)
-        : Number.isFinite(Number(post?.feed_score))
-        ? Number(post?.feed_score)
-        : null,
-    ranking_reason: toText(post?.ranking_reason ?? post?.rankingReason),
-  };
-};
-
-export const toReelSummaryCompact = (reelSummaryRaw: any) => {
-  const reel = toPlain(reelSummaryRaw);
-  if (!reel) return null;
-  const media = toPlain(reel?.media) ?? {};
-  const videoUid = toText(media?.video_uid ?? media?.videoUid ?? reel?.video_uid ?? reel?.videoUid);
-  const thumbnailUrl = toText(media?.thumbnail_url ?? media?.thumbnailUrl ?? reel?.thumbnail_url);
-  const posterUrl = toText(media?.poster_url ?? media?.posterUrl ?? reel?.poster_url ?? thumbnailUrl);
-  const startupPlaybackUrl = toText(
-    media?.startup_playback_url ?? media?.startupPlaybackUrl ?? reel?.startup_playback_url
-  );
-  const startupPlaybackType = toText(
-    media?.startup_playback_type ?? media?.startupPlaybackType ?? reel?.startup_playback_type
-  );
-  const handoffPlaybackUrl = toText(
-    media?.handoff_playback_url ?? media?.handoffPlaybackUrl ?? reel?.handoff_playback_url
-  );
-
-  return {
-    id: Number(reel?.id ?? 0) || null,
-    description: toText(reel?.description),
-    hashtags: Array.isArray(reel?.hashtags) ? reel.hashtags : [],
-    created_at: toIsoDate(reel?.createdAt ?? reel?.created_at),
-    counts: {
-      likes: toCount(reel?.counts?.likes),
-      comments: toCount(reel?.counts?.comments),
-      saves: toCount(reel?.counts?.saves),
-      views: toCount(reel?.counts?.views),
-    },
-    media: {
-      kind: "video",
-      stream_url: toText(media?.url ?? reel?.stream_url ?? reel?.streamUrl),
-      download_url: toText(media?.download_url ?? media?.downloadUrl ?? reel?.download_url),
-      startup_playback_url: startupPlaybackUrl,
-      startup_playback_type: startupPlaybackType,
-      handoff_playback_url: handoffPlaybackUrl,
-      thumbnail_url: thumbnailUrl,
-      poster_url: posterUrl,
-      video_uid: videoUid,
-    },
-    creator: toCompactUser(reel?.creator),
-    liked: Boolean(reel?.liked ?? reel?.is_liked ?? false),
-    saved: Boolean(reel?.saved ?? reel?.is_saved ?? false),
   };
 };
 

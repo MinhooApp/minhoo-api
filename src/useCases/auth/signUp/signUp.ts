@@ -9,6 +9,7 @@ import {
   bcryptjs,
   multer,
 } from "../_module/module";
+import { buildAuthSessionResponseBody } from "../../../libs/auth/auth_response_contract";
 import {
   normalizeRemoteHttpUrl,
   uploadImageBufferToCloudflare,
@@ -26,6 +27,21 @@ const uploadSignUpAvatar = multer({
 
 // signUp.ts
 const now: any = new Date(new Date().toUTCString());
+const parseNonNegativeInt = (value: any, fallback: number): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const normalized = Math.trunc(parsed);
+  if (normalized < 0) return fallback;
+  return normalized;
+};
+const VALIDATE_EMAIL_SYNC_EMAIL_BUDGET_MS = parseNonNegativeInt(
+  process.env.AUTH_VALIDATE_EMAIL_SYNC_EMAIL_BUDGET_MS,
+  650
+);
+const SIGNUP_AVATAR_UPLOAD_TIMEOUT_MS = parseNonNegativeInt(
+  process.env.SIGNUP_AVATAR_UPLOAD_TIMEOUT_MS,
+  1500
+);
 
 const resetSignUpContactAndLocation = (body: any) => {
   // Evita persistir placeholders enviados por el cliente al crear cuenta.
@@ -286,18 +302,32 @@ export const signUp = async (req: Request, res: Response) => {
         }
 
         if (fileObj?.buffer) {
-          const uploadedAvatar = await uploadImageBufferToCloudflare({
-            buffer: fileObj.buffer,
-            filename: fileObj.originalname,
-            mimeType: fileObj.mimetype,
-            metadata: {
-              app: "minhoo",
-              context: "signup-avatar",
-              email: String((req.body as any)?.email ?? "").trim(),
-            },
-          });
-          (req.body as any).image_profil = uploadedAvatar.url;
-          (req.body as any).image_profile = uploadedAvatar.url;
+          const uploadTimeout = new Promise<null>((resolve) =>
+            setTimeout(() => resolve(null), SIGNUP_AVATAR_UPLOAD_TIMEOUT_MS)
+          );
+          const uploadResult = await Promise.race([
+            uploadImageBufferToCloudflare({
+              buffer: fileObj.buffer,
+              filename: fileObj.originalname,
+              mimeType: fileObj.mimetype,
+              metadata: {
+                app: "minhoo",
+                context: "signup-avatar",
+                email: String((req.body as any)?.email ?? "").trim(),
+              },
+            }).catch((err) => {
+              console.warn("[signup] avatar upload failed, proceeding without avatar:", err?.message);
+              return null;
+            }),
+            uploadTimeout,
+          ]);
+
+          if (uploadResult?.url) {
+            (req.body as any).image_profil = uploadResult.url;
+            (req.body as any).image_profile = uploadResult.url;
+          } else {
+            (req.body as any)._avatar_pending = true;
+          }
         }
 
         await processSignUp(req, res);
@@ -361,7 +391,7 @@ const processSignUp = async (req: Request, res: Response) => {
   req.body.password = hashPassword;
   req.body.roles = [1];
 
-  const validateEmail = await repository.findByEmail(email);
+  const validateEmail = await repository.findByEmailLite(email);
 
   if (validateEmail) {
     return formatResponse({
@@ -396,7 +426,8 @@ const processSignUp = async (req: Request, res: Response) => {
     };
     sendEmail(emailParams);
 
-    return formatResponse({ res, success: true, body: { user } });
+    const body = buildAuthSessionResponseBody(user);
+    return formatResponse({ res, success: true, body });
   } catch (error: any) {
     return formatResponse({
       res,
@@ -407,13 +438,13 @@ const processSignUp = async (req: Request, res: Response) => {
 };
 
 export const validateEmail = async (req: Request, res: Response) => {
-  const { email } = req.body;
+  const email = String((req.body as any)?.email ?? "").trim();
   // En validación de correo para alta, si no llega idioma, priorizamos español por defecto.
   const locale = resolveValidationEmailLocale(req, "es", false);
   const isSpanish = locale === "es";
 
   try {
-    const validateEmail = await repository.findByEmail(email);
+    const validateEmail = await repository.findByEmailLite(email);
 
     if (validateEmail) {
       return formatResponse({
@@ -425,38 +456,84 @@ export const validateEmail = async (req: Request, res: Response) => {
           isDeletedAccount(validateEmail)
         ),
       });
-    } else {
-      const send = true; //: any =
-      const cod = generateTempPassword();
-      if (send == true) {
-        const body = {
-          code: cod,
-          email: email,
-          created: now,
-          locale_used: locale,
-        };
-        await repository.registerCode(body); //register code
+    }
 
-        const emailParams = {
-          subject: isSpanish ? "Verificacion de correo" : "Email verification",
-          email: email,
-          htmlPath: isSpanish
-            ? "./src/public/html/email/emailCode_es.html"
-            : "./src/public/html/email/emailCode.html",
-          replacements: [{ code: cod }],
-          from: "Minhoo App",
-        };
-        sendEmail(emailParams);
+    const cod = generateTempPassword();
+    const body = {
+      code: cod,
+      email: email,
+      created: now,
+      locale_used: locale,
+    };
+    await repository.registerCode(body); //register code
+
+    const emailParams = {
+      subject: isSpanish ? "Verificacion de correo" : "Email verification",
+      email: email,
+      htmlPath: isSpanish
+        ? "./src/public/html/email/emailCode_es.html"
+        : "./src/public/html/email/emailCode.html",
+      replacements: [{ code: cod }],
+      from: "Minhoo App",
+    };
+
+    const emailDispatchPromise = sendEmail(emailParams)
+      .then((sent) => Boolean(sent))
+      .catch((sendError) => {
+        console.error("[auth][validateEmail] sendEmail error:", sendError);
+        return false;
+      });
+
+    let emailDispatch: "sent" | "queued" = "sent";
+    if (VALIDATE_EMAIL_SYNC_EMAIL_BUDGET_MS > 0) {
+      const sentWithinBudget = await Promise.race<boolean | "timeout">([
+        emailDispatchPromise,
+        new Promise<"timeout">((resolve) =>
+          setTimeout(() => resolve("timeout"), VALIDATE_EMAIL_SYNC_EMAIL_BUDGET_MS)
+        ),
+      ]);
+
+      if (sentWithinBudget === false) {
         return formatResponse({
           res: res,
-          success: true,
-          code: 200,
-          body: body,
+          success: false,
+          code: 502,
+          message: isSpanish
+            ? "No se pudo enviar el correo de verificación. Inténtalo de nuevo en unos minutos."
+            : "Failed to send verification email. Please try again in a few minutes.",
         });
-      } else {
-        return formatResponse({ res: res, success: false, message: "" });
       }
+
+      if (sentWithinBudget === "timeout") {
+        emailDispatch = "queued";
+        void emailDispatchPromise.then((sent) => {
+          if (!sent) {
+            console.warn(
+              `[auth][validateEmail] async email delivery failed for email=${email}`
+            );
+          }
+        });
+      }
+    } else {
+      emailDispatch = "queued";
+      void emailDispatchPromise.then((sent) => {
+        if (!sent) {
+          console.warn(
+            `[auth][validateEmail] async email delivery failed for email=${email}`
+          );
+        }
+      });
     }
+
+    return formatResponse({
+      res: res,
+      success: true,
+      code: 200,
+      body: {
+        ...body,
+        email_dispatch: emailDispatch,
+      },
+    });
   } catch (error) {
     console.log(error);
     return formatResponse({ res: res, success: false, message: error });

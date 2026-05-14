@@ -15,7 +15,7 @@ import {
   deletePost,
   deletePostAdmin,
 } from "../../../useCases/post/_controller/controller";
-import { createRequestRateLimiter } from "../../../libs/middlewares/request_rate_limiter";
+import { createDistributedRateLimiter as createRequestRateLimiter } from "../../../libs/security/redis_rate_limiter";
 import {
   buildCanonicalShareUrl,
   buildDisplayName,
@@ -141,6 +141,17 @@ router.get("/share/:id", postSharePageLimiter, async (req, res) => {
     });
     if (respondNotModifiedIfFresh(req, res, html)) return;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.setHeader("Content-Security-Policy", [
+      "default-src 'none'",
+      "style-src 'unsafe-inline' https://fonts.googleapis.com",
+      "font-src https://fonts.gstatic.com",
+      "img-src 'self' https://imagedelivery.net data:",
+      "script-src 'unsafe-inline'",
+      "connect-src 'none'",
+      "frame-src 'none'",
+      "object-src 'none'",
+      "base-uri 'self'",
+    ].join("; "));
     res.send(html);
   } catch (error) {
     console.error("❌ Error rendering post share page:", error);

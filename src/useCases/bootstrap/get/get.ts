@@ -7,15 +7,21 @@ import {
   serviceRepository,
   notificationRepository,
   savedRepository,
+  userRepository,
 } from "../_module/module";
 import crypto from "crypto";
-import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
+import { respondNotModifiedIfFresh } from "../../../libs/http_cache";
+import * as followerRepo from "../../../repository/follower/follower_repository";
 import {
   toNotificationSummary,
   toPostSummary,
   toReelSummary,
   toServiceSummary,
 } from "../../../libs/summary_response";
+import {
+  buildServiceFeedViewerContext,
+  rankServiceFeedItems,
+} from "../../../libs/feed/service_feed_ranking";
 import {
   loadFindSessionState,
   saveFindSessionState,
@@ -50,6 +56,22 @@ const homeSummaryL1MaxEntries = Math.max(
 );
 const homeSummaryGuestUseExplicitSession = isTruthy(
   process.env.HOME_SUMMARY_GUEST_USE_EXPLICIT_SESSION ?? "1"
+);
+const homePublicSummaryBrowserMaxAgeSeconds = Math.max(
+  0,
+  Number(process.env.HOME_PUBLIC_SUMMARY_BROWSER_MAX_AGE_SECONDS ?? 15) || 15
+);
+const homePublicSummaryEdgeMaxAgeSeconds = Math.max(
+  homePublicSummaryBrowserMaxAgeSeconds,
+  Number(process.env.HOME_PUBLIC_SUMMARY_EDGE_MAX_AGE_SECONDS ?? 75) || 75
+);
+const homePublicSummaryStaleWhileRevalidateSeconds = Math.max(
+  0,
+  Number(process.env.HOME_PUBLIC_SUMMARY_STALE_WHILE_REVALIDATE_SECONDS ?? 180) || 180
+);
+const homePublicSummaryStaleIfErrorSeconds = Math.max(
+  0,
+  Number(process.env.HOME_PUBLIC_SUMMARY_STALE_IF_ERROR_SECONDS ?? 600) || 600
 );
 
 type HomeSummaryCacheEntry = {
@@ -88,6 +110,27 @@ const normalizeSize = (value: any, fallback: number, max = 10) => {
   return Math.min(Math.max(1, Math.floor(parsed)), max);
 };
 
+const collectPostAuthorIds = (rowsRaw: any[]): number[] =>
+  (Array.isArray(rowsRaw) ? rowsRaw : [])
+    .map((post: any) => Number(post?.user?.id ?? post?.userId))
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
+const collectReelCreatorIds = (rowsRaw: any[]): number[] =>
+  (Array.isArray(rowsRaw) ? rowsRaw : [])
+    .map((reel: any) => Number(reel?.user?.id ?? reel?.userId))
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
+const collectServiceProviderIds = (servicesRaw: any[]): number[] =>
+  (Array.isArray(servicesRaw) ? servicesRaw : [])
+    .map((service: any) =>
+      Number(
+        service?.client?.id ??
+          service?.workers?.[0]?.personal_data?.id ??
+          service?.offers?.[0]?.offerer?.personal_data?.id
+      )
+    )
+    .filter((id: number) => Number.isFinite(id) && id > 0);
+
 const toExplicitSessionKey = (req: Request) => {
   const queryKey = String(
     (req.query as any)?.session_key ?? (req.query as any)?.sessionKey ?? ""
@@ -112,6 +155,79 @@ const toSessionKey = (req: Request) => {
     .update(`${ip}|${userAgent}`)
     .digest("hex")
     .slice(0, 40);
+};
+
+const hasAuthCredentialsHint = (req: Request): boolean => {
+  const authHeaders = [
+    req.header("Authorization"),
+    req.header("x-auth-token"),
+    req.header("x-access-token"),
+    req.header("auth_token"),
+  ];
+  if (authHeaders.some((value: any) => String(value ?? "").trim().length > 0)) return true;
+
+  const query: any = req.query ?? {};
+  const authQueryParams = [
+    query?.urlToken,
+    query?.auth_token,
+    query?.authToken,
+    query?.token,
+  ];
+  return authQueryParams.some((value: any) => String(value ?? "").trim().length > 0);
+};
+
+const isAuthenticatedRequest = (req: Request): boolean => {
+  const requestAny: any = req as any;
+  const userId = Number(requestAny?.userId ?? 0);
+  return Boolean(requestAny?.authenticated) || (Number.isFinite(userId) && userId > 0);
+};
+
+const setOptionalAuthDebugHeaders = (req: Request, res: Response) => {
+  const requestAny: any = req as any;
+  const tokenPresent = Number(requestAny?.authOptionalTokenPresent ?? 0) === 1;
+  const stateRaw = String(
+    requestAny?.authOptionalState ?? (requestAny?.authenticated ? "verified" : "missing")
+  ).trim();
+  const state = stateRaw || "missing";
+  const action = String(requestAny?.authOptionalAction ?? "").trim();
+  const code = String(requestAny?.authOptionalCode ?? "").trim();
+
+  res.set("X-Auth-Optional-Token", tokenPresent ? "1" : "0");
+  res.set("X-Auth-Optional-State", state);
+  if (action) res.set("X-Auth-Action-Hint", action);
+  if (code) res.set("X-Auth-Error-Code", code);
+};
+
+const setHomeSummaryCacheHeaders = (req: Request, res: Response) => {
+  const canUsePublicCache = !isAuthenticatedRequest(req) && !hasAuthCredentialsHint(req);
+
+  if (canUsePublicCache) {
+    const browserCacheControl = [
+      "public",
+      `max-age=${homePublicSummaryBrowserMaxAgeSeconds}`,
+      `s-maxage=${homePublicSummaryEdgeMaxAgeSeconds}`,
+      `stale-while-revalidate=${homePublicSummaryStaleWhileRevalidateSeconds}`,
+      `stale-if-error=${homePublicSummaryStaleIfErrorSeconds}`,
+    ].join(", ");
+    const edgeCacheControl = [
+      "public",
+      `s-maxage=${homePublicSummaryEdgeMaxAgeSeconds}`,
+      `stale-while-revalidate=${homePublicSummaryStaleWhileRevalidateSeconds}`,
+      `stale-if-error=${homePublicSummaryStaleIfErrorSeconds}`,
+    ].join(", ");
+
+    res.set("Cache-Control", browserCacheControl);
+    res.set("CDN-Cache-Control", edgeCacheControl);
+    res.set("Cloudflare-CDN-Cache-Control", edgeCacheControl);
+    res.set("Vary", "Accept-Encoding");
+    return;
+  }
+
+  res.set("Cache-Control", "private, no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("CDN-Cache-Control", "private, no-store");
+  res.set("Cloudflare-CDN-Cache-Control", "private, no-store");
+  res.set("Vary", "Accept-Encoding, Authorization");
 };
 
 const hashTo = (value: string, size = 24) =>
@@ -210,6 +326,7 @@ const buildHomeSummaryCacheKey = (params: {
   reelsSize: number;
   servicesSize: number;
   notificationsLimit: number;
+  includeRankingDebug: boolean;
 }) => {
   const sessionSuffix = params.cacheAudienceKey || "anonymous";
   return [
@@ -224,6 +341,7 @@ const buildHomeSummaryCacheKey = (params: {
     `rs:${params.reelsSize}`,
     `ss:${params.servicesSize}`,
     `nl:${params.notificationsLimit}`,
+    `rd:${params.includeRankingDebug ? 1 : 0}`,
   ].join(":");
 };
 
@@ -339,13 +457,23 @@ const normalizeCount = (value: any): number => {
   return Math.floor(n);
 };
 
+const toIsoDate = (value: any): string | null => {
+  const parsed = new Date(value ?? "");
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString();
+};
+
 const setSavedFlag = (post: any, isSaved: boolean) => {
   if (!post) return;
   if (typeof post.setDataValue === "function") {
     post.setDataValue("is_saved", isSaved);
+    post.setDataValue("isSaved", isSaved);
+    post.setDataValue("saved", isSaved);
     return;
   }
   post.is_saved = isSaved;
+  post.isSaved = isSaved;
+  post.saved = isSaved;
 };
 
 const setSavedCount = (post: any, count: number) => {
@@ -357,6 +485,36 @@ const setSavedCount = (post: any, count: number) => {
   }
   post.saved_count = count;
   post.savedCount = count;
+};
+
+const toBoolOrNull = (value: any): boolean | null => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") {
+    if (value === 1) return true;
+    if (value === 0) return false;
+    return null;
+  }
+  const normalized = String(value ?? "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return null;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return null;
+};
+
+const resolveOnSite = (serviceRaw: any): boolean => {
+  const explicitOnSite = toBoolOrNull(serviceRaw?.on_site ?? serviceRaw?.onSite);
+  if (explicitOnSite !== null) return explicitOnSite;
+
+  const explicitRemote = toBoolOrNull(serviceRaw?.is_remote ?? serviceRaw?.isRemote);
+  if (explicitRemote !== null) return !explicitRemote;
+
+  const hasAddress = String(serviceRaw?.address ?? "").trim().length > 0;
+  const hasCoordinates =
+    Number.isFinite(Number(serviceRaw?.latitude)) &&
+    Number.isFinite(Number(serviceRaw?.longitude));
+  return hasAddress || hasCoordinates;
 };
 
 const attachSavedFlags = async (viewerIdRaw: any, posts: any[]) => {
@@ -382,9 +540,36 @@ const attachSavedFlags = async (viewerIdRaw: any, posts: any[]) => {
   });
 };
 
+const toHomeServiceFeedItem = (serviceRaw: any, viewerIdRaw: any) => {
+  const summary = toServiceSummary(serviceRaw, viewerIdRaw);
+  const onSite = resolveOnSite(serviceRaw);
+  const createdAt =
+    summary?.createdAt ??
+    toIsoDate(serviceRaw?.service_date ?? serviceRaw?.createdAt ?? serviceRaw?.updatedAt);
+
+  return {
+    ...summary,
+    on_site: onSite,
+    onSite,
+    is_remote: !onSite,
+    isRemote: !onSite,
+    createdAt,
+    created_at: createdAt,
+    client: serviceRaw?.client ?? null,
+  };
+};
+
+const toHomeServiceResponseItem = (item: any) => {
+  const { client, ...rest } = item ?? {};
+  return rest;
+};
+
 export const home = async (req: Request, res: Response) => {
   try {
     const include = parseIncludeSections((req.query as any)?.include);
+    const includeRankingDebug = isTruthy((req.query as any)?.ranking_debug);
+    res.set("X-Ranking-Debug", includeRankingDebug ? "1" : "0");
+    setOptionalAuthDebugHeaders(req, res);
     const sessionKey = toSessionKey(req);
     const viewerId = Number((req as any)?.userId ?? 0) || null;
     const cacheAudienceKey = toHomeCacheAudienceKey(req, viewerId);
@@ -410,10 +595,29 @@ export const home = async (req: Request, res: Response) => {
       reelsSize,
       servicesSize,
       notificationsLimit: 0,
+      includeRankingDebug,
     });
 
     const authenticated = Boolean((req as any)?.authenticated && viewerId);
     let payload: any = null;
+    const markPartial = (section: string) => {
+      const normalized = String(section ?? "").trim().toLowerCase();
+      if (!normalized) return;
+      if (!payload || typeof payload !== "object") return;
+      if (!payload.meta || typeof payload.meta !== "object") {
+        payload.meta = { authenticated, userId: viewerId };
+      }
+      const meta = payload.meta as any;
+      const failed = new Set<string>(
+        Array.isArray(meta.failed_sections)
+          ? meta.failed_sections.map((item: any) => String(item ?? "").trim().toLowerCase())
+          : []
+      );
+      failed.add(normalized);
+      meta.partial = true;
+      meta.failed_sections = Array.from(failed.values()).sort();
+    };
+
     const cachedBody = await readHomeSummaryCache(cacheKey);
     if (cachedBody && typeof cachedBody === "object") {
       res.set("X-Bootstrap-Cache", "hit");
@@ -429,27 +633,103 @@ export const home = async (req: Request, res: Response) => {
             return toHomeSummaryPayload(cachedWarmBody, authenticated, viewerId);
           }
 
-          const [postsRaw, reelsRaw, servicesRaw] = await Promise.all([
-            includeForHomeCache.has("posts")
-              ? postRepository.getsSummary(0, postsSize, req.userId, { sessionKey })
-              : Promise.resolve(null),
-            includeForHomeCache.has("reels")
-              ? reelRepository.listFeed(0, reelsSize, req.userId, false, {
-                  sessionKey,
-                  summary: true,
-                })
-              : Promise.resolve(null),
-            includeForHomeCache.has("services")
-              ? serviceRepository.getsSummary(servicesSize)
-              : Promise.resolve(null),
-          ]);
+          const failedSections = new Set<string>();
+          const servicesCandidateSize = Math.min(Math.max(servicesSize * 5, 30), 120);
+          const [postsResult, reelsResult, servicesResult, viewerProfileResult] =
+            await Promise.allSettled([
+              includeForHomeCache.has("posts")
+                ? postRepository.getsSummary(0, postsSize, req.userId, {
+                    sessionKey,
+                    includeRankingDebug,
+                  })
+                : Promise.resolve(null),
+              includeForHomeCache.has("reels")
+                ? reelRepository.listFeed(0, reelsSize, req.userId, false, {
+                    sessionKey,
+                    summary: true,
+                  })
+                : Promise.resolve(null),
+              includeForHomeCache.has("services")
+                ? serviceRepository.getFeedServicesCandidates(
+                    servicesCandidateSize,
+                    Number(req.userId ?? -1)
+                  )
+                : Promise.resolve(null),
+              includeForHomeCache.has("services") && viewerId
+                ? userRepository.getUserById(viewerId)
+                : Promise.resolve(null),
+            ]);
 
-          await attachSavedFlags(req.userId, postsRaw?.rows ?? []);
+          const postsRaw =
+            postsResult.status === "fulfilled" ? postsResult.value : null;
+          const reelsRaw =
+            reelsResult.status === "fulfilled" ? reelsResult.value : null;
+          const servicesRaw =
+            servicesResult.status === "fulfilled" ? servicesResult.value : null;
+          const viewerProfileRaw =
+            viewerProfileResult.status === "fulfilled" ? viewerProfileResult.value : null;
+
+          if (includeForHomeCache.has("posts") && postsResult.status !== "fulfilled") {
+            failedSections.add("posts");
+          }
+          if (includeForHomeCache.has("reels") && reelsResult.status !== "fulfilled") {
+            failedSections.add("reels");
+          }
+          if (includeForHomeCache.has("services") && servicesResult.status !== "fulfilled") {
+            failedSections.add("services");
+          }
+
+          const serviceRows = Array.isArray(servicesRaw) ? servicesRaw : [];
+          let rankedServiceItems: any[] = [];
+          if (includeForHomeCache.has("services")) {
+            try {
+              rankedServiceItems = rankServiceFeedItems(
+                serviceRows.map((service: any) => toHomeServiceFeedItem(service, req.userId)),
+                buildServiceFeedViewerContext(viewerProfileRaw),
+                {
+                  includeRankingDebug,
+                }
+              ).slice(0, servicesSize);
+            } catch {
+              rankedServiceItems = [];
+              failedSections.add("services");
+            }
+          }
+          const serviceById = new Map<number, any>();
+          serviceRows.forEach((service: any) => {
+            const id = Number(service?.id);
+            if (Number.isFinite(id) && id > 0) serviceById.set(id, service);
+          });
+
+          if (includeForHomeCache.has("posts") && postsRaw?.rows) {
+            try {
+              await attachSavedFlags(req.userId, postsRaw.rows ?? []);
+            } catch {
+              failedSections.add("posts");
+            }
+          }
+
+          let relationshipByUserId: Record<number, any> = {};
+          try {
+            relationshipByUserId = await followerRepo.getRelationshipMap(req.userId, [
+              ...collectPostAuthorIds(postsRaw?.rows ?? []),
+              ...collectReelCreatorIds(reelsRaw?.rows ?? []),
+              ...collectServiceProviderIds(servicesRaw ?? []),
+            ]);
+          } catch {
+            relationshipByUserId = {};
+          }
+
+          const postsFailed = failedSections.has("posts");
+          const reelsFailed = failedSections.has("reels");
+          const servicesFailed = failedSections.has("services");
 
           const freshPayload = {
             meta: {
               authenticated,
               userId: viewerId,
+              partial: failedSections.size > 0,
+              failed_sections: Array.from(failedSections.values()).sort(),
             },
             sections: {
               ...(includeForHomeCache.has("posts")
@@ -458,9 +738,12 @@ export const home = async (req: Request, res: Response) => {
                       page: 0,
                       size: postsSize,
                       count: Number(postsRaw?.count ?? 0) || 0,
-                      items: (postsRaw?.rows ?? []).map((post: any) =>
-                        toPostSummary(post, req.userId)
-                      ),
+                      items: postsFailed
+                        ? []
+                        : (postsRaw?.rows ?? []).map((post: any) =>
+                            toPostSummary(post, req.userId, relationshipByUserId)
+                          ),
+                      degraded: postsFailed,
                     },
                   }
                 : {}),
@@ -470,7 +753,12 @@ export const home = async (req: Request, res: Response) => {
                       page: 0,
                       size: reelsSize,
                       count: Number(reelsRaw?.count ?? 0) || 0,
-                      items: (reelsRaw?.rows ?? []).map((reel: any) => toReelSummary(reel)),
+                      items: reelsFailed
+                        ? []
+                        : (reelsRaw?.rows ?? []).map((reel: any) =>
+                            toReelSummary(reel, req.userId, relationshipByUserId)
+                          ),
+                      degraded: reelsFailed,
                     },
                   }
                 : {}),
@@ -478,16 +766,39 @@ export const home = async (req: Request, res: Response) => {
                 ? {
                     services: {
                       size: servicesSize,
-                      items: (servicesRaw ?? []).map((service: any) =>
-                        toServiceSummary(service)
-                      ),
+                      items: servicesFailed
+                        ? []
+                        : rankedServiceItems.map((serviceItem: any) => {
+                            const serviceId = Number(serviceItem?.id);
+                            const sourceRaw =
+                              (Number.isFinite(serviceId) ? serviceById.get(serviceId) : null) ??
+                              serviceItem;
+                            const summary = toServiceSummary(
+                              sourceRaw,
+                              req.userId,
+                              relationshipByUserId
+                            ) as any;
+                            if (includeRankingDebug) {
+                              summary.score = serviceItem?.score ?? serviceItem?.feed_score ?? null;
+                              summary.feed_score =
+                                serviceItem?.feed_score ?? serviceItem?.score ?? null;
+                              summary.rankingReason =
+                                serviceItem?.rankingReason ?? serviceItem?.ranking_reason ?? null;
+                              summary.ranking_reason =
+                                serviceItem?.ranking_reason ?? serviceItem?.rankingReason ?? null;
+                            }
+                            return toHomeServiceResponseItem(summary);
+                          }),
+                      degraded: servicesFailed,
                     },
                   }
                 : {}),
             },
           };
 
-          await writeHomeSummaryCache(cacheKey, freshPayload);
+          if (failedSections.size === 0) {
+            await writeHomeSummaryCache(cacheKey, freshPayload);
+          }
           return toHomeSummaryPayload(freshPayload, authenticated, viewerId);
         }
       );
@@ -498,49 +809,63 @@ export const home = async (req: Request, res: Response) => {
     }
 
     if (includeNotifications && viewerId) {
-      const notificationsVersion = await getHomeNotificationsCacheVersion(viewerId);
-      const notificationsCacheKey = buildHomeNotificationsCacheKey({
-        viewerId: Number(viewerId),
-        notificationsVersion,
-        notificationsLimit,
-      });
-      const cachedNotifications = await readHomeNotificationsCache(notificationsCacheKey);
-      if (cachedNotifications) {
-        res.set("X-Bootstrap-Notifications-Cache", "hit");
-        payload.sections.notifications = cachedNotifications;
-      } else {
-        const notificationsResult = await withSingleFlight(
-          homeNotificationsInFlight,
-          notificationsCacheKey,
-          async () => {
-            const cachedWarmNotifications = await readHomeNotificationsCache(
-              notificationsCacheKey
-            );
-            if (cachedWarmNotifications) return cachedWarmNotifications;
+      try {
+        const notificationsVersion = await getHomeNotificationsCacheVersion(viewerId);
+        const notificationsCacheKey = buildHomeNotificationsCacheKey({
+          viewerId: Number(viewerId),
+          notificationsVersion,
+          notificationsLimit,
+        });
+        const cachedNotifications = await readHomeNotificationsCache(notificationsCacheKey);
+        if (cachedNotifications) {
+          res.set("X-Bootstrap-Notifications-Cache", "hit");
+          payload.sections.notifications = cachedNotifications;
+        } else {
+          const notificationsResult = await withSingleFlight(
+            homeNotificationsInFlight,
+            notificationsCacheKey,
+            async () => {
+              const cachedWarmNotifications = await readHomeNotificationsCache(
+                notificationsCacheKey
+              );
+              if (cachedWarmNotifications) return cachedWarmNotifications;
 
-            const [notificationsRaw, unreadNotifications] = await Promise.all([
-              notificationRepository.myNotificationsSummary(viewerId, {
+              const [notificationsRaw, unreadNotifications] = await Promise.all([
+                notificationRepository.myNotificationsSummary(viewerId, {
+                  limit: notificationsLimit,
+                  cursor: null,
+                }),
+                notificationRepository.countUnreadByUser(viewerId),
+              ]);
+              const notificationsBody: HomeNotificationsCacheBody = {
                 limit: notificationsLimit,
-                cursor: null,
-              }),
-              notificationRepository.countUnreadByUser(viewerId),
-            ]);
-            const notificationsBody: HomeNotificationsCacheBody = {
-              limit: notificationsLimit,
-              unreadCount: Number(unreadNotifications ?? 0) || 0,
-              items: (notificationsRaw ?? []).map((notification: any) =>
-                toNotificationSummary(notification)
-              ),
-            };
-            await writeHomeNotificationsCache(notificationsCacheKey, notificationsBody);
-            return notificationsBody;
-          }
-        );
-        res.set(
-          "X-Bootstrap-Notifications-Cache",
-          notificationsResult.shared ? "coalesced" : "miss"
-        );
-        payload.sections.notifications = notificationsResult.value;
+                unreadCount: Number(unreadNotifications ?? 0) || 0,
+                items: (notificationsRaw ?? []).map((notification: any) =>
+                  toNotificationSummary(notification)
+                ),
+              };
+              await writeHomeNotificationsCache(notificationsCacheKey, notificationsBody);
+              return notificationsBody;
+            }
+          );
+          res.set(
+            "X-Bootstrap-Notifications-Cache",
+            notificationsResult.shared ? "coalesced" : "miss"
+          );
+          payload.sections.notifications = notificationsResult.value;
+        }
+      } catch {
+        if (!payload.sections || typeof payload.sections !== "object") {
+          payload.sections = {};
+        }
+        payload.sections.notifications = {
+          limit: notificationsLimit,
+          unreadCount: 0,
+          items: [],
+          degraded: true,
+        };
+        res.set("X-Bootstrap-Notifications-Cache", "error");
+        markPartial("notifications");
       }
       res.set("X-Bootstrap-Notifications-Cache-TTL", String(homeNotificationsCacheTtlSeconds));
     } else {
@@ -548,12 +873,18 @@ export const home = async (req: Request, res: Response) => {
       res.set("X-Bootstrap-Notifications-Cache-TTL", String(homeNotificationsCacheTtlSeconds));
     }
 
-    setCacheControl(res, {
-      visibility: viewerId ? "private" : "public",
-      maxAgeSeconds: homeSummaryCacheTtlSeconds,
-      staleWhileRevalidateSeconds: 30,
-      staleIfErrorSeconds: 60,
-    });
+    const isPartial = Boolean(payload?.meta?.partial);
+    res.set("X-Bootstrap-Partial", isPartial ? "1" : "0");
+    if (isPartial) {
+      const failedSections = Array.isArray(payload?.meta?.failed_sections)
+        ? payload.meta.failed_sections.map((item: any) => String(item ?? "").trim()).filter(Boolean)
+        : [];
+      if (failedSections.length > 0) {
+        res.set("X-Bootstrap-Partial-Sections", failedSections.join(","));
+      }
+    }
+
+    setHomeSummaryCacheHeaders(req, res);
     if (respondNotModifiedIfFresh(req, res, payload)) return;
 
     return formatResponse({

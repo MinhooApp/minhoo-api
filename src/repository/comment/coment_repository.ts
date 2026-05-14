@@ -3,6 +3,11 @@ import Post from "../../_models/post/post";
 import UserBLock from "../../_models/block/block";
 import CommentReport from "../../_models/comment/comment_report";
 import { Op, UniqueConstraintError } from "sequelize";
+import {
+  attachHashtagsToRows,
+  normalizeHashtagsForContent,
+  syncHashtagsForContent,
+} from "../hashtag/hashtag_repository";
 
 const COMMENT_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
   15,
@@ -13,6 +18,15 @@ const isMissingTableError = (error: any) => {
   const code = String(error?.original?.code ?? error?.code ?? "").toUpperCase();
   const message = String(error?.original?.sqlMessage ?? error?.message ?? "").toLowerCase();
   return code === "ER_NO_SUCH_TABLE" || message.includes("doesn't exist");
+};
+
+const setValue = (target: any, key: string, value: any) => {
+  if (!target) return;
+  if (typeof target.setDataValue === "function") {
+    target.setDataValue(key, value);
+    return;
+  }
+  target[key] = value;
 };
 
 /**
@@ -43,11 +57,22 @@ const isBlockedBetween = async (a: any, b: any) => {
  * - Si meId no viene, intenta usar body.userId (compat)
  */
 export const add = async (body: any, meId: any = -1) => {
+  const hashtags = normalizeHashtagsForContent({
+    text: body?.comment,
+    hashtagsRaw: body?.hashtags,
+  });
   const me = Number(meId) > 0 ? Number(meId) : Number(body?.userId);
 
   // Si no hay postId o no hay usuario, dejamos pasar (compat)
   if (!body?.postId || !Number.isFinite(me) || me <= 0) {
-    return await Comment.create(body);
+    const comment = await Comment.create(body);
+    const hashtagEntries = await syncHashtagsForContent({
+      contentType: "comment",
+      contentId: (comment as any)?.id,
+      tags: hashtags,
+    });
+    setValue(comment, "hashtags", hashtagEntries);
+    return comment;
   }
 
   const post = await Post.findByPk(body.postId, { attributes: ["id", "userId"] });
@@ -59,7 +84,14 @@ export const add = async (body: any, meId: any = -1) => {
   // ✅ Si hay bloqueo, NO crear comment (no rompemos response)
   if (blocked) return null;
 
-  return await Comment.create(body);
+  const comment = await Comment.create(body);
+  const hashtagEntries = await syncHashtagsForContent({
+    contentType: "comment",
+    contentId: (comment as any)?.id,
+    tags: hashtags,
+  });
+  setValue(comment, "hashtags", hashtagEntries);
+  return comment;
 };
 
 export const all = async () => {
@@ -68,20 +100,42 @@ export const all = async () => {
 
 export const gets = async () => {
   // ✅ NO filtramos por bloqueos: comentarios viejos se quedan visibles
-  return await Comment.findAll({ where: { is_delete: false } });
+  const comments = await Comment.findAll({ where: { is_delete: false } });
+  await attachHashtagsToRows({ rows: comments as any[], contentType: "comment" });
+  return comments;
 };
 
 export const getOne = async (id: any) => {
-  return await Comment.findOne({ where: { id } });
+  const comment = await Comment.findOne({ where: { id } });
+  if (comment) {
+    await attachHashtagsToRows({ rows: [comment], contentType: "comment" });
+  }
+  return comment;
 };
 
 export const get = async (id: any) => {
-  return await Comment.findOne({ where: { id, is_delete: false } });
+  const comment = await Comment.findOne({ where: { id, is_delete: false } });
+  if (comment) {
+    await attachHashtagsToRows({ rows: [comment], contentType: "comment" });
+  }
+  return comment;
 };
 
 export const update = async (id: any, body: any) => {
   const commentTemp = await Comment.findByPk(id);
   const comment = await commentTemp?.update(body);
+  if (comment) {
+    const hashtags = normalizeHashtagsForContent({
+      text: body?.comment ?? (comment as any)?.comment,
+      hashtagsRaw: body?.hashtags,
+    });
+    const hashtagEntries = await syncHashtagsForContent({
+      contentType: "comment",
+      contentId: (comment as any)?.id,
+      tags: hashtags,
+    });
+    setValue(comment, "hashtags", hashtagEntries);
+  }
   return [comment];
 };
 

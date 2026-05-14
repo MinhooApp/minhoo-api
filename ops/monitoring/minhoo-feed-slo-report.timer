@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Minhoo Feed SLO 24h report once per day
+
+[Timer]
+OnCalendar=*-*-* 23:55:00
+AccuracySec=2min
+Persistent=true
+Unit=minhoo-feed-slo-report.service
+
+[Install]
+WantedBy=timers.target
+

@@ -205,6 +205,36 @@ User.init(
       allowNull: false,
       defaultValue: false,
     },
+    profile_verified: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+    },
+    profile_verification_status: {
+      type: DataTypes.STRING(32),
+      allowNull: false,
+      defaultValue: "unverified",
+    },
+    profile_verified_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    profile_verification_last_submitted_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    profile_verification_failure_reason: {
+      type: DataTypes.STRING(255),
+      allowNull: true,
+    },
+    profile_verification_reviewed_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+    },
+    profile_verification_reviewed_by: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+    },
 
     available: {
       type: DataTypes.BOOLEAN,

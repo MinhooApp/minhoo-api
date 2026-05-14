@@ -1,6 +1,7 @@
 import { Op, Sequelize } from "sequelize";
 import Follower from "../../_models/follower/follower";
 import User from "../../_models/user/user";
+import { getCachedCounts, invalidateUserCounts } from "../../libs/cache/user_cache";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
 
 const normalizeLimit = (value: any, fallback = 20, max = 50) => {
@@ -90,26 +91,25 @@ export const deletefollower = async () => {
   return follower;
 };
 export const toggleFollow = async (userId: any, followerId: any) => {
-  // Buscar si ya existe una fila con los IDs proporcionados
   const existingFollow = await Follower.findOne({
-    where: {
-      userId,
-      followerId,
-    },
+    where: { userId, followerId },
   });
 
+  let followed: boolean;
   if (existingFollow) {
-    // Si existe, eliminar la fila para dejar de seguir
     await existingFollow.destroy();
-    return false; // Ya no sigue al usuario
+    followed = false;
   } else {
-    // Si no existe, crear una nueva fila para seguir al usuario
-    await Follower.create({
-      userId,
-      followerId,
-    });
-    return true; // Empezó a seguir al usuario
+    await Follower.create({ userId, followerId });
+    followed = true;
   }
+
+  await Promise.all([
+    invalidateUserCounts(Number(userId)),
+    invalidateUserCounts(Number(followerId)),
+  ]);
+
+  return followed;
 };
 
 export const removeFollower = async (userId: any, followerId: any) => {
@@ -119,15 +119,17 @@ export const removeFollower = async (userId: any, followerId: any) => {
   }
 
   const rowsAffected = await Follower.destroy({
-    where: {
-      userId,
-      followerId,
-    },
+    where: { userId, followerId },
   });
 
   if (!rowsAffected) {
     return { removed: false, reason: "not_following", rowsAffected: 0 };
   }
+
+  await Promise.all([
+    invalidateUserCounts(Number(userId)),
+    invalidateUserCounts(Number(followerId)),
+  ]);
 
   return { removed: true, rowsAffected };
 };
@@ -172,13 +174,70 @@ export const getRelationship = async (viewerId: number, targetId: number) => {
   };
 };
 
-export const getCounts = async (userId: number) => {
-  const [followersCount, followingCount] = await Promise.all([
-    Follower.count({ where: { userId } }),
-    Follower.count({ where: { followerId: userId } }),
-  ]);
+export const getRelationshipMap = async (
+  viewerIdRaw: any,
+  targetIdsRaw: any[]
+): Promise<Record<number, { isFollowing: boolean; isFollowedBy: boolean; isMutual: boolean }>> => {
+  const viewerId = toPositiveInt(viewerIdRaw);
+  if (!viewerId) return {};
 
-  return { followersCount, followingCount };
+  const targetIds = Array.from(
+    new Set(
+      (Array.isArray(targetIdsRaw) ? targetIdsRaw : [])
+        .map((value: any) => toPositiveInt(value))
+        .filter((value): value is number => Number.isFinite(value as any))
+    )
+  ).filter((id) => id !== viewerId);
+
+  if (!targetIds.length) return {};
+
+  const rows = await Follower.findAll({
+    where: {
+      [Op.or]: [
+        { userId: { [Op.in]: targetIds }, followerId: viewerId },
+        { userId: viewerId, followerId: { [Op.in]: targetIds } },
+      ],
+    },
+    attributes: ["userId", "followerId"],
+    raw: true,
+  });
+
+  const followingSet = new Set<number>();
+  const followedBySet = new Set<number>();
+  rows.forEach((row: any) => {
+    const userId = Number(row?.userId);
+    const followerId = Number(row?.followerId);
+    if (userId !== viewerId && followerId === viewerId) {
+      followingSet.add(userId);
+      return;
+    }
+    if (userId === viewerId && followerId !== viewerId) {
+      followedBySet.add(followerId);
+    }
+  });
+
+  const map: Record<number, { isFollowing: boolean; isFollowedBy: boolean; isMutual: boolean }> = {};
+  targetIds.forEach((targetId) => {
+    const isFollowing = followingSet.has(targetId);
+    const isFollowedBy = followedBySet.has(targetId);
+    map[targetId] = {
+      isFollowing,
+      isFollowedBy,
+      isMutual: isFollowing && isFollowedBy,
+    };
+  });
+
+  return map;
+};
+
+export const getCounts = async (userId: number) => {
+  return getCachedCounts(userId, async () => {
+    const [followersCount, followingCount] = await Promise.all([
+      Follower.count({ where: { userId } }),
+      Follower.count({ where: { followerId: userId } }),
+    ]);
+    return { followersCount, followingCount };
+  });
 };
 
 export const getCountsMap = async (userIdsRaw: any[]) => {
@@ -194,7 +253,6 @@ export const getCountsMap = async (userIdsRaw: any[]) => {
   if (!userIds.length) return output;
 
   const countExpression = Sequelize.fn("COUNT", Sequelize.col("id"));
-
   const [followersRows, followingRows] = await Promise.all([
     Follower.findAll({
       where: { userId: { [Op.in]: userIds } },
@@ -237,6 +295,13 @@ export const followUser = async (targetId: number, viewerId: number) => {
     defaults: { userId: targetId, followerId: viewerId },
   });
 
+  if (created) {
+    await Promise.all([
+      invalidateUserCounts(targetId),
+      invalidateUserCounts(viewerId),
+    ]);
+  }
+
   return { created, row };
 };
 
@@ -244,6 +309,13 @@ export const unfollowUser = async (targetId: number, viewerId: number) => {
   const deleted = await Follower.destroy({
     where: { userId: targetId, followerId: viewerId },
   });
+
+  if (deleted > 0) {
+    await Promise.all([
+      invalidateUserCounts(targetId),
+      invalidateUserCounts(viewerId),
+    ]);
+  }
 
   return { removed: deleted > 0 };
 };
@@ -325,12 +397,20 @@ export const listFollowersWithFlags = async (
     const targetId = Number(row.followerId);
     const viewerFollowsUser = viewerFollowsSet.has(targetId);
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
+    const isMutual = viewerFollowsUser && userFollowsViewer;
     return {
       cursor_id: Number(row.id ?? 0) || null,
       user: row.follower_data,
       viewerFollowsUser,
+      viewer_follows_user: viewerFollowsUser,
+      isFollowing: viewerFollowsUser,
+      is_following: viewerFollowsUser,
       userFollowsViewer,
-      isMutual: viewerFollowsUser && userFollowsViewer,
+      user_follows_viewer: userFollowsViewer,
+      isFollowedBy: userFollowsViewer,
+      is_followed_by: userFollowsViewer,
+      isMutual,
+      is_mutual: isMutual,
       canRemove: hasViewer && Number(viewerId) === Number(userId),
       followed_at: viewerFollowsAt.get(targetId) ?? null,
       followed_me_at: hasViewer
@@ -413,12 +493,20 @@ export const listFollowersSummary = async (
     const targetId = Number(row.followerId);
     const viewerFollowsUser = viewerFollowsSet.has(targetId);
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
+    const isMutual = viewerFollowsUser && userFollowsViewer;
     return {
       cursor_id: Number(row.id ?? 0) || null,
       user: row.follower_data,
       viewerFollowsUser,
+      viewer_follows_user: viewerFollowsUser,
+      isFollowing: viewerFollowsUser,
+      is_following: viewerFollowsUser,
       userFollowsViewer,
-      isMutual: viewerFollowsUser && userFollowsViewer,
+      user_follows_viewer: userFollowsViewer,
+      isFollowedBy: userFollowsViewer,
+      is_followed_by: userFollowsViewer,
+      isMutual,
+      is_mutual: isMutual,
       canRemove: hasViewer && Number(viewerId) === Number(userId),
     };
   });
@@ -501,12 +589,20 @@ export const listFollowingWithFlags = async (
     const targetId = Number(row.userId);
     const viewerFollowsUser = viewerFollowsSet.has(targetId);
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
+    const isMutual = viewerFollowsUser && userFollowsViewer;
     return {
       cursor_id: Number(row.id ?? 0) || null,
       user: row.following_data,
       viewerFollowsUser,
+      viewer_follows_user: viewerFollowsUser,
+      isFollowing: viewerFollowsUser,
+      is_following: viewerFollowsUser,
       userFollowsViewer,
-      isMutual: viewerFollowsUser && userFollowsViewer,
+      user_follows_viewer: userFollowsViewer,
+      isFollowedBy: userFollowsViewer,
+      is_followed_by: userFollowsViewer,
+      isMutual,
+      is_mutual: isMutual,
       followed_at: hasViewer
         ? viewerFollowsAt.get(targetId) ?? null
         : row.createdAt ?? null,
@@ -588,12 +684,20 @@ export const listFollowingSummary = async (
     const targetId = Number(row.userId);
     const viewerFollowsUser = viewerFollowsSet.has(targetId);
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
+    const isMutual = viewerFollowsUser && userFollowsViewer;
     return {
       cursor_id: Number(row.id ?? 0) || null,
       user: row.following_data,
       viewerFollowsUser,
+      viewer_follows_user: viewerFollowsUser,
+      isFollowing: viewerFollowsUser,
+      is_following: viewerFollowsUser,
       userFollowsViewer,
-      isMutual: viewerFollowsUser && userFollowsViewer,
+      user_follows_viewer: userFollowsViewer,
+      isFollowedBy: userFollowsViewer,
+      is_followed_by: userFollowsViewer,
+      isMutual,
+      is_mutual: isMutual,
     };
   });
 };

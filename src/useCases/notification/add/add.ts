@@ -1,13 +1,13 @@
 import { TypeNotification } from "_models/notification/type_notification";
 import {
   repository,
-  sendPushToMultipleUsers,
   userRepository,
 } from "../_module/module";
 import { emitNotificationRealtime } from "../../../libs/helper/realtime_dispatch";
 import * as chatRepository from "../../../repository/chat/chat_repository";
 import * as groupRepository from "../../../repository/group/group_repository";
 import { bumpHomeNotificationsCacheVersion } from "../../../libs/cache/bootstrap_home_cache_version";
+import { enqueuePushJob } from "../../../libs/jobs/push_queue";
 
 type NotificationScope = "direct" | "group";
 
@@ -49,6 +49,13 @@ const MIN_PUSH_TOKEN_LENGTH = Math.max(
 );
 const PUSH_LOCALE_DEBUG = String(process.env.PUSH_LOCALE_DEBUG ?? "0").trim() === "1";
 const pushEmptyTokenLogMemory = new Map<string, number>();
+
+const obfuscatePushToken = (tokenRaw: any): string => {
+  const token = String(tokenRaw ?? "").trim();
+  if (!token) return "";
+  if (token.length <= 12) return "***";
+  return `${token.slice(0, 6)}...${token.slice(-6)}`;
+};
 
 const toPositiveInt = (value: any): number | undefined => {
   const parsed = Number(value);
@@ -272,10 +279,34 @@ const toSpanishPushBody = (body: string) => {
       "Tu solicitud para unirte al grupo fue aprobada.",
     "Your group join request was rejected":
       "Tu solicitud para unirte al grupo fue rechazada.",
+    "You received a new rating from your client. You can now rate the client.":
+      "Recibiste una nueva calificacion de tu cliente. Ya puedes calificar al cliente.",
+    "The worker has rated your service.":
+      "El trabajador ya califico tu servicio.",
   };
 
   if (Object.prototype.hasOwnProperty.call(directMap, body)) {
     return directMap[body];
+  }
+
+  const starPostByActor = body.match(/^(.+?)\s+has given your post a star!$/i);
+  if (starPostByActor) {
+    return `${starPostByActor[1]} le ha dado una estrella a tu publicacion.`;
+  }
+
+  const savePostByActor = body.match(/^(.+?)\s+has saved your post\.$/i);
+  if (savePostByActor) {
+    return `${savePostByActor[1]} ha guardado tu publicacion.`;
+  }
+
+  const starOrbitByActor = body.match(/^(.+?)\s+has starred your Orbit\.$/i);
+  if (starOrbitByActor) {
+    return `${starOrbitByActor[1]} ha destacado tu Orbit.`;
+  }
+
+  const saveOrbitByActor = body.match(/^(.+?)\s+has saved your Orbit\.$/i);
+  if (saveOrbitByActor) {
+    return `${saveOrbitByActor[1]} ha guardado tu Orbit.`;
   }
 
   const followMatch = body.match(/^(.+?)\s+started following you$/i);
@@ -318,7 +349,11 @@ const localizePushBody = (body: string, locale: PushLocale) => {
   return toSpanishPushBody(body);
 };
 
-export const sendNotification = async (
+/**
+ * Internal async implementation — runs entirely in the background.
+ * Never called directly from outside this module.
+ */
+const _sendNotificationCore = async (
   params: SendNotificationParams
 ): Promise<void> => {
   try {
@@ -483,45 +518,38 @@ export const sendNotification = async (
       return;
     }
 
-    const pushResult = await sendPushToMultipleUsers(
-      pushTitle,
-      pushBody,
-      params.type,
-      getFirstAvailableId(notificationData),
-      uuids,
-      extraData
-    );
-
-    if ((pushResult as any)?.reason === "EMPTY_TOKEN" || (pushResult as any)?.reason === "EMPTY_TOKENS") {
-      if (shouldLogMissingToken(params.userId, params.type)) {
-        console.log(
-          `[push] empty token userId=${params.userId} type=${params.type} interactorId=${params.interactorId ?? 0}`
-        );
-      }
-    }
-
-    const invalidTokens = Array.isArray((pushResult as any)?.invalidTokens)
-      ? (pushResult as any).invalidTokens
-      : [];
-    for (const invalidTokenRaw of invalidTokens) {
-      const invalidToken = String(invalidTokenRaw ?? "").trim();
-      if (!invalidToken) continue;
-
-      const clearedLegacy = await userRepository.clearUuidIfMatch(params.userId, invalidToken);
-      await userRepository.clearPushSessionTokenIfMatch(params.userId, invalidToken);
-
-      if (clearedLegacy > 0) {
-        console.log(`🧹 UUID inválido limpiado userId=${params.userId} reason=MULTICAST_INVALID_TOKEN`);
-      } else {
-        console.log(
-          `🧹 UUID inválido detectado sin limpieza userId=${params.userId} reason=MULTICAST_INVALID_TOKEN`
-        );
-      }
-    }
+    // Enqueue the Firebase call. The job is persisted in Redis and retried
+    // automatically on failure — push is not lost if the process restarts.
+    await enqueuePushJob({
+      userId: params.userId,
+      notificationId: getFirstAvailableId(notificationData),
+      tokens: uuids,
+      title: pushTitle,
+      body: pushBody,
+      type: params.type,
+      extraData: extraData as Record<string, string | number>,
+    });
   } catch (error) {
-    console.error("Error al enviar la notificación:", error);
-    throw error;
+    console.error("[push] sendNotification error:", error);
   }
+};
+
+/**
+ * Fire-and-forget push notification dispatch.
+ *
+ * Intentionally returns void (not Promise<void>) so that existing callers
+ * using `await sendNotification(...)` compile and run correctly — awaiting a
+ * non-Promise is a safe no-op in JavaScript. This means the HTTP response is
+ * returned to the client immediately without waiting for Firebase to respond,
+ * eliminating 2–5s latency spikes on slow networks or Firebase cold paths.
+ *
+ * Errors are caught and logged inside _sendNotificationCore; they never
+ * propagate to the caller.
+ */
+export const sendNotification = (params: SendNotificationParams): void => {
+  void _sendNotificationCore(params).catch((err) => {
+    console.error("[push] unhandled sendNotification error:", err);
+  });
 };
 
 function getFirstAvailableId(data: SendNotificationParams): number {

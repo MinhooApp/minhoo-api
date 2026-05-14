@@ -52,6 +52,16 @@ export const buildUserUpdatedRealtimePayload = (
     toText((safeUser as any)?.avatarUrl) ??
     toText((safeUser as any)?.avatar_url);
   const normalizedCounts = normalizeCounts(counts ?? safeUser);
+  const profileVerified = Boolean(
+    (safeUser as any)?.profile_verified ??
+      (safeUser as any)?.profileVerified ??
+      (safeUser as any)?.verified_badge ??
+      false
+  );
+  const profileVerificationStatus = toText(
+    (safeUser as any)?.profile_verification_status ??
+      (safeUser as any)?.profileVerificationStatus
+  );
 
   return {
     type: "user_updated" as const,
@@ -69,6 +79,12 @@ export const buildUserUpdatedRealtimePayload = (
     following_count: normalizedCounts.followingCount,
     followingsCount: normalizedCounts.followingCount,
     followings_count: normalizedCounts.followingCount,
+    profile_verified: profileVerified,
+    profileVerified,
+    verified_badge: profileVerified,
+    is_verified_profile: profileVerified,
+    profile_verification_status: profileVerificationStatus,
+    profileVerificationStatus,
     updatedAt: new Date().toISOString(),
   };
 };

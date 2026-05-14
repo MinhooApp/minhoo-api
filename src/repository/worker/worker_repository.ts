@@ -481,6 +481,8 @@ const fetchWorkerCandidatePool = async ({
         attributes: [
           "id",
           "verified",
+          "profile_verified",
+          "profile_verification_status",
           "country_residence_id",
           "state_residence_id",
           "city_residence_id",

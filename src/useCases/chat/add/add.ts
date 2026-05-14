@@ -34,6 +34,8 @@ type ContactMetadata = {
   user_id: number;
   name: string;
   avatar: string | null;
+  profile_verified?: boolean;
+  verified_badge?: boolean;
 };
 
 type ShareEntityType = "orbit_post" | "orbit_video" | "orbit_reel";
@@ -63,7 +65,7 @@ export type MessagePayload = {
 const VOICE_MAX_DURATION_MS = 60 * 1000;
 const VOICE_MAX_SIZE_BYTES = 10 * 1024 * 1024;
 const IMAGE_MAX_SIZE_BYTES = 10 * 1024 * 1024;
-const VIDEO_MAX_DURATION_MS = 60 * 1000;
+const VIDEO_MAX_DURATION_MS = 180 * 1000;
 const VIDEO_MAX_SIZE_BYTES = 100 * 1024 * 1024;
 const DOCUMENT_MAX_SIZE_BYTES = 20 * 1024 * 1024;
 const WAVEFORM_MAX_POINTS = 256;
@@ -454,24 +456,22 @@ const normalizeShareEntityType = (value: any): ShareEntityType | null => {
   const normalized = String(value ?? "")
     .trim()
     .toLowerCase();
-  if (
-    normalized === "orbit_post" ||
-    normalized === "orbit_video" ||
-    normalized === "orbit_reel"
-  ) {
-    return normalized;
-  }
+  if (normalized === "orbit_post" || normalized === "post") return "orbit_post";
+  if (normalized === "orbit_video" || normalized === "video")
+    return "orbit_video";
+  if (normalized === "orbit_reel" || normalized === "reel" || normalized === "orbit")
+    return "orbit_reel";
   return null;
 };
 
 const normalizeShareText = (
   value: any,
   maxLength: number
-): string | null | undefined => {
+): string | null => {
   if (value === undefined || value === null) return null;
   const normalized = String(value).trim().replace(/\s+/g, " ");
   if (!normalized) return null;
-  if (normalized.length > maxLength) return undefined;
+  if (normalized.length > maxLength) return normalized.slice(0, maxLength).trim();
   return normalized;
 };
 
@@ -505,6 +505,10 @@ const parseShareMetadata = (value: any): ShareMetadata | undefined => {
     toPositiveInt((source as any)?.entityId) ??
     toPositiveInt((source as any)?.content_id) ??
     toPositiveInt((source as any)?.contentId) ??
+    toPositiveInt((source as any)?.orbit_id) ??
+    toPositiveInt((source as any)?.orbitId) ??
+    toPositiveInt((source as any)?.reel_id) ??
+    toPositiveInt((source as any)?.reelId) ??
     toPositiveInt((source as any)?.id);
 
   if (!entityType || !entityId) return undefined;
@@ -518,7 +522,6 @@ const parseShareMetadata = (value: any): ShareMetadata | undefined => {
     (source as any)?.title ?? (source as any)?.name,
     120
   );
-  if (title === undefined) return undefined;
 
   const subtitle = normalizeShareText(
     (source as any)?.subtitle ??
@@ -527,7 +530,6 @@ const parseShareMetadata = (value: any): ShareMetadata | undefined => {
       (source as any)?.text,
     220
   );
-  if (subtitle === undefined) return undefined;
 
   const thumbnailRaw = String(
     (source as any)?.thumbnail_url ??
@@ -538,7 +540,6 @@ const parseShareMetadata = (value: any): ShareMetadata | undefined => {
   const thumbnailUrl = thumbnailRaw
     ? resolveShareThumbnailUrl(thumbnailRaw)
     : null;
-  if (thumbnailRaw && !thumbnailUrl) return undefined;
 
   const previewMediaRaw = String(
     (source as any)?.preview_media_url ??
@@ -550,7 +551,6 @@ const parseShareMetadata = (value: any): ShareMetadata | undefined => {
   const previewMediaUrl = previewMediaRaw
     ? resolveSharePreviewMediaUrl(previewMediaRaw)
     : null;
-  if (previewMediaRaw && !previewMediaUrl) return undefined;
 
   return {
     entity_type: entityType,
@@ -952,7 +952,16 @@ export const hydrateContactMetadata = async (
   if (!userId) return null;
 
   const user = await User.findByPk(userId, {
-    attributes: ["id", "name", "last_name", "username", "image_profil", "is_deleted"],
+    attributes: [
+      "id",
+      "name",
+      "last_name",
+      "username",
+      "image_profil",
+      "is_deleted",
+      "profile_verified",
+      "profile_verification_status",
+    ],
   });
   if (!user || (user as any)?.is_deleted) return null;
 
@@ -967,6 +976,8 @@ export const hydrateContactMetadata = async (
     user_id: resolvedUserId,
     name: fullName || fallbackName,
     avatar: avatarResolved ?? null,
+    profile_verified: Boolean((user as any)?.profile_verified ?? false),
+    verified_badge: Boolean((user as any)?.profile_verified ?? false),
   };
 };
 
@@ -1144,7 +1155,7 @@ export const sendMessage = async (req: Request, res: Response) => {
 
     // Push/notification must never block nor fail the message send response.
     if (!wasDeduplicated) {
-      void sendNotification({
+      sendNotification({
         userId: receiverUserId,
         interactorId: senderId,
         chatId,
@@ -1154,11 +1165,6 @@ export const sendMessage = async (req: Request, res: Response) => {
         senderName,
         notificationScope: "direct",
         peerUserId: senderId,
-      }).catch((pushError) => {
-        console.warn(
-          `[chat][sendMessage] notification dispatch failed chatId=${chatId} messageId=${createdMessageId} senderId=${senderId} receiverUserId=${receiverUserId}`,
-          pushError
-        );
       });
     }
 

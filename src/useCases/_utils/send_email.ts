@@ -20,7 +20,7 @@ interface SendManyEmailParams {
 }
 // Interfaz para los reemplazos dinámicos
 interface Replacement {
-  [key: string]: string; // Clave y valor para cada reemplazo
+  [key: string]: any; // Clave y valor para cada reemplazo
 }
 
 const isValidEmail = (email: string): boolean => {
@@ -30,6 +30,47 @@ const isValidEmail = (email: string): boolean => {
 
 const allowInsecureTls =
   String(process.env.EMAIL_ALLOW_INSECURE_TLS ?? "").trim() === "1";
+const isFalsyLike = (value: any): boolean =>
+  /^(0|false|no|off)$/i.test(String(value ?? "").trim());
+const parsePositiveInt = (value: any, fallback: number): number => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  const normalized = Math.trunc(parsed);
+  if (normalized <= 0) return fallback;
+  return normalized;
+};
+const EMAIL_SMTP_POOL_ENABLED = !isFalsyLike(process.env.EMAIL_SMTP_POOL_ENABLED ?? "1");
+const EMAIL_SMTP_MAX_CONNECTIONS = parsePositiveInt(
+  process.env.EMAIL_SMTP_MAX_CONNECTIONS,
+  5
+);
+const EMAIL_SMTP_MAX_MESSAGES = parsePositiveInt(process.env.EMAIL_SMTP_MAX_MESSAGES, 100);
+const EMAIL_CONNECTION_TIMEOUT_MS = parsePositiveInt(
+  process.env.EMAIL_CONNECTION_TIMEOUT_MS,
+  8000
+);
+const EMAIL_GREETING_TIMEOUT_MS = parsePositiveInt(
+  process.env.EMAIL_GREETING_TIMEOUT_MS,
+  5000
+);
+const EMAIL_SOCKET_TIMEOUT_MS = parsePositiveInt(process.env.EMAIL_SOCKET_TIMEOUT_MS, 10000);
+const EMAIL_TEMPLATE_CACHE_ENABLED = !isFalsyLike(
+  process.env.EMAIL_TEMPLATE_CACHE_ENABLED ?? "1"
+);
+const DEFAULT_EMAIL_FROM = String(
+  process.env.EMAIL_FROM ?? "Minhoo <noreply@minhoo.app>"
+).trim() || "Minhoo <noreply@minhoo.app>";
+const templateCache = new Map<string, string>();
+const readFile = promisify(fs.readFile);
+let sharedTransporter: any = null;
+
+const resolveFromAddress = (fromRaw?: string): string => {
+  const from = String(fromRaw ?? "").trim();
+  if (!from) return DEFAULT_EMAIL_FROM;
+  // If caller sends only a display name (e.g. "Minhoo App"), force the configured sender.
+  if (!from.includes("@")) return DEFAULT_EMAIL_FROM;
+  return from;
+};
 
 const createTransporter = () => {
   if (allowInsecureTls) {
@@ -41,6 +82,12 @@ const createTransporter = () => {
   return nodemailer.createTransport({
     host: process.env.EMAIL_HOST,
     port: Number(process.env.EMAIL_PORT),
+    pool: EMAIL_SMTP_POOL_ENABLED,
+    maxConnections: EMAIL_SMTP_MAX_CONNECTIONS,
+    maxMessages: EMAIL_SMTP_MAX_MESSAGES,
+    connectionTimeout: EMAIL_CONNECTION_TIMEOUT_MS,
+    greetingTimeout: EMAIL_GREETING_TIMEOUT_MS,
+    socketTimeout: EMAIL_SOCKET_TIMEOUT_MS,
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
@@ -48,33 +95,52 @@ const createTransporter = () => {
     tls: {
       rejectUnauthorized: !allowInsecureTls,
     },
+  } as any);
+};
+const getTransporter = (): any => {
+  if (!sharedTransporter) {
+    sharedTransporter = createTransporter();
+  }
+  return sharedTransporter;
+};
+const loadHtmlTemplate = async (htmlPath: string) => {
+  if (EMAIL_TEMPLATE_CACHE_ENABLED && templateCache.has(htmlPath)) {
+    return templateCache.get(htmlPath) as string;
+  }
+  const htmlContent = await readFile(htmlPath, "utf8");
+  if (EMAIL_TEMPLATE_CACHE_ENABLED) {
+    templateCache.set(htmlPath, htmlContent);
+  }
+  return htmlContent;
+};
+const applyReplacements = (template: string, replacements: Replacement[]) => {
+  let htmlContent = template;
+  replacements.forEach((replacement) => {
+    Object.keys(replacement).forEach((key) => {
+      const placeholder = `@@${key}`;
+      const value = String(replacement[key] ?? "");
+      htmlContent = htmlContent.replace(new RegExp(placeholder, "g"), value);
+    });
   });
+  return htmlContent;
 };
 
 export const sendEmail = async (params: SendEmailParams) => {
   const { subject, email, htmlPath, replacements, from } = params;
-  const readFile = promisify(fs.readFile);
 
   if (!isValidEmail(email)) {
     console.warn(`Correo inválido ignorado: ${email}`);
     return false;
   }
 
-  const transporter = createTransporter();
+  const transporter = getTransporter();
 
   try {
-    let htmlContent = await readFile(htmlPath, "utf8");
-
-    replacements.forEach((replacement) => {
-      Object.keys(replacement).forEach((key) => {
-        const placeholder = `@@${key}`;
-        const value = replacement[key];
-        htmlContent = htmlContent.replace(new RegExp(placeholder, "g"), value);
-      });
-    });
+    const htmlTemplate = await loadHtmlTemplate(htmlPath);
+    const htmlContent = applyReplacements(htmlTemplate, replacements);
 
     const mailOptions = {
-      from: from || "Minhoo App",
+      from: resolveFromAddress(from),
       to: email,
       subject: subject,
       html: htmlContent,
@@ -91,7 +157,6 @@ export const sendEmail = async (params: SendEmailParams) => {
 
 export const sendEmailToMany = async (params: SendManyEmailParams) => {
   const { subject, emails, htmlPath, replacements, from } = params;
-  const readFile = promisify(fs.readFile);
 
   const validEmails = emails.filter(isValidEmail);
 
@@ -100,21 +165,14 @@ export const sendEmailToMany = async (params: SendManyEmailParams) => {
     return false;
   }
 
-  const transporter = createTransporter();
+  const transporter = getTransporter();
 
   try {
-    let htmlContent = await readFile(htmlPath, "utf8");
-
-    replacements.forEach((replacement) => {
-      Object.keys(replacement).forEach((key) => {
-        const placeholder = `@@${key}`;
-        const value = replacement[key];
-        htmlContent = htmlContent.replace(new RegExp(placeholder, "g"), value);
-      });
-    });
+    const htmlTemplate = await loadHtmlTemplate(htmlPath);
+    const htmlContent = applyReplacements(htmlTemplate, replacements);
 
     const mailOptions = {
-      from: from || "Minhoo App",
+      from: resolveFromAddress(from),
       to: validEmails,
       subject: subject,
       html: htmlContent,

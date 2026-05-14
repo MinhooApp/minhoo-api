@@ -59,6 +59,45 @@ export type ChatMessagePayload = {
   clientMessageId?: string | null;
 };
 
+const touchDirectChatParticipantsActivity = async ({
+  chatIdRaw,
+  participantUserIdsRaw,
+  activityAtRaw,
+}: {
+  chatIdRaw: number;
+  participantUserIdsRaw: number[];
+  activityAtRaw?: Date | null;
+}) => {
+  const chatId = Number(chatIdRaw);
+  if (!Number.isFinite(chatId) || chatId <= 0) return;
+
+  const participantUserIds = Array.from(
+    new Set(
+      (participantUserIdsRaw ?? [])
+        .map((value) => Number(value))
+        .filter((value) => Number.isFinite(value) && value > 0)
+    )
+  );
+  if (!participantUserIds.length) return;
+
+  const activityAt =
+    activityAtRaw instanceof Date && Number.isFinite(activityAtRaw.getTime())
+      ? activityAtRaw
+      : new Date();
+
+  // Upsert evita filas faltantes en chat_user y asegura orden correcto por updatedAt.
+  await Chat_User.bulkCreate(
+    participantUserIds.map((userId) => ({
+      userId,
+      chatId,
+      updatedAt: activityAt,
+    })) as any[],
+    {
+      updateOnDuplicate: ["updatedAt"],
+    }
+  );
+};
+
 const CLIENT_MESSAGE_ID_METADATA_KEY = "_clientMessageId";
 let hasClientMessageIdColumnCache: boolean | null = null;
 let hasClientMessageIdColumnCheckedAtMs = 0;
@@ -467,6 +506,12 @@ export const initNewChat = async (
     }
   }
 
+  await touchDirectChatParticipantsActivity({
+    chatIdRaw: chatId,
+    participantUserIdsRaw: [me, other],
+    activityAtRaw: now,
+  });
+
   await incrementUnreadCountForChatUser(chatId, other, 1);
 
   if (CHAT_ENABLE_HISTORY_PRUNE) {
@@ -691,7 +736,16 @@ export const getChatByUser = async (
         model: User,
         as: "sender",
         required: false,
-        attributes: ["id", "name", "last_name", "username", "image_profil", "is_deleted"],
+        attributes: [
+          "id",
+          "name",
+          "last_name",
+          "username",
+          "image_profil",
+          "is_deleted",
+          "profile_verified",
+          "profile_verification_status",
+        ],
       },
       {
         model: Message,
@@ -954,6 +1008,8 @@ const chatSummaryUserAttributes = [
   "username",
   "image_profil",
   "verified",
+  "profile_verified",
+  "profile_verification_status",
 ];
 
 const chatSummaryMessageAttributes = [

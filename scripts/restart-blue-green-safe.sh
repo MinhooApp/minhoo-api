@@ -6,6 +6,62 @@ if [[ "$(id -u)" -ne 0 ]]; then
   exit 1
 fi
 
+unit_exists() {
+  local service="$1"
+  systemctl list-unit-files --type=service --no-legend --no-pager 2>/dev/null | \
+    awk -v svc="${service}" '$1 == svc { found=1 } END { exit(found ? 0 : 1) }'
+}
+
+unit_state() {
+  local service="$1"
+  systemctl is-active "${service}" 2>/dev/null || true
+}
+
+unit_fragment() {
+  local service="$1"
+  systemctl show "${service}" -p FragmentPath --value 2>/dev/null || true
+}
+
+stop_conflicting_service() {
+  local service="$1"
+  local target_service="${2:-}"
+  if ! unit_exists "${service}"; then
+    return 0
+  fi
+
+  if [[ -n "${target_service}" ]] && unit_exists "${target_service}"; then
+    local source_fragment target_fragment
+    source_fragment="$(unit_fragment "${service}")"
+    target_fragment="$(unit_fragment "${target_service}")"
+    if [[ -n "${source_fragment}" && "${source_fragment}" == "${target_fragment}" ]]; then
+      echo "Skipping conflict stop for ${service}; it aliases ${target_service}."
+      return 0
+    fi
+  fi
+
+  local state
+  state="$(unit_state "${service}")"
+  if [[ "${state}" == "active" || "${state}" == "activating" || "${state}" == "reloading" ]]; then
+    echo "Stopping conflicting service ${service} (state=${state}) to avoid port collision on :3002..."
+    systemctl stop "${service}" || true
+  fi
+}
+
+resolve_third_node_service() {
+  if unit_exists "minhoo-api-3.service"; then
+    echo "minhoo-api-3.service"
+    return 0
+  fi
+  # Legacy fallback for older hosts that still use the historical service name.
+  if unit_exists "minhoo-api-yello.service"; then
+    echo "warning: using legacy third-node unit minhoo-api-yello.service; migrate to minhoo-api-3.service" >&2
+    echo "minhoo-api-yello.service"
+    return 0
+  fi
+  echo "Unable to locate third-node service (expected minhoo-api-3.service)." >&2
+  return 1
+}
+
 wait_http_200() {
   local url="$1"
   local label="$2"
@@ -69,4 +125,17 @@ restart_with_health \
   "http://127.0.0.1:3001/api/v1/ping" \
   "http://127.0.0.1:3001/api/v1/ready" \
   "http://127.0.0.1:3001/api/v1"
+
+THIRD_SERVICE="$(resolve_third_node_service)"
+if [[ "${THIRD_SERVICE}" == "minhoo-api-3.service" ]]; then
+  stop_conflicting_service "minhoo-api-yello.service" "${THIRD_SERVICE}"
+else
+  stop_conflicting_service "minhoo-api-3.service" "${THIRD_SERVICE}"
+fi
+
+restart_with_health \
+  "${THIRD_SERVICE}" \
+  "http://127.0.0.1:3002/api/v1/ping" \
+  "http://127.0.0.1:3002/api/v1/ready" \
+  "http://127.0.0.1:3002/api/v1"
 echo "Rolling restart completed successfully."

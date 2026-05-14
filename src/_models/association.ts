@@ -2,6 +2,8 @@ import Plan from "./plan/plan";
 import Post from "./post/post";
 import Role from "./role/role";
 import User from "./user/user";
+import ProfileVerificationRequest from "./user/profile_verification_request";
+import ProfileVerificationIdentity from "./user/profile_verification_identity";
 import Like from "./like/like";
 import Chat from "./chat/chat";
 import Offer from "./offer/offer";
@@ -13,6 +15,7 @@ import GroupJoinRequest from "./chat/group_join_request";
 import GroupMember from "./chat/group_member";
 import Worker from "./worker/worker";
 import Service from "./service/service";
+import ServiceRating from "./service/service_rating";
 import Comment from "./comment/comment";
 import Chat_User from "./chat/chat_user";
 import MediaPost from "./post/media_post";
@@ -31,8 +34,11 @@ import ReelSave from "./reel/reel_save";
 import ReelComment from "./reel/reel_comment";
 import ReelView from "./reel/reel_view";
 import ReelReport from "./reel/reel_report";
+import ContentIdempotency from "./idempotency/content_idempotency";
 const ver = Verification;
 console.log(ver.toString());
+const idem = ContentIdempotency;
+void idem;
 
 //Association User with Roles
 User.belongsToMany(Role, { through: "user_role" });
@@ -118,6 +124,35 @@ Like.belongsTo(Comment, { as: "comment", foreignKey: "commentId" });
 //Association User with Category
 User.belongsToMany(Category, { through: "user_category" });
 Category.belongsToMany(User, { through: "user_category" });
+
+// Profile verification requests
+User.hasMany(ProfileVerificationRequest, {
+  as: "profile_verification_requests",
+  foreignKey: "userId",
+});
+ProfileVerificationRequest.belongsTo(User, {
+  as: "user",
+  foreignKey: "userId",
+});
+
+// Profile verification identities (document/person dedupe registry)
+User.hasMany(ProfileVerificationIdentity, {
+  as: "profile_verification_identities",
+  foreignKey: "userId",
+});
+ProfileVerificationIdentity.belongsTo(User, {
+  as: "user",
+  foreignKey: "userId",
+});
+
+ProfileVerificationRequest.hasMany(ProfileVerificationIdentity, {
+  as: "identity_links",
+  foreignKey: "requestId",
+});
+ProfileVerificationIdentity.belongsTo(ProfileVerificationRequest, {
+  as: "request",
+  foreignKey: "requestId",
+});
 
 //Association Worker with User
 User.hasOne(Worker, { as: "worker", foreignKey: "userId" });
@@ -234,6 +269,22 @@ Service.belongsToMany(Worker, {
 //Association Service with statusService//
 StatusService.hasMany(Service, { as: "services", foreignKey: "statusId" });
 Service.belongsTo(StatusService, { as: "status", foreignKey: "statusId" });
+
+// Association Service ratings
+Service.hasMany(ServiceRating, { as: "ratings", foreignKey: "serviceId" });
+ServiceRating.belongsTo(Service, { as: "service", foreignKey: "serviceId" });
+
+User.hasMany(ServiceRating, { as: "ratings_given", foreignKey: "reviewerUserId" });
+ServiceRating.belongsTo(User, { as: "reviewer", foreignKey: "reviewerUserId" });
+
+User.hasMany(ServiceRating, { as: "ratings_received", foreignKey: "revieweeUserId" });
+ServiceRating.belongsTo(User, { as: "reviewee", foreignKey: "revieweeUserId" });
+
+Worker.hasMany(ServiceRating, { as: "worker_ratings_given", foreignKey: "reviewerWorkerId" });
+ServiceRating.belongsTo(Worker, { as: "reviewer_worker", foreignKey: "reviewerWorkerId" });
+
+Worker.hasMany(ServiceRating, { as: "worker_ratings_received", foreignKey: "revieweeWorkerId" });
+ServiceRating.belongsTo(Worker, { as: "reviewee_worker", foreignKey: "revieweeWorkerId" });
 ///User.belongsToMany(Role, { through: User_Role, as: "roles", foreignKey: "user_id", });
 //Role.belongsToMany(User, { through: User_Role, as: "users", foreignKey: "role_id", });
 

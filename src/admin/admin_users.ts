@@ -16,7 +16,7 @@ export async function disableUser(id: number, t?: Transaction) {
   );
 
   if (!updated) return null;
-  await revokeAllUserAuthSessions(id);
+  await revokeAllUserAuthSessions(id, "admin_disable");
   return await User.findOne({
     where: { id },
     attributes: [
@@ -46,7 +46,7 @@ export async function enableUser(id: number, t?: Transaction) {
   );
 
   if (!updated) return null;
-  await revokeAllUserAuthSessions(id);
+  await revokeAllUserAuthSessions(id, "admin_enable_relogin");
   return await User.findOne({
     where: { id },
     attributes: [

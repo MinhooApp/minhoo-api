@@ -1,8 +1,41 @@
 import { Op, Sequelize } from "sequelize";
 import Offer from "../../_models/offer/offer";
-import { offerInclude } from "./offer_includes";
+import Worker from "../../_models/worker/worker";
+import { offerInclude, offerListInclude } from "./offer_includes";
 
 const excludeKeys = ["createdAt", "updatedAt", "password"];
+
+const toPositiveInt = (value: any): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  return Math.trunc(parsed);
+};
+
+const resolveWorkerIdsForUser = async (
+  workerIdRaw: any,
+  userIdRaw: any
+): Promise<number[]> => {
+  const ids = new Set<number>();
+
+  const directWorkerId = toPositiveInt(workerIdRaw);
+  if (directWorkerId) ids.add(directWorkerId);
+
+  const userId = toPositiveInt(userIdRaw);
+  if (!userId) return [...ids];
+
+  const rows = await Worker.findAll({
+    where: { userId },
+    attributes: ["id"],
+    raw: true,
+  });
+
+  for (const row of rows as any[]) {
+    const workerId = toPositiveInt((row as any)?.id);
+    if (workerId) ids.add(workerId);
+  }
+
+  return [...ids];
+};
 
 export const add = async (body: any) => {
   // ✅ Si existe una offer previa para (serviceId, workerId),
@@ -34,10 +67,17 @@ export const add = async (body: any) => {
   return offer;
 };
 
-export const gets = async () => {
+export const gets = async (workerIdRaw?: any, userIdRaw?: any) => {
+  const workerIds = await resolveWorkerIdsForUser(workerIdRaw, userIdRaw);
+  if (!workerIds.length) return [];
+
   const offer = await Offer.findAll({
-    where: {},
-    include: offerInclude,
+    where: {
+      workerId: workerIds.length === 1 ? workerIds[0] : { [Op.in]: workerIds },
+      canceled: false,
+      removed: false,
+    },
+    include: offerListInclude,
     attributes: { exclude: excludeKeys },
     order: [["offer_date", "DESC"]],
   });
@@ -69,7 +109,7 @@ export const getsByService = async (serviceId: any) => {
         `),
       ],
     },
-    include: offerInclude,
+    include: offerListInclude,
     attributes: { exclude: excludeKeys },
     order: [["offer_date", "DESC"]],
   });

@@ -9,7 +9,7 @@ type RateLimitEntry = {
 
 type RateLimitKeyFn = (req: Request) => string;
 type RateLimitValueFn = (req: Request) => number;
-type RateLimitBlockedContext = {
+export type RateLimitBlockedContext = {
   req: Request;
   key: string;
   keyPrefix: string;

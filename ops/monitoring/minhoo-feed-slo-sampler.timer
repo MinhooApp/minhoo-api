@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Minhoo Feed SLO Sampler every 5 minutes
+
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=minhoo-feed-slo-sampler.service
+
+[Install]
+WantedBy=timers.target
+

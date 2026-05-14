@@ -7,45 +7,78 @@ import { IndexHints, Op, Sequelize, UniqueConstraintError } from "sequelize";
 import Follower from "../../_models/follower/follower";
 import User from "../../_models/user/user";
 import Comment from "../../_models/comment/comment";
+import { createHmac } from "crypto";
 import {
   loadFindSessionState,
   saveFindSessionState,
 } from "../../libs/cache/find_session_store";
 import { autoDisableUserByImpersonationReports } from "../user/user_repository";
 import { attachActiveOrbitStateToUsers } from "../reel/orbit_ring_projection";
+import {
+  attachHashtagsToRows,
+  normalizeHashtagsForContent,
+  syncHashtagsForContent,
+} from "../hashtag/hashtag_repository";
+import {
+  calculateFeedScore,
+  FeedContentKind,
+  FeedLanguageTier,
+  FeedLocationTier,
+  FeedRankingReason,
+} from "../../libs/feed/feed_relevance";
 
 import { whereNotBlockedExists } from "../user/block_where";
 
 const excludeKeys = ["createdAt", "updatedAt"];
+const excludedCommentCountSql =
+  "(SELECT COUNT(1) FROM comments c USE INDEX (idx_comments_post_visible_created) WHERE c.postId = `post`.`id` AND c.is_delete = 0)";
 const commentCountAttribute = [
-  Sequelize.literal(
-    "(SELECT COUNT(1) FROM comments c WHERE c.postId = `post`.`id` AND c.is_delete = 0)"
-  ),
+  Sequelize.literal(excludedCommentCountSql),
   "comments_count",
 ] as const;
-const candidateCommentCountAttribute = Sequelize.literal(
-  "(SELECT COUNT(1) FROM comments c WHERE c.postId = `post`.`id` AND c.is_delete = 0)"
-);
+const candidateCommentCountAttribute = Sequelize.literal(excludedCommentCountSql);
 const candidateMediaCountAttribute = Sequelize.literal(
-  "(SELECT COUNT(1) FROM mediapost m WHERE m.postId = `post`.`id`)"
+  "(SELECT COUNT(1) FROM mediapost m USE INDEX (idx_mediapost_post_isimg) WHERE m.postId = `post`.`id`)"
 );
 const candidateVideoCountAttribute = Sequelize.literal(
-  "(SELECT COUNT(1) FROM mediapost m WHERE m.postId = `post`.`id` AND m.is_img = 0)"
+  "(SELECT COUNT(1) FROM mediapost m USE INDEX (idx_mediapost_post_isimg) WHERE m.postId = `post`.`id` AND m.is_img = 0)"
 );
 
 const POST_SESSION_TTL_MS = 2 * 60 * 60 * 1000;
 const POST_CREATOR_COOLDOWN = 8;
-const POST_MAX_TOPIC_STREAK = 2;
+const POST_MAX_TOPIC_STREAK = 4;
 const POST_MAX_FORMAT_STREAK = 2;
 const POST_TOPK_SHUFFLE_WINDOW = 50;
+const POST_STABLE_FEED_MAX_IDS = Math.max(
+  200,
+  Number(process.env.POST_STABLE_FEED_MAX_IDS ?? 1200) || 1200
+);
+const POST_SUMMARY_SESSION_STATE_ENABLED =
+  String(process.env.POST_SUMMARY_SESSION_STATE_ENABLED ?? "1").trim() === "1";
+const POST_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS = Math.max(
+  0,
+  Number(process.env.POST_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS ?? 20000) || 20000
+);
+const POST_FEED_TOTAL_COUNT_CACHE_TTL_MS = Math.max(
+  0,
+  Number(process.env.POST_FEED_TOTAL_COUNT_CACHE_TTL_MS ?? 15000) || 15000
+);
 const POST_REPORT_AUTO_DELETE_THRESHOLD = Math.max(
   15,
   Number(process.env.POST_REPORT_AUTO_DELETE_THRESHOLD ?? 15) || 15
 );
 const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
+const MEDIA_ACCESS_TOKEN_QUERY_KEY = "sat";
+const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
+  30,
+  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 10 * 60) || 10 * 60
+);
+
+type SignedMediaKind = "audio" | "document" | "video_key" | "video_uid" | "image_id";
 
 type PostFeedOptions = {
   sessionKey?: any;
+  includeRankingDebug?: boolean;
 };
 
 type PostBucket = "interest" | "social" | "trending" | "local" | "exploration";
@@ -56,6 +89,7 @@ type PostSessionState = {
   recentTopicIds: number[];
   recentFormats: string[];
   creatorImpressions: Record<string, number>;
+  stableFeedIds: number[];
 };
 type PostViewerContext = {
   followedCreatorIds: Set<number>;
@@ -63,6 +97,8 @@ type PostViewerContext = {
   cityId: number | null;
   stateId: number | null;
   countryId: number | null;
+  primaryLanguageCode: string | null;
+  secondaryLanguageCodes: Set<string>;
 };
 type PostCandidate = {
   row: any;
@@ -72,9 +108,11 @@ type PostCandidate = {
   format: string;
   bucket: PostBucket;
   localScore: number;
+  feedScore: number;
   seenInSession: boolean;
   qualityPassed: boolean;
   finalScore: number;
+  rankingReason: FeedRankingReason;
   scoreBreakdown: {
     affinity: number;
     dwellProxy: number;
@@ -91,8 +129,80 @@ type PostCandidate = {
     formatPenalty: number;
     fatiguePenalty: number;
     lowQualityPenalty: number;
+    newPostBoost: number;
+    relevanceBase: number;
+    behavioralScore: number;
+    locationPoints: number;
+    languagePoints: number;
+    contentTypePoints: number;
+    recencyPoints: number;
+    ownPostBoostPoints: number;
   };
   excludedReason?: string;
+};
+
+type FeedTotalCountCacheEntry = {
+  count: number;
+  expiresAtMs: number;
+};
+
+type PostViewerContextCacheEntry = {
+  expiresAtMs: number;
+  context: PostViewerContext;
+};
+
+const postFeedTotalCountCache = new Map<string, FeedTotalCountCacheEntry>();
+const postViewerContextCache = new Map<number, PostViewerContextCacheEntry>();
+
+const readCachedPostFeedTotalCount = (key: string): number | null => {
+  if (!key || POST_FEED_TOTAL_COUNT_CACHE_TTL_MS <= 0) return null;
+  const cached = postFeedTotalCountCache.get(key);
+  if (!cached) return null;
+  if (cached.expiresAtMs <= Date.now()) {
+    postFeedTotalCountCache.delete(key);
+    return null;
+  }
+  return Number.isFinite(cached.count) ? Math.max(0, Math.floor(cached.count)) : null;
+};
+
+const writeCachedPostFeedTotalCount = (key: string, count: number) => {
+  if (!key || POST_FEED_TOTAL_COUNT_CACHE_TTL_MS <= 0) return;
+  const safeCount = Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  postFeedTotalCountCache.set(key, {
+    count: safeCount,
+    expiresAtMs: Date.now() + POST_FEED_TOTAL_COUNT_CACHE_TTL_MS,
+  });
+};
+
+const clonePostViewerContext = (context: PostViewerContext): PostViewerContext => ({
+  followedCreatorIds: new Set<number>(Array.from(context.followedCreatorIds.values())),
+  interestCategoryIds: new Set<number>(Array.from(context.interestCategoryIds.values())),
+  cityId: context.cityId,
+  stateId: context.stateId,
+  countryId: context.countryId,
+  primaryLanguageCode: context.primaryLanguageCode ?? null,
+  secondaryLanguageCodes: new Set<string>(
+    Array.from((context.secondaryLanguageCodes ?? new Set<string>()).values())
+  ),
+});
+
+const readCachedPostViewerContext = (viewerId: number | null): PostViewerContext | null => {
+  if (!viewerId || POST_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS <= 0) return null;
+  const cached = postViewerContextCache.get(viewerId);
+  if (!cached) return null;
+  if (cached.expiresAtMs <= Date.now()) {
+    postViewerContextCache.delete(viewerId);
+    return null;
+  }
+  return clonePostViewerContext(cached.context);
+};
+
+const writeCachedPostViewerContext = (viewerId: number | null, context: PostViewerContext) => {
+  if (!viewerId || POST_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS <= 0) return;
+  postViewerContextCache.set(viewerId, {
+    context: clonePostViewerContext(context),
+    expiresAtMs: Date.now() + POST_SUMMARY_VIEWER_CONTEXT_CACHE_TTL_MS,
+  });
 };
 
 const isTruthy = (value: any) => {
@@ -231,10 +341,209 @@ const toUniqueNumbers = (values: any[]) => {
   return Array.from(unique.values());
 };
 
+const normalizeLanguageCode = (value: any): string | null => {
+  const raw = String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/_/g, "-");
+  if (!raw) return null;
+  const token = raw.split("-")[0];
+  if (!token) return null;
+  if (!/^[a-z]{2,8}$/.test(token)) return null;
+  return token;
+};
+
+const toUniqueLanguageCodes = (values: any[]) => {
+  const unique = new Set<string>();
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const code = normalizeLanguageCode(value);
+    if (code) unique.add(code);
+  });
+  return Array.from(unique.values());
+};
+
 const toPlain = (row: any) =>
   row && typeof row.toJSON === "function" ? row.toJSON() : row;
 
+const setRowValue = (row: any, key: string, value: any) => {
+  if (!row) return;
+  if (typeof row.setDataValue === "function") {
+    row.setDataValue(key, value);
+    return;
+  }
+  row[key] = value;
+};
+
+const applyPostHashtags = async (posts: any[]) => {
+  await attachHashtagsToRows({
+    rows: Array.isArray(posts) ? posts : [],
+    contentType: "post",
+  });
+};
+
+const applyCommentHashtags = async (comments: any[]) => {
+  await attachHashtagsToRows({
+    rows: Array.isArray(comments) ? comments : [],
+    contentType: "comment",
+  });
+};
+
+const refreshPostRowMediaLinks = (post: any) => {
+  if (!post) return;
+
+  const setField = (row: any, field: "url" | "media_url", value: string) => {
+    if (!row) return;
+    if (typeof row?.setDataValue === "function") {
+      row.setDataValue(field, value);
+      return;
+    }
+    row[field] = value;
+  };
+
+  const postMediaRaw = Array.isArray((post as any)?.post_media)
+    ? (post as any).post_media
+    : [];
+  postMediaRaw.forEach((media: any) => {
+    const original = String(media?.url ?? "").trim();
+    if (!original) return;
+    const refreshed = refreshSignedMediaUrl(original);
+    if (refreshed !== original) setField(media, "url", refreshed);
+  });
+
+  const commentsRaw = Array.isArray((post as any)?.comments) ? (post as any).comments : [];
+  commentsRaw.forEach((comment: any) => {
+    const original = String(comment?.media_url ?? "").trim();
+    if (!original) return;
+    const refreshed = refreshSignedMediaUrl(original);
+    if (refreshed !== original) setField(comment, "media_url", refreshed);
+  });
+};
+
 type MediaItem = { url: string; is_img: boolean };
+
+const toBase64Url = (value: Buffer | string) =>
+  Buffer.from(value)
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+
+const getMediaAccessSigningSecret = () =>
+  String(
+    process.env.MEDIA_ACCESS_SIGNING_SECRET ??
+      process.env.JWT_SECRET ??
+      process.env.SECRETORPRIVATEKEY ??
+      ""
+  ).trim();
+
+const normalizeImageId = (value: any): string | null => {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^[a-zA-Z0-9._-]{6,255}$/.test(normalized)) return null;
+  return normalized;
+};
+
+const normalizeVideoUid = (value: any): string | null => {
+  const normalized = String(value ?? "").trim();
+  if (!normalized) return null;
+  if (!/^[a-f0-9]{32}$/i.test(normalized)) return null;
+  return normalized.toLowerCase();
+};
+
+const normalizeStorageKey = (value: any): string | null => {
+  const decoded = decodeURIComponent(String(value ?? "").trim());
+  if (!decoded) return null;
+  if (!/^[a-zA-Z0-9/_.,@-]{2,512}$/.test(decoded)) return null;
+  return decoded;
+};
+
+const buildMediaAccessToken = (kind: SignedMediaKind, resourceKey: string): string | null => {
+  const secret = getMediaAccessSigningSecret();
+  const key = String(resourceKey ?? "").trim();
+  if (!secret || !key) return null;
+  const exp = Math.floor(Date.now() / 1000) + MEDIA_ACCESS_TOKEN_TTL_SECONDS;
+  const payload = `${kind}:${key}:${exp}`;
+  const signature = createHmac("sha256", secret).update(payload).digest();
+  return `${exp}.${toBase64Url(signature)}`;
+};
+
+const rebuildUrlLikeInput = (rawUrl: string, parsed: URL): string => {
+  const trimmed = String(rawUrl ?? "").trim();
+  if (!trimmed) return trimmed;
+  const query = parsed.searchParams.toString();
+  const pathWithQuery = query ? `${parsed.pathname}?${query}` : parsed.pathname;
+  if (/^https?:\/\//i.test(trimmed)) {
+    return `${parsed.protocol}//${parsed.host}${pathWithQuery}`;
+  }
+  return pathWithQuery;
+};
+
+const removeMediaAccessTokenFromUrl = (rawUrl: string): string => {
+  const trimmed = String(rawUrl ?? "").trim();
+  if (!trimmed || !trimmed.includes(MEDIA_ACCESS_TOKEN_QUERY_KEY)) return trimmed;
+
+  try {
+    const parsed = new URL(trimmed, "http://local");
+    if (!String(parsed.pathname ?? "").includes("/api/v1/media/")) return trimmed;
+    parsed.searchParams.delete(MEDIA_ACCESS_TOKEN_QUERY_KEY);
+    return rebuildUrlLikeInput(trimmed, parsed);
+  } catch {
+    return trimmed;
+  }
+};
+
+const refreshSignedMediaUrl = (rawUrl: string): string => {
+  const canonicalUrl = removeMediaAccessTokenFromUrl(rawUrl);
+  const trimmed = String(canonicalUrl ?? "").trim();
+  if (!trimmed) return trimmed;
+
+  try {
+    const parsed = new URL(trimmed, "http://local");
+    const pathname = String(parsed.pathname ?? "").trim().toLowerCase();
+
+    let kind: SignedMediaKind | null = null;
+    let resourceKey: string | null = null;
+
+    if (pathname === "/api/v1/media/image/play") {
+      kind = "image_id";
+      resourceKey = normalizeImageId(parsed.searchParams.get("id"));
+    } else if (pathname === "/api/v1/media/video/play") {
+      const key = normalizeStorageKey(parsed.searchParams.get("key"));
+      if (key) {
+        kind = "video_key";
+        resourceKey = key;
+      } else {
+        const uidRaw = String(parsed.searchParams.get("uid") ?? "").trim();
+        const uid = normalizeVideoUid(uidRaw);
+        if (uid) {
+          kind = "video_uid";
+          resourceKey = uid;
+        } else {
+          const fallbackKey = normalizeStorageKey(uidRaw);
+          if (fallbackKey) {
+            kind = "video_key";
+            resourceKey = fallbackKey;
+          }
+        }
+      }
+    } else if (pathname === "/api/v1/media/audio/play") {
+      kind = "audio";
+      resourceKey = normalizeStorageKey(parsed.searchParams.get("key"));
+    } else if (pathname === "/api/v1/media/document/download") {
+      kind = "document";
+      resourceKey = normalizeStorageKey(parsed.searchParams.get("key"));
+    }
+
+    if (!kind || !resourceKey) return trimmed;
+
+    const token = buildMediaAccessToken(kind, resourceKey);
+    if (!token) return trimmed;
+    parsed.searchParams.set(MEDIA_ACCESS_TOKEN_QUERY_KEY, token);
+    return rebuildUrlLikeInput(trimmed, parsed);
+  } catch {
+    return trimmed;
+  }
+};
 
 const toBool = (value: any, fallback = true) => {
   if (typeof value === "boolean") return value;
@@ -267,13 +576,15 @@ const normalizeMediaPayload = (value: any): MediaItem[] => {
   const normalized = items
     .map((entry: any) => {
       if (typeof entry === "string") {
-        const url = entry.trim();
+        const url = removeMediaAccessTokenFromUrl(entry.trim());
         if (!url) return null;
         return { url, is_img: true };
       }
 
       if (!entry || typeof entry !== "object") return null;
-      const url = String(entry.url ?? entry.media_url ?? "").trim();
+      const url = removeMediaAccessTokenFromUrl(
+        String(entry.url ?? entry.media_url ?? "").trim()
+      );
       if (!url) return null;
 
       const type = String(entry.type ?? "").trim().toLowerCase();
@@ -310,6 +621,7 @@ const buildEmptyPostSessionState = (): PostSessionState => ({
   recentTopicIds: [],
   recentFormats: [],
   creatorImpressions: {},
+  stableFeedIds: [],
 });
 
 const getPostSessionState = async (
@@ -369,6 +681,15 @@ const updatePostSessionState = async (
     });
   }
 
+  if (Array.isArray(state.stableFeedIds)) {
+    state.stableFeedIds = toUniqueNumbers(state.stableFeedIds).slice(
+      0,
+      POST_STABLE_FEED_MAX_IDS
+    );
+  } else {
+    state.stableFeedIds = [];
+  }
+
   const ttlSeconds = Math.max(60, Math.floor(POST_SESSION_TTL_MS / 1000));
   state.updatedAt = Date.now();
   return saveFindSessionState<PostSessionState>({
@@ -377,6 +698,42 @@ const updatePostSessionState = async (
     ttlSeconds,
     state,
   });
+};
+
+const mergeStablePostFeedIds = (existingIdsRaw: any, rankedIdsRaw: any): number[] => {
+  const existingIds = toUniqueNumbers(
+    Array.isArray(existingIdsRaw) ? existingIdsRaw : []
+  );
+  const rankedIds = toUniqueNumbers(Array.isArray(rankedIdsRaw) ? rankedIdsRaw : []);
+
+  const existingSet = new Set(existingIds);
+  // Top-ranked posts not yet in the session (e.g. freshly published with newPostBoost) go first
+  const hotNewIds = rankedIds.slice(0, 5).filter((id) => !existingSet.has(id));
+
+  const merged: number[] = [];
+  const seen = new Set<number>();
+
+  const pushId = (id: number) => {
+    if (!Number.isFinite(id) || id <= 0) return;
+    if (seen.has(id)) return;
+    seen.add(id);
+    merged.push(id);
+  };
+
+  for (const id of hotNewIds) {
+    pushId(id);
+    if (merged.length >= POST_STABLE_FEED_MAX_IDS) return merged;
+  }
+  for (const id of existingIds) {
+    pushId(id);
+    if (merged.length >= POST_STABLE_FEED_MAX_IDS) return merged;
+  }
+  for (const id of rankedIds) {
+    pushId(id);
+    if (merged.length >= POST_STABLE_FEED_MAX_IDS) return merged;
+  }
+
+  return merged;
 };
 
 const combineWhere = (baseWhere: any, extraWhere?: any) => {
@@ -410,6 +767,8 @@ const loadPostViewerContext = async (
     cityId: null,
     stateId: null,
     countryId: null,
+    primaryLanguageCode: null,
+    secondaryLanguageCodes: new Set<string>(),
   };
   if (!viewerId) return context;
 
@@ -426,6 +785,9 @@ const loadPostViewerContext = async (
         attributes: [
           "id",
           "job_category_ids",
+          "language",
+          "language_codes",
+          "language_names",
           "city_residence_id",
           "state_residence_id",
           "country_residence_id",
@@ -455,6 +817,16 @@ const loadPostViewerContext = async (
   context.stateId = Number.isFinite(stateId) && stateId > 0 ? stateId : null;
   context.countryId = Number.isFinite(countryId) && countryId > 0 ? countryId : null;
 
+  const languageCodes = toUniqueLanguageCodes([
+    ...parseJsonArray((viewer as any)?.language_codes),
+    ...parseJsonArray((viewer as any)?.language_names),
+    (viewer as any)?.language,
+  ]);
+  if (languageCodes.length > 0) {
+    context.primaryLanguageCode = languageCodes[0] ?? null;
+    languageCodes.slice(1).forEach((code) => context.secondaryLanguageCodes.add(code));
+  }
+
   return context;
 };
 
@@ -473,6 +845,9 @@ const loadCreatorLocationMap = async (
         "city_residence_id",
         "state_residence_id",
         "country_residence_id",
+        "language",
+        "language_codes",
+        "language_names",
         "cityId",
         "countryId",
       ],
@@ -484,10 +859,17 @@ const loadCreatorLocationMap = async (
   rows.forEach((row: any) => {
     const id = Number(row?.id);
     if (!Number.isFinite(id) || id <= 0) return;
+    const languageCodes = toUniqueLanguageCodes([
+      ...parseJsonArray(row?.language_codes),
+      ...parseJsonArray(row?.language_names),
+      row?.language,
+    ]);
     map.set(id, {
       cityId: Number(row?.city_residence_id ?? row?.cityId ?? 0) || null,
       stateId: Number(row?.state_residence_id ?? 0) || null,
       countryId: Number(row?.country_residence_id ?? row?.countryId ?? 0) || null,
+      languageCodes,
+      primaryLanguageCode: languageCodes[0] ?? null,
     });
   });
   return map;
@@ -536,30 +918,71 @@ const postPassesQualityGate = (row: any) => {
   return getPostQualityGateFailureReason(row) === null;
 };
 
-const computeLocalScore = (
+const resolveLocationTier = (
   viewerContext: PostViewerContext,
   creatorLocation: any
-) => {
-  if (!creatorLocation) return 0;
+): FeedLocationTier => {
+  if (!creatorLocation) return "global";
   const sameCity =
     viewerContext.cityId &&
     creatorLocation.cityId &&
     Number(viewerContext.cityId) === Number(creatorLocation.cityId);
-  if (sameCity) return 1;
+  if (sameCity) return "same_city";
 
   const sameState =
     viewerContext.stateId &&
     creatorLocation.stateId &&
     Number(viewerContext.stateId) === Number(creatorLocation.stateId);
-  if (sameState) return 0.75;
+  if (sameState) return "same_state";
 
   const sameCountry =
     viewerContext.countryId &&
     creatorLocation.countryId &&
     Number(viewerContext.countryId) === Number(creatorLocation.countryId);
-  if (sameCountry) return 0.45;
+  if (sameCountry) return "same_country";
 
+  return "global";
+};
+
+const toLocalScoreByTier = (tier: FeedLocationTier): number => {
+  if (tier === "same_city") return 1;
+  if (tier === "same_state") return 0.75;
+  if (tier === "same_country") return 0.45;
   return 0;
+};
+
+const toContentKindByFormat = (format: string): FeedContentKind => {
+  const normalized = String(format ?? "").trim().toLowerCase();
+  if (normalized === "video" || normalized === "carrusel_video") return "video";
+  if (normalized === "image" || normalized === "carrusel") return "image";
+  if (normalized === "text") return "text";
+  return "other";
+};
+
+const resolveLanguageTier = (
+  viewerContext: PostViewerContext,
+  creatorProfile: any
+): FeedLanguageTier => {
+  const creatorCodes = toUniqueLanguageCodes([
+    ...(Array.isArray(creatorProfile?.languageCodes) ? creatorProfile.languageCodes : []),
+    creatorProfile?.primaryLanguageCode,
+  ]);
+  if (!creatorCodes.length) return "unknown";
+
+  const viewerPrimary = normalizeLanguageCode(viewerContext.primaryLanguageCode);
+  if (viewerPrimary && creatorCodes.includes(viewerPrimary)) return "primary";
+
+  const viewerSecondary = new Set(
+    toUniqueLanguageCodes(Array.from(viewerContext.secondaryLanguageCodes.values()))
+  );
+  if (
+    viewerSecondary.size > 0 &&
+    creatorCodes.some((code) => viewerSecondary.has(code))
+  ) {
+    return "secondary";
+  }
+
+  return "other";
 };
 
 const fetchPostCandidatePool = async ({
@@ -569,6 +992,7 @@ const fetchPostCandidatePool = async ({
   viewerId,
   size,
   page,
+  summary = false,
   profiler,
 }: {
   where: any;
@@ -577,13 +1001,13 @@ const fetchPostCandidatePool = async ({
   viewerId: number | null;
   size: number;
   page: number;
+  summary?: boolean;
   profiler?: PostFindProfiler;
 }) => {
   const pageFactor = Math.max(1, page + 1);
-  const basePoolSize = Math.min(
-    240,
-    Math.max(60, size * 7, pageFactor * size * 5)
-  );
+  const basePoolSize = summary
+    ? Math.min(240, Math.max(80, size * 8, pageFactor * size * 5))
+    : Math.min(300, Math.max(100, size * 10, pageFactor * size * 6));
   const trendingPoolSize = Math.max(size * 3, Math.floor(basePoolSize * 0.5));
   const socialPoolSize = Math.max(size * 2, Math.floor(basePoolSize * 0.35));
   const explorationPoolSize = Math.max(size * 2, Math.floor(basePoolSize * 0.3));
@@ -591,6 +1015,7 @@ const fetchPostCandidatePool = async ({
   const followedIds = Array.from(viewerContext.followedCreatorIds.values());
   const excludedCreatorIds = toUniqueNumbers([...followedIds, viewerId ?? 0]);
   const categoryIds = Array.from(viewerContext.interestCategoryIds.values());
+  const includeCommentSignals = !summary;
 
   const attributes: any[] = [
     "id",
@@ -601,7 +1026,7 @@ const fetchPostCandidatePool = async ({
     "saves_count",
     "shares_count",
     "post",
-    [candidateCommentCountAttribute, "comments_count"],
+    ...(includeCommentSignals ? ([[candidateCommentCountAttribute, "comments_count"]] as any[]) : []),
     [candidateMediaCountAttribute, "media_count"],
     [candidateVideoCountAttribute, "video_count"],
   ];
@@ -651,8 +1076,11 @@ const fetchPostCandidatePool = async ({
           ["shares_count", "DESC"],
           ["saves_count", "DESC"],
           ["likes_count", "DESC"],
-          [Sequelize.literal("comments_count"), "DESC"],
+          ...(includeCommentSignals
+            ? ([[Sequelize.literal("comments_count"), "DESC"]] as any[])
+            : []),
           ["created_date", "DESC"],
+          ["id", "DESC"],
         ],
         limit: trendingPoolSize,
       }),
@@ -700,11 +1128,13 @@ const fetchPostCandidatePool = async ({
 const buildPostCandidate = ({
   row,
   viewerContext,
+  viewerId,
   sessionState,
   creatorLocationMap,
 }: {
   row: any;
   viewerContext: PostViewerContext;
+  viewerId: number | null;
   sessionState: PostSessionState;
   creatorLocationMap: Map<number, any>;
 }): PostCandidate | null => {
@@ -756,7 +1186,25 @@ const buildPostCandidate = ({
     (Math.log1p(likes + comments * 2 + shares * 3 + saves * 3) / 9) *
       (0.65 + 0.35 * freshnessScore)
   );
-  const localScore = computeLocalScore(viewerContext, creatorLocationMap.get(creatorId));
+  const creatorProfile = creatorLocationMap.get(creatorId);
+  const locationTier = resolveLocationTier(viewerContext, creatorProfile);
+  const languageTier = resolveLanguageTier(viewerContext, creatorProfile);
+  const contentKind = toContentKindByFormat(format);
+  const relevanceScore = calculateFeedScore({
+    locationTier,
+    languageTier,
+    contentKind,
+    ageHours,
+    recencyHalfLifeHours: 24,
+    recencyMaxPoints: 40,
+    ownPostBoostWindowMinutes: 30,
+    ownPostBoostPoints: 60,
+    ownPostBoostApplied:
+      Boolean(viewerId) && Number.isFinite(creatorId) && Number(creatorId) === Number(viewerId) && ageHours <= 0.5,
+  });
+  const localScore = toLocalScoreByTier(locationTier);
+
+  const newPostBoost = relevanceScore.breakdown.ownPostBoost;
 
   const seenInSession = sessionState.seenPostIds.includes(id);
   const repetitionPenalty = sessionState.recentCreatorIds.includes(creatorId) ? 0.2 : 0;
@@ -777,16 +1225,16 @@ const buildPostCandidate = ({
     0.1 * qualityScore +
     0.05 * explorationScore;
 
-  const finalScore =
-    weightedBase +
-    0.06 * localScore +
-    0.04 * noveltyScore +
-    0.03 * trendingScore -
-    repetitionPenalty -
-    topicPenalty -
-    formatPenalty -
-    fatiguePenalty -
-    lowQualityPenalty;
+  const behavioralScore =
+    22 * weightedBase +
+    8 * noveltyScore +
+    7 * trendingScore -
+    14 * repetitionPenalty -
+    12 * topicPenalty -
+    10 * formatPenalty -
+    40 * fatiguePenalty -
+    24 * lowQualityPenalty;
+  const finalScore = relevanceScore.totalScore + behavioralScore;
 
   let bucket: PostBucket = "exploration";
   if (socialScore > 0) bucket = "social";
@@ -802,9 +1250,11 @@ const buildPostCandidate = ({
     format,
     bucket,
     localScore,
+    feedScore: relevanceScore.totalScore,
     seenInSession,
     qualityPassed: true,
-    finalScore,
+    finalScore: round3(finalScore),
+    rankingReason: relevanceScore.rankingReason,
     scoreBreakdown: {
       affinity: affinityScore,
       dwellProxy: dwellProxyScore,
@@ -816,6 +1266,14 @@ const buildPostCandidate = ({
       trending: trendingScore,
       local: localScore,
       weightedBase,
+      newPostBoost,
+      relevanceBase: relevanceScore.totalScore,
+      behavioralScore,
+      locationPoints: relevanceScore.breakdown.locationScore,
+      languagePoints: relevanceScore.breakdown.languageScore,
+      contentTypePoints: relevanceScore.breakdown.contentTypeScore,
+      recencyPoints: relevanceScore.breakdown.recencyScore,
+      ownPostBoostPoints: relevanceScore.breakdown.ownPostBoost,
       creatorPenalty: repetitionPenalty,
       topicPenalty,
       formatPenalty,
@@ -1231,6 +1689,8 @@ const fetchPostsByIdsOrdered = async (
 
   if (!posts.length) return [];
 
+  await applyPostHashtags(posts);
+
   const userIds = toUniqueNumbers(posts.map((post: any) => Number(post?.userId)));
   const postIdSet = new Set<number>(posts.map((post: any) => Number(post?.id)).filter((id) => id > 0));
   const selectedPostIds = Array.from(postIdSet.values());
@@ -1248,6 +1708,8 @@ const fetchPostsByIdsOrdered = async (
               "email",
               "image_profil",
               "verified",
+              "profile_verified",
+              "profile_verification_status",
               "available",
             ],
           })
@@ -1280,7 +1742,15 @@ const fetchPostsByIdsOrdered = async (
           {
             model: User,
             as: "commentator",
-            attributes: ["id", "name", "last_name", "username", "image_profil"],
+            attributes: [
+              "id",
+              "name",
+              "last_name",
+              "username",
+              "image_profil",
+              "profile_verified",
+              "profile_verification_status",
+            ],
             required: false,
           },
         ],
@@ -1295,6 +1765,7 @@ const fetchPostsByIdsOrdered = async (
   await Promise.all([applyPostHashtags(posts), applyCommentHashtags(commentRows as any[])]);
   const viewerId = Number(meId);
   const validViewerId = Number.isFinite(viewerId) && viewerId > 0 ? viewerId : null;
+
   const userById = new Map<number, any>();
   users.forEach((user: any) => {
     const id = Number(user?.id);
@@ -1314,7 +1785,7 @@ const fetchPostsByIdsOrdered = async (
     if (!Number.isFinite(postId) || postId <= 0) return;
     const list = mediaByPostId.get(postId) ?? [];
     list.push({
-      url: String(media?.url ?? ""),
+      url: refreshSignedMediaUrl(String(media?.url ?? "")),
       is_img: Boolean(media?.is_img),
     });
     mediaByPostId.set(postId, list);
@@ -1347,7 +1818,9 @@ const fetchPostsByIdsOrdered = async (
       id: Number(plainComment?.id),
       userId: Number(plainComment?.userId),
       comment: plainComment?.comment ?? null,
-      media_url: plainComment?.media_url ?? null,
+      media_url: plainComment?.media_url
+        ? refreshSignedMediaUrl(String(plainComment.media_url))
+        : null,
       created_date: plainComment?.created_date ?? null,
       commentator: plainComment?.commentator ?? null,
     });
@@ -1360,6 +1833,7 @@ const fetchPostsByIdsOrdered = async (
     if (!Number.isFinite(postId) || postId <= 0) return;
     const userId = Number(post?.userId);
     const rawUser = userById.get(userId) ?? null;
+    if (!rawUser) return;
     const user = rawUser
       ? {
           ...rawUser,
@@ -1417,7 +1891,6 @@ const fetchPostsByIdsOrderedSummary = async (
         "likes_count",
         "saves_count",
         "shares_count",
-        [candidateCommentCountAttribute, "comments_count"],
       ],
     })
   );
@@ -1428,12 +1901,21 @@ const fetchPostsByIdsOrderedSummary = async (
   const viewerId = Number(meId);
   const validViewerId = Number.isFinite(viewerId) && viewerId > 0 ? viewerId : null;
 
-  const [users, mediaRows, viewerLikes] = await Promise.all([
+  const [users, mediaRows, viewerLikes, summaryCommentCountRows] = await Promise.all([
     userIds.length
       ? withPostDbProfile(profiler, "users.findAll(hydrate_users_summary)", () =>
           User.findAll({
             where: { id: { [Op.in]: userIds } },
-            attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
+            attributes: [
+              "id",
+              "name",
+              "last_name",
+              "username",
+              "image_profil",
+              "verified",
+              "profile_verified",
+              "profile_verification_status",
+            ],
           })
         )
       : Promise.resolve([] as any[]),
@@ -1455,6 +1937,17 @@ const fetchPostsByIdsOrderedSummary = async (
           })
         )
       : Promise.resolve([] as any[]),
+    withPostDbProfile(profiler, "comments.findAll(hydrate_comment_counts_summary)", () =>
+      Comment.findAll({
+        where: { postId: { [Op.in]: ids }, is_delete: false },
+        attributes: [
+          "postId",
+          [Sequelize.fn("COUNT", Sequelize.col("id")), "comments_count"],
+        ],
+        group: ["postId"],
+        raw: true,
+      })
+    ),
   ]);
 
   const userById = new Map<number, any>();
@@ -1469,7 +1962,7 @@ const fetchPostsByIdsOrderedSummary = async (
     if (!Number.isFinite(postId) || postId <= 0) return;
     if (mediaByPostId.has(postId)) return;
     mediaByPostId.set(postId, {
-      url: String(media?.url ?? ""),
+      url: refreshSignedMediaUrl(String(media?.url ?? "")),
       is_img: Boolean(media?.is_img),
     });
   });
@@ -1478,6 +1971,13 @@ const fetchPostsByIdsOrderedSummary = async (
   viewerLikes.forEach((like: any) => {
     const postId = Number(like?.postId);
     if (Number.isFinite(postId) && postId > 0) likedPostIds.add(postId);
+  });
+
+  const commentCountByPostId = new Map<number, number>();
+  (Array.isArray(summaryCommentCountRows) ? summaryCommentCountRows : []).forEach((row: any) => {
+    const postId = Number(row?.postId);
+    if (!Number.isFinite(postId) || postId <= 0) return;
+    commentCountByPostId.set(postId, Number(row?.comments_count ?? 0) || 0);
   });
 
   await attachActiveOrbitStateToUsers({
@@ -1489,7 +1989,9 @@ const fetchPostsByIdsOrderedSummary = async (
   posts.forEach((post: any) => {
     const postId = Number(post?.id);
     const userId = Number(post?.userId);
-    post.setDataValue("user", userById.get(userId) ?? null);
+    const user = userById.get(userId) ?? null;
+    if (!user) return;
+    post.setDataValue("user", user);
     post.setDataValue("post_media", mediaByPostId.has(postId) ? [mediaByPostId.get(postId)] : []);
     post.setDataValue("likes", []);
     post.setDataValue("comments", []);
@@ -1502,6 +2004,7 @@ const fetchPostsByIdsOrderedSummary = async (
     post.setDataValue("is_starred", likedByViewer);
     post.setDataValue("isStarred", likedByViewer);
     post.setDataValue("starred", likedByViewer);
+    post.setDataValue("comments_count", commentCountByPostId.get(postId) ?? 0);
     byId.set(postId, post);
   });
 
@@ -1528,14 +2031,25 @@ const runPostFindRanking = async ({
   const size = normalizeLimit(sizeRaw, 10, 40);
   const viewerId = Number(meId);
   const validViewerId = Number.isFinite(viewerId) && viewerId > 0 ? viewerId : null;
-  const sessionToken = normalizeSessionToken(options?.sessionKey);
-  const sessionMemoryKey = buildPostSessionMemoryKey(validViewerId, sessionToken);
-  const sessionLoadStartedAtMs = nowMs();
-  const {
-    state: sessionState,
-    backend: sessionLoadBackend,
-  } = await getPostSessionState(sessionMemoryKey);
-  profiler.sessionLoadMs = nowMs() - sessionLoadStartedAtMs;
+  const includeRankingDebug = Boolean(options?.includeRankingDebug);
+  const useSessionState = !summary || POST_SUMMARY_SESSION_STATE_ENABLED;
+  const sessionToken = useSessionState ? normalizeSessionToken(options?.sessionKey) : "";
+  const sessionMemoryKeyBase = useSessionState
+    ? buildPostSessionMemoryKey(validViewerId, sessionToken)
+    : "";
+  const sessionVariant = suggested ? "suggested" : "feed";
+  const sessionMemoryKey = sessionMemoryKeyBase
+    ? `${sessionMemoryKeyBase}:${sessionVariant}`
+    : "";
+  let sessionState = buildEmptyPostSessionState();
+  let sessionLoadBackend: "redis" | "memory" = "memory";
+  if (useSessionState) {
+    const sessionLoadStartedAtMs = nowMs();
+    const loaded = await getPostSessionState(sessionMemoryKey);
+    sessionState = loaded.state;
+    sessionLoadBackend = loaded.backend;
+    profiler.sessionLoadMs = nowMs() - sessionLoadStartedAtMs;
+  }
   profiler.sessionLoadBackend = sessionLoadBackend;
   const start = page * size;
   const end = start + size;
@@ -1543,18 +2057,35 @@ const runPostFindRanking = async ({
 
   const where = buildPostFeedWhere(meId, suggested);
   const replacements = { meId };
+  const totalCountCacheKey = summary
+    ? `s:${suggested ? 1 : 0}:v:${validViewerId ?? 0}`
+    : "";
+  const cachedTotalCount = totalCountCacheKey
+    ? readCachedPostFeedTotalCount(totalCountCacheKey)
+    : null;
+  const cachedViewerContext = summary ? readCachedPostViewerContext(validViewerId) : null;
 
   const [totalCount, viewerContext] = await Promise.all([
-    withPostDbProfile(profiler, "posts.count(feed_total)", () =>
-      Post.count({
-        where,
-        replacements,
-        distinct: true,
-        col: "id",
-      } as any)
-    ),
-    loadPostViewerContext(validViewerId, profiler),
+    cachedTotalCount !== null
+      ? Promise.resolve(cachedTotalCount)
+      : withPostDbProfile(profiler, "posts.count(feed_total)", () =>
+          Post.count({
+            where,
+            replacements,
+            distinct: true,
+            col: "id",
+          } as any)
+        ),
+    cachedViewerContext
+      ? Promise.resolve(cachedViewerContext)
+      : loadPostViewerContext(validViewerId, profiler),
   ]);
+  if (cachedTotalCount === null && totalCountCacheKey) {
+    writeCachedPostFeedTotalCount(totalCountCacheKey, Number(totalCount || 0));
+  }
+  if (!cachedViewerContext && summary && validViewerId) {
+    writeCachedPostViewerContext(validViewerId, viewerContext);
+  }
 
   const candidateRows = await fetchPostCandidatePool({
     where,
@@ -1563,26 +2094,42 @@ const runPostFindRanking = async ({
     viewerId: validViewerId,
     size,
     page,
+    summary,
     profiler,
   });
 
   const creatorIds = candidateRows
     .map((row: any) => Number(row?.userId))
     .filter((id: number) => Number.isFinite(id) && id > 0);
-  const creatorLocationMap = await loadCreatorLocationMap(creatorIds, profiler);
+  const shouldLoadCreatorProfiles = Boolean(
+    viewerContext.cityId ||
+      viewerContext.stateId ||
+      viewerContext.countryId ||
+      viewerContext.primaryLanguageCode ||
+      viewerContext.secondaryLanguageCodes.size > 0
+  );
+  const creatorLocationMap = shouldLoadCreatorProfiles
+    ? await loadCreatorLocationMap(creatorIds, profiler)
+    : new Map<number, any>();
 
   const rerankStartedAtMs = nowMs();
   const qualityRejected: Array<{ id: number; creatorId: number; reason: string }> = [];
   const scoredCandidates: PostCandidate[] = [];
+  const seenSessionCandidates: PostCandidate[] = [];
   candidateRows.forEach((row) => {
     const candidate = buildPostCandidate({
       row,
       viewerContext,
+      viewerId: validViewerId,
       sessionState,
       creatorLocationMap,
     });
     if (candidate) {
-      scoredCandidates.push(candidate);
+      if (useSessionState && candidate.seenInSession) {
+        seenSessionCandidates.push(candidate);
+      } else {
+        scoredCandidates.push(candidate);
+      }
       return;
     }
 
@@ -1594,6 +2141,7 @@ const runPostFindRanking = async ({
     });
   });
   scoredCandidates.sort((a, b) => b.finalScore - a.finalScore);
+  seenSessionCandidates.sort((a, b) => b.finalScore - a.finalScore);
 
   const availableByBucket: Record<PostBucket, number> = {
     interest: 0,
@@ -1617,24 +2165,91 @@ const runPostFindRanking = async ({
     desiredCount,
     bucketTargets,
   });
+  if (selectedCandidates.length < desiredCount && seenSessionCandidates.length > 0) {
+    const remaining = desiredCount - selectedCandidates.length;
+    const fallbackAvailableByBucket: Record<PostBucket, number> = {
+      interest: 0,
+      social: 0,
+      trending: 0,
+      local: 0,
+      exploration: 0,
+    };
+    seenSessionCandidates.forEach((candidate) => {
+      fallbackAvailableByBucket[candidate.bucket] += 1;
+    });
+
+    const fallbackTargets = buildPostBucketTargets({
+      desiredCount: remaining,
+      availableByBucket: fallbackAvailableByBucket,
+      hasViewer: Boolean(validViewerId),
+    });
+    const fallbackSeenCandidates = selectPostCandidates({
+      scoredCandidates: seenSessionCandidates,
+      desiredCount: remaining,
+      bucketTargets: fallbackTargets,
+    });
+    selectedCandidates.push(...fallbackSeenCandidates);
+  }
   const shuffledCandidates = applyPostTopKShuffle(
     selectedCandidates,
     sessionToken || validViewerId
   );
-  const pageCandidates = shuffledCandidates.slice(start, end);
+  const rankedIds = shuffledCandidates
+    .map((candidate) => Number(candidate.id))
+    .filter((id) => Number.isFinite(id) && id > 0);
+  const stableFeedIds = useSessionState
+    ? mergeStablePostFeedIds(sessionState.stableFeedIds, rankedIds)
+    : rankedIds;
+  if (useSessionState) {
+    sessionState.stableFeedIds = stableFeedIds;
+  }
+  const pageIds = stableFeedIds.slice(start, end);
+  const pageIdSet = new Set<number>(pageIds);
+  const pageCandidates = shuffledCandidates.filter((candidate) =>
+    pageIdSet.has(Number(candidate.id))
+  );
   profiler.rerankMs = nowMs() - rerankStartedAtMs;
-  const pageIds = pageCandidates.map((candidate) => candidate.id);
 
   const orderedPosts = summary
     ? await fetchPostsByIdsOrderedSummary(pageIds, meId, profiler)
     : await fetchPostsByIdsOrdered(pageIds, meId, suggested, profiler);
-  const sessionSaveStartedAtMs = nowMs();
-  const sessionSaveBackend = await updatePostSessionState(
-    sessionMemoryKey,
-    sessionState,
-    orderedPosts
-  );
-  profiler.sessionSaveMs = nowMs() - sessionSaveStartedAtMs;
+  if (includeRankingDebug && Array.isArray(orderedPosts) && orderedPosts.length > 0) {
+    const candidateById = new Map<number, PostCandidate>();
+    [...scoredCandidates, ...seenSessionCandidates, ...selectedCandidates].forEach(
+      (candidate) => {
+        candidateById.set(Number(candidate.id), candidate);
+      }
+    );
+    orderedPosts.forEach((post: any) => {
+      const postId = Number(post?.id);
+      if (!Number.isFinite(postId) || postId <= 0) return;
+      const candidate = candidateById.get(postId);
+      if (!candidate) return;
+      const rankingReason = {
+        ...candidate.rankingReason,
+        format: candidate.format,
+        bucket: candidate.bucket,
+        scoreBreakdown: {
+          ...candidate.scoreBreakdown,
+        },
+        score: round3(candidate.finalScore),
+      };
+      setRowValue(post, "score", round3(candidate.finalScore));
+      setRowValue(post, "feed_score", round3(candidate.finalScore));
+      setRowValue(post, "rankingReason", rankingReason);
+      setRowValue(post, "ranking_reason", rankingReason);
+    });
+  }
+  let sessionSaveBackend: "redis" | "memory" = "memory";
+  if (useSessionState) {
+    const sessionSaveStartedAtMs = nowMs();
+    sessionSaveBackend = await updatePostSessionState(
+      sessionMemoryKey,
+      sessionState,
+      orderedPosts
+    );
+    profiler.sessionSaveMs = nowMs() - sessionSaveStartedAtMs;
+  }
   profiler.sessionSaveBackend = sessionSaveBackend;
   logPostFindDebug({
     viewerId: validViewerId,
@@ -1645,7 +2260,11 @@ const runPostFindRanking = async ({
     qualityRejected,
     bucketTargets,
     scoredCandidates,
-    selectedCandidates: shuffledCandidates,
+    selectedCandidates: useSessionState
+      ? shuffledCandidates.filter((candidate) =>
+          stableFeedIds.includes(Number(candidate.id))
+        )
+      : shuffledCandidates,
     pageCandidates,
   });
   logPostFindPerf({
@@ -1664,6 +2283,10 @@ const runPostFindRanking = async ({
 };
 
 export const add = async (body: any) => {
+  const hashtags = normalizeHashtagsForContent({
+    text: body?.post,
+    hashtagsRaw: body?.hashtags,
+  });
   const post: any = await Post.create(body);
 
   const mediaItems = normalizeMediaPayload(body.media_items ?? body.media_url);
@@ -1677,6 +2300,17 @@ export const add = async (body: any) => {
         });
       })
     );
+  }
+
+  const hashtagEntries = await syncHashtagsForContent({
+    contentType: "post",
+    contentId: post?.id,
+    tags: hashtags,
+  });
+  if (typeof post?.setDataValue === "function") {
+    post.setDataValue("hashtags", hashtagEntries);
+  } else if (post) {
+    post.hashtags = hashtagEntries;
   }
 
   return post;
@@ -1770,6 +2404,14 @@ export const getOne = async (id: any, meId: any) => {
     viewerIdRaw: meId,
   });
 
+  if (post) {
+    refreshPostRowMediaLinks(post);
+    await applyPostHashtags([post]);
+    await applyCommentHashtags(
+      Array.isArray((post as any)?.comments) ? (post as any).comments : []
+    );
+  }
+
   return post;
 };
 
@@ -1792,6 +2434,14 @@ export const get = async (id: any, meId: any = -1) => {
     usersRaw: [(post as any)?.user].filter(Boolean),
     viewerIdRaw: meId,
   });
+
+  if (post) {
+    refreshPostRowMediaLinks(post);
+    await applyPostHashtags([post]);
+    await applyCommentHashtags(
+      Array.isArray((post as any)?.comments) ? (post as any).comments : []
+    );
+  }
 
   return post;
 };
@@ -1817,6 +2467,14 @@ export const getOneByUser = async (id: any, userId: any, meId: any = -1) => {
     viewerIdRaw: meId,
   });
 
+  if (post) {
+    refreshPostRowMediaLinks(post);
+    await applyPostHashtags([post]);
+    await applyCommentHashtags(
+      Array.isArray((post as any)?.comments) ? (post as any).comments : []
+    );
+  }
+
   return post;
 };
 
@@ -1827,6 +2485,22 @@ export const update = async (id: any, body: any) => {
   });
 
   const post = await postTemp?.update(body);
+  if (post) {
+    const hashtags = normalizeHashtagsForContent({
+      text: body?.post ?? (post as any)?.post,
+      hashtagsRaw: body?.hashtags,
+    });
+    const hashtagEntries = await syncHashtagsForContent({
+      contentType: "post",
+      contentId: (post as any)?.id,
+      tags: hashtags,
+    });
+    if (typeof (post as any)?.setDataValue === "function") {
+      (post as any).setDataValue("hashtags", hashtagEntries);
+    } else {
+      (post as any).hashtags = hashtagEntries;
+    }
+  }
   return [post];
 };
 

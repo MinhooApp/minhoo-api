@@ -11,6 +11,64 @@ import Like from "../../../_models/like/like";
 import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
 import { isSummaryMode, toFollowSummary } from "../../../libs/summary_response";
 import { attachActiveOrbitStateToUsers } from "../../../repository/reel/orbit_ring_projection";
+import { sendUnifiedSuccess } from "../../../libs/unified_response";
+import { getUserReputation } from "../../../repository/user/user_reputation_repository";
+
+const setPrivateNoStore = (res: Response) => {
+  res.set("Cache-Control", "private, no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Vary", "Accept-Encoding, Authorization");
+};
+
+const sendAdminProfileUnavailable = (
+  req: Request,
+  res: Response,
+  params?: { code?: string; message?: string; status?: number }
+) => {
+  const status = Number(params?.status ?? 404) || 404;
+  const message =
+    String(params?.message ?? "admin profile is unavailable").trim() ||
+    "admin profile is unavailable";
+  const code = String(params?.code ?? "ADMIN_PROFILE_UNAVAILABLE").trim() ||
+    "ADMIN_PROFILE_UNAVAILABLE";
+  const authenticated = Number(req.userId) > 0;
+  return res.status(status).json({
+    success: false,
+    code,
+    message,
+    header: {
+      success: false,
+      authenticated,
+      message,
+      messages: [message],
+    },
+    messages: [message],
+    body: { code },
+  });
+};
+
+const assignAdminMarkersToUserObject = (userRaw: any, isAdmin: boolean) => {
+  if (!userRaw) return;
+  const roles = isAdmin
+    ? [{ id: 8088, role: "admin", description: "admin role" }]
+    : Array.isArray((userRaw as any)?.roles)
+    ? (userRaw as any).roles
+    : [];
+  const fields: Record<string, any> = {
+    is_admin: isAdmin,
+    isAdmin: isAdmin,
+    roles,
+  };
+
+  if (typeof (userRaw as any)?.setDataValue === "function") {
+    Object.entries(fields).forEach(([key, value]) => {
+      (userRaw as any).setDataValue(key, value);
+    });
+    return;
+  }
+
+  Object.assign(userRaw, fields);
+};
 
 const collectFollowUsers = (entries: any[]) =>
   (Array.isArray(entries) ? entries : [])
@@ -258,6 +316,54 @@ const normalizeRelationship = (relationship: any) => {
   };
 };
 
+const toBoundedRate = (value: any) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return 0;
+  const bounded = Math.min(Math.max(parsed, 0), 5);
+  return Math.round(bounded * 10) / 10;
+};
+
+const buildReputationSummary = (data: any) => {
+  const customer = data?.customer ?? null;
+  const worker = data?.worker ?? null;
+  const customerRate = toBoundedRate(customer?.rate ?? customer?.rating);
+  const workerRate = toBoundedRate(worker?.rate ?? worker?.rating);
+  const customerReviewsCount = Math.max(0, Number(customer?.reviews_count ?? 0) || 0);
+  const workerReviewsCount = Math.max(0, Number(worker?.reviews_count ?? 0) || 0);
+  const primaryRate = workerRate > 0 ? workerRate : customerRate;
+  const primaryReviewsCount = workerRate > 0 ? workerReviewsCount : customerReviewsCount;
+
+  return {
+    primaryRate,
+    primaryReviewsCount,
+    customerRate,
+    workerRate,
+    customerReviewsCount,
+    workerReviewsCount,
+  };
+};
+
+const loadUserReputationSnapshot = async (userIdRaw: any) => {
+  const reputationResult = await getUserReputation({
+    userIdRaw,
+    pageRaw: 1,
+    limitRaw: 20,
+  });
+
+  if (!(reputationResult as any)?.success) {
+    return {
+      data: { customer: null, worker: null },
+      summary: buildReputationSummary({ customer: null, worker: null }),
+    };
+  }
+
+  const data = (reputationResult as any)?.data ?? { customer: null, worker: null };
+  return {
+    data,
+    summary: buildReputationSummary(data),
+  };
+};
+
 const attachRelationshipAliasesToUser = (user: any, relationship: any) => {
   if (!user) return;
   const normalized = normalizeRelationship(relationship);
@@ -277,6 +383,108 @@ const attachRelationshipAliasesToUser = (user: any, relationship: any) => {
   } else {
     Object.assign(user, fields);
   }
+};
+
+const hasNonEmptyText = (value: any): boolean =>
+  String(value ?? "").trim().length > 0;
+
+const hasArrayValues = (value: any): boolean =>
+  Array.isArray(value) && value.length > 0;
+
+const hasPositiveId = (value: any): boolean => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0;
+};
+
+const hasAnyPositiveId = (...values: any[]): boolean => values.some((value) => hasPositiveId(value));
+
+const buildProfileCompletion = (user: any) => {
+  const workerAbout = (user as any)?.worker?.about;
+  const workerCategories = (user as any)?.worker?.categories;
+  const hasCountryOrigin =
+    hasAnyPositiveId(
+      (user as any)?.country_origin_id,
+      (user as any)?.countryOriginId,
+      (user as any)?.origin_country_id,
+      (user as any)?.originCountryId,
+      (user as any)?.origin?.country_id,
+      (user as any)?.origin?.countryId,
+      (user as any)?.origin?.country?.id
+    ) ||
+    hasNonEmptyText((user as any)?.country_origin_code) ||
+    hasNonEmptyText((user as any)?.countryOriginCode) ||
+    hasNonEmptyText((user as any)?.origin_country_code) ||
+    hasNonEmptyText((user as any)?.originCountryCode) ||
+    hasNonEmptyText((user as any)?.origin?.country_code) ||
+    hasNonEmptyText((user as any)?.origin?.countryCode) ||
+    hasNonEmptyText((user as any)?.origin?.country?.code);
+  const hasCountryResidence =
+    hasAnyPositiveId(
+      (user as any)?.country_residence_id,
+      (user as any)?.countryResidenceId,
+      (user as any)?.country_id,
+      (user as any)?.countryId,
+      (user as any)?.residence?.country_id,
+      (user as any)?.residence?.countryId,
+      (user as any)?.residence?.country?.id,
+      (user as any)?.state_residence_id,
+      (user as any)?.stateResidenceId,
+      (user as any)?.state_id,
+      (user as any)?.stateId,
+      (user as any)?.residence?.state_id,
+      (user as any)?.residence?.stateId,
+      (user as any)?.residence?.state?.id,
+      (user as any)?.city_residence_id,
+      (user as any)?.cityResidenceId,
+      (user as any)?.city_id,
+      (user as any)?.cityId,
+      (user as any)?.residence?.city_id,
+      (user as any)?.residence?.cityId,
+      (user as any)?.residence?.city?.id
+    ) ||
+    hasNonEmptyText((user as any)?.city_residence_name) ||
+    hasNonEmptyText((user as any)?.cityResidenceName) ||
+    hasNonEmptyText((user as any)?.city_name) ||
+    hasNonEmptyText((user as any)?.cityName) ||
+    hasNonEmptyText((user as any)?.residence?.city_name) ||
+    hasNonEmptyText((user as any)?.residence?.cityName) ||
+    hasNonEmptyText((user as any)?.residence?.city?.name);
+
+  const breakdown = {
+    name: hasNonEmptyText(user?.name),
+    last_name: hasNonEmptyText(user?.last_name),
+    image_profil: hasNonEmptyText(user?.image_profil),
+    username: hasNonEmptyText(user?.username),
+    phone: hasNonEmptyText(user?.phone) && hasNonEmptyText(user?.dialing_code),
+    // Some worker flows persist "about" in worker.about instead of users.about.
+    // Accept either source so directory activation reflects actual profile state.
+    about: hasNonEmptyText(user?.about) || hasNonEmptyText(workerAbout),
+    job_preferences:
+      hasArrayValues((user as any)?.job_category_ids) || hasArrayValues(workerCategories),
+    // Accept explicit language_ids or preferred language fallback.
+    languages:
+      hasArrayValues((user as any)?.language_ids) ||
+      hasArrayValues((user as any)?.language_codes) ||
+      hasArrayValues((user as any)?.language_names) ||
+      hasNonEmptyText((user as any)?.language),
+    // Keep legacy keys for frontend compatibility, but evaluate with broader location aliases.
+    country_origin_id: hasCountryOrigin,
+    country_residence_id: hasCountryResidence,
+  };
+
+  const percent =
+    (breakdown.name ? 10 : 0) +
+    (breakdown.last_name ? 10 : 0) +
+    (breakdown.image_profil ? 10 : 0) +
+    (breakdown.username ? 20 : 0) +
+    (breakdown.phone ? 10 : 0) +
+    (breakdown.about ? 10 : 0) +
+    (breakdown.job_preferences ? 10 : 0) +
+    (breakdown.languages ? 10 : 0) +
+    (breakdown.country_origin_id ? 5 : 0) +
+    (breakdown.country_residence_id ? 5 : 0);
+
+  return { percent, breakdown };
 };
 
 export const gets = async (req: Request, res: Response) => {
@@ -312,22 +520,35 @@ export const search_profiles = async (req: Request, res: Response) => {
       "";
     const pageRaw = (req.query as any)?.page ?? 0;
     const sizeRaw = (req.query as any)?.size ?? 20;
+    const modeRaw = (req.query as any)?.mode ?? "all";
     const page = Number.isFinite(Number(pageRaw)) && Number(pageRaw) >= 0 ? Math.floor(Number(pageRaw)) : 0;
     const sizeNumber = Number.isFinite(Number(sizeRaw)) ? Math.floor(Number(sizeRaw)) : 20;
     const size = Math.min(Math.max(sizeNumber, 1), 20);
-    const query = String(qRaw ?? "").trim();
-    const users: any = await repository.search_profiles(query, req.userId ?? -1, page, size);
+    const mode = String(modeRaw ?? "all")
+      .trim()
+      .toLowerCase() === "username"
+      ? "username"
+      : "all";
+    const query = String(qRaw ?? "")
+      .trim()
+      .toLowerCase()
+      .replace(/^@+/, "")
+      .replace(/\s+/g, " ");
+    const users: any = await repository.search_profiles(
+      query,
+      req.userId ?? -1,
+      page,
+      size,
+      mode
+    );
 
-    return formatResponse({
-      res: res,
-      success: true,
-      body: {
-        query,
-        page,
-        size,
-        count: users.count,
-        users: users.rows,
-      },
+    return sendUnifiedSuccess(res, {
+      items: users.rows ?? [],
+      users: users.rows ?? [],
+      count: Number(users.count ?? 0),
+      page,
+      size,
+      next_cursor: null,
     });
   } catch (error) {
     return formatResponse({ res: res, success: false, message: error });
@@ -338,53 +559,77 @@ export const get = async (req: Request, res: Response) => {
   const { id } = req.params;
 
   try {
-    const user = await repository.get(id, req.userId);
-    await attachActiveOrbitStateToUsers({
-      usersRaw: [user].filter(Boolean),
-      viewerIdRaw: req.userId,
-    });
-    await attachLikedStateToUserPosts(req.userId, user);
-    await attachSavedStateToUserPosts(req.userId, user);
-    const counts = await enrichUserFollowCounts(user);
+    setPrivateNoStore(res);
+    const hasExplicitTargetId =
+      id !== undefined &&
+      id !== null &&
+      String(id).trim().length > 0;
+    const targetIdCandidate = hasExplicitTargetId ? Number(id) : Number(req.userId);
     const viewerId = Number(req.userId);
+    const allowOwnAdminProfile =
+      Number.isFinite(viewerId) &&
+      viewerId > 0 &&
+      Number.isFinite(targetIdCandidate) &&
+      targetIdCandidate > 0 &&
+      Math.trunc(viewerId) === Math.trunc(targetIdCandidate);
+
+    let targetIsAdmin = false;
+    if (
+      Number.isFinite(targetIdCandidate) &&
+      targetIdCandidate > 0 &&
+      !allowOwnAdminProfile
+    ) {
+      targetIsAdmin = await repository.isUserAdminById(targetIdCandidate);
+    }
+
+    const user = await repository.get(id, req.userId);
+    if (user) {
+      const resolvedTargetUserId = Number((user as any)?.id ?? targetIdCandidate);
+      if (Number.isFinite(resolvedTargetUserId) && resolvedTargetUserId > 0) {
+        targetIsAdmin = await repository.isUserAdminById(resolvedTargetUserId);
+      }
+      assignAdminMarkersToUserObject(user, targetIsAdmin);
+    }
+
     const targetId = Number((user as any)?.id ?? id);
-    const relationship =
+    const relationshipPromise =
       Number.isFinite(viewerId) &&
       viewerId > 0 &&
       Number.isFinite(targetId) &&
       targetId > 0 &&
       viewerId !== targetId
-        ? normalizeRelationship(await followerRepo.getRelationship(viewerId, targetId))
-        : normalizeRelationship(null);
-    attachRelationshipAliasesToUser(user, relationship);
-    const breakdown = {
-      name: !!user?.name,
-      last_name: !!user?.last_name,
-      image_profil: !!user?.image_profil,
-      username: !!user?.username,
-      phone: !!user?.phone && !!user?.dialing_code,
-      about: !!user?.about,
-      job_preferences:
-        Array.isArray((user as any)?.job_category_ids) &&
-        (user as any).job_category_ids.length > 0,
-      languages:
-        Array.isArray((user as any)?.language_ids) &&
-        (user as any).language_ids.length > 0,
-      country_origin_id: !!(user as any)?.country_origin_id,
-      country_residence_id: !!(user as any)?.country_residence_id,
-    };
+        ? followerRepo.getRelationship(viewerId, targetId)
+        : Promise.resolve(null);
 
-    const percent =
-      (breakdown.name ? 10 : 0) +
-      (breakdown.last_name ? 10 : 0) +
-      (breakdown.image_profil ? 10 : 0) +
-      (breakdown.username ? 20 : 0) +
-      (breakdown.phone ? 10 : 0) +
-      (breakdown.about ? 10 : 0) +
-      (breakdown.job_preferences ? 10 : 0) +
-      (breakdown.languages ? 10 : 0) +
-      (breakdown.country_origin_id ? 5 : 0) +
-      (breakdown.country_residence_id ? 5 : 0);
+    const [counts, relationshipRaw, _orbitState, _likedState, _savedState, reputationSnapshot] =
+      await Promise.all([
+      enrichUserFollowCounts(user),
+      relationshipPromise,
+      attachActiveOrbitStateToUsers({
+        usersRaw: [user].filter(Boolean),
+        viewerIdRaw: req.userId,
+      }),
+      attachLikedStateToUserPosts(req.userId, user),
+      attachSavedStateToUserPosts(req.userId, user),
+      loadUserReputationSnapshot(targetId),
+    ]);
+
+    const relationship = normalizeRelationship(relationshipRaw);
+    attachRelationshipAliasesToUser(user, relationship);
+    const { percent, breakdown } = buildProfileCompletion(user);
+    const profileVerified = Boolean(
+      (user as any)?.profile_verified ??
+        (user as any)?.profileVerified ??
+        (user as any)?.verified_badge ??
+        false
+    );
+    const profileVerificationStatus = String(
+      (user as any)?.profile_verification_status ??
+        (user as any)?.profileVerificationStatus ??
+        "unverified"
+    )
+      .trim()
+      .toLowerCase();
 
     return formatResponse({
       res: res,
@@ -411,6 +656,29 @@ export const get = async (req: Request, res: Response) => {
           percent,
           breakdown,
         },
+        reputation: reputationSnapshot.data,
+        reputation_summary: reputationSnapshot.summary,
+        ratings_summary: reputationSnapshot.summary,
+        rate: reputationSnapshot.summary.primaryRate,
+        rating: reputationSnapshot.summary.primaryRate,
+        reviews_count: reputationSnapshot.summary.primaryReviewsCount,
+        customer_rate: reputationSnapshot.summary.customerRate,
+        customer_reviews_count: reputationSnapshot.summary.customerReviewsCount,
+        worker_rate: reputationSnapshot.summary.workerRate,
+        worker_reviews_count: reputationSnapshot.summary.workerReviewsCount,
+        profile_verified: profileVerified,
+        profileVerified,
+        verified_badge: profileVerified,
+        is_verified_profile: profileVerified,
+        profile_verification_status: profileVerificationStatus,
+        profileVerificationStatus,
+        is_admin: targetIsAdmin,
+        isAdmin: targetIsAdmin,
+        roles: targetIsAdmin
+          ? [{ id: 8088, role: "admin", description: "admin role" }]
+          : Array.isArray((user as any)?.roles)
+          ? (user as any).roles
+          : [],
       },
     });
   } catch (error) {
@@ -421,38 +689,28 @@ export const get = async (req: Request, res: Response) => {
 
 export const myData = async (req: Request, res: Response) => {
   try {
+    setPrivateNoStore(res);
     const user = await repository.get(req.userId);
-    await attachLikedStateToUserPosts(req.userId, user);
-    await attachSavedStateToUserPosts(req.userId, user);
-    const counts = await enrichUserFollowCounts(user);
-    const breakdown = {
-      name: !!user?.name,
-      last_name: !!user?.last_name,
-      image_profil: !!user?.image_profil,
-      username: !!user?.username,
-      phone: !!user?.phone && !!user?.dialing_code,
-      about: !!user?.about,
-      job_preferences:
-        Array.isArray((user as any)?.job_category_ids) &&
-        (user as any).job_category_ids.length > 0,
-      languages:
-        Array.isArray((user as any)?.language_ids) &&
-        (user as any).language_ids.length > 0,
-      country_origin_id: !!(user as any)?.country_origin_id,
-      country_residence_id: !!(user as any)?.country_residence_id,
-    };
-
-    const percent =
-      (breakdown.name ? 10 : 0) +
-      (breakdown.last_name ? 10 : 0) +
-      (breakdown.image_profil ? 10 : 0) +
-      (breakdown.username ? 20 : 0) +
-      (breakdown.phone ? 10 : 0) +
-      (breakdown.about ? 10 : 0) +
-      (breakdown.job_preferences ? 10 : 0) +
-      (breakdown.languages ? 10 : 0) +
-      (breakdown.country_origin_id ? 5 : 0) +
-      (breakdown.country_residence_id ? 5 : 0);
+    const [counts, _likedState, _savedState, reputationSnapshot] = await Promise.all([
+      enrichUserFollowCounts(user),
+      attachLikedStateToUserPosts(req.userId, user),
+      attachSavedStateToUserPosts(req.userId, user),
+      loadUserReputationSnapshot(req.userId),
+    ]);
+    const { percent, breakdown } = buildProfileCompletion(user);
+    const profileVerified = Boolean(
+      (user as any)?.profile_verified ??
+        (user as any)?.profileVerified ??
+        (user as any)?.verified_badge ??
+        false
+    );
+    const profileVerificationStatus = String(
+      (user as any)?.profile_verification_status ??
+        (user as any)?.profileVerificationStatus ??
+        "unverified"
+    )
+      .trim()
+      .toLowerCase();
 
     return formatResponse({
       res: res,
@@ -472,6 +730,22 @@ export const myData = async (req: Request, res: Response) => {
           percent,
           breakdown,
         },
+        reputation: reputationSnapshot.data,
+        reputation_summary: reputationSnapshot.summary,
+        ratings_summary: reputationSnapshot.summary,
+        rate: reputationSnapshot.summary.primaryRate,
+        rating: reputationSnapshot.summary.primaryRate,
+        reviews_count: reputationSnapshot.summary.primaryReviewsCount,
+        customer_rate: reputationSnapshot.summary.customerRate,
+        customer_reviews_count: reputationSnapshot.summary.customerReviewsCount,
+        worker_rate: reputationSnapshot.summary.workerRate,
+        worker_reviews_count: reputationSnapshot.summary.workerReviewsCount,
+        profile_verified: profileVerified,
+        profileVerified,
+        verified_badge: profileVerified,
+        is_verified_profile: profileVerified,
+        profile_verification_status: profileVerificationStatus,
+        profileVerificationStatus,
       },
     });
   } catch (error) {
@@ -480,37 +754,45 @@ export const myData = async (req: Request, res: Response) => {
   }
 };
 
+export const reputation = async (req: Request, res: Response) => {
+  try {
+    const reputationResult = await getUserReputation({
+      userIdRaw: (req.params as any)?.userId,
+      pageRaw: (req.query as any)?.page,
+      limitRaw: (req.query as any)?.limit,
+    });
+
+    if ((reputationResult as any)?.invalidUserId) {
+      return res.status(400).json({
+        success: false,
+        message: "userId must be a valid number",
+      });
+    }
+
+    if ((reputationResult as any)?.notFound) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: (reputationResult as any)?.data ?? { customer: null, worker: null },
+    });
+  } catch (error: any) {
+    console.log("[user/reputation] error", error);
+    return res.status(500).json({
+      success: false,
+      message: error?.message ?? "Internal server error",
+    });
+  }
+};
+
 export const profile_completion = async (req: Request, res: Response) => {
   try {
     const user = await repository.get(req.userId);
-    const breakdown = {
-      name: !!user?.name,
-      last_name: !!user?.last_name,
-      image_profil: !!user?.image_profil,
-      username: !!user?.username,
-      phone: !!user?.phone && !!user?.dialing_code,
-      about: !!user?.about,
-      job_preferences:
-        Array.isArray((user as any)?.job_category_ids) &&
-        (user as any).job_category_ids.length > 0,
-      languages:
-        Array.isArray((user as any)?.language_ids) &&
-        (user as any).language_ids.length > 0,
-      country_origin_id: !!(user as any)?.country_origin_id,
-      country_residence_id: !!(user as any)?.country_residence_id,
-    };
-
-    const percent =
-      (breakdown.name ? 10 : 0) +
-      (breakdown.last_name ? 10 : 0) +
-      (breakdown.image_profil ? 10 : 0) +
-      (breakdown.username ? 20 : 0) +
-      (breakdown.phone ? 10 : 0) +
-      (breakdown.about ? 10 : 0) +
-      (breakdown.job_preferences ? 10 : 0) +
-      (breakdown.languages ? 10 : 0) +
-      (breakdown.country_origin_id ? 5 : 0) +
-      (breakdown.country_residence_id ? 5 : 0);
+    const { percent, breakdown } = buildProfileCompletion(user);
 
     return formatResponse({
       res,
@@ -887,11 +1169,6 @@ export const followers_v2 = async (req: Request, res: Response) => {
       success: true,
       body: {
         followers: items,
-        follows: items,
-        items,
-        users: items.map((item: any) => item?.user ?? item).filter(Boolean),
-        count: targetCounts.followersCount,
-        total: targetCounts.followersCount,
         followersCount: targetCounts.followersCount,
         followingCount: targetCounts.followingCount,
         followingsCount: targetCounts.followingCount,
@@ -960,10 +1237,6 @@ export const following_v2 = async (req: Request, res: Response) => {
       body: {
         following: items,
         follows: items,
-        items,
-        users: items.map((item: any) => item?.user ?? item).filter(Boolean),
-        count: targetCounts.followingCount,
-        total: targetCounts.followingCount,
         followersCount: targetCounts.followersCount,
         followingCount: targetCounts.followingCount,
         followingsCount: targetCounts.followingCount,

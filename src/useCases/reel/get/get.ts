@@ -1,11 +1,6 @@
 import { Request, Response, formatResponse, repository } from "../_module/module";
 import crypto from "crypto";
-import {
-  isCompactMode,
-  isSummaryMode,
-  toReelSummary,
-  toReelSummaryCompact,
-} from "../../../libs/summary_response";
+import { isSummaryMode, toReelSummary } from "../../../libs/summary_response";
 import * as followerRepo from "../../../repository/follower/follower_repository";
 import * as userRepository from "../../../repository/user/user_repository";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
@@ -108,6 +103,22 @@ const isAuthenticatedRequest = (req: Request): boolean => {
   const requestAny: any = req as any;
   const userId = Number(requestAny?.userId ?? 0);
   return Boolean(requestAny?.authenticated) || (Number.isFinite(userId) && userId > 0);
+};
+
+const setOptionalAuthDebugHeaders = (req: Request, res: Response) => {
+  const requestAny: any = req as any;
+  const tokenPresent = Number(requestAny?.authOptionalTokenPresent ?? 0) === 1;
+  const stateRaw = String(
+    requestAny?.authOptionalState ?? (requestAny?.authenticated ? "verified" : "missing")
+  ).trim();
+  const state = stateRaw || "missing";
+  const action = String(requestAny?.authOptionalAction ?? "").trim();
+  const code = String(requestAny?.authOptionalCode ?? "").trim();
+
+  res.set("X-Auth-Optional-Token", tokenPresent ? "1" : "0");
+  res.set("X-Auth-Optional-State", state);
+  if (action) res.set("X-Auth-Action-Hint", action);
+  if (code) res.set("X-Auth-Error-Code", code);
 };
 
 const setReelListCacheHeaders = (req: Request, res: Response, summary: boolean) => {
@@ -366,16 +377,14 @@ const buildReelSummaryCacheKey = (params: {
   viewerId: number;
   sessionKey: string;
   allowLoop: boolean;
-  compact: boolean;
 }) => {
   const viewerId = normalizeUserId(params.viewerId) ?? 0;
   const sessionSuffix = params.sessionKey || "anonymous";
   const loopFlag = params.allowLoop ? 1 : 0;
-  const compactFlag = params.compact ? 1 : 0;
   if (viewerId <= 0) {
-    return `summary:${params.variant}:public:p:${params.page}:s:${params.size}:l:${loopFlag}:cp:${compactFlag}`;
+    return `summary:${params.variant}:public:p:${params.page}:s:${params.size}:l:${loopFlag}`;
   }
-  return `summary:${params.variant}:v:${viewerId}:p:${params.page}:s:${params.size}:l:${loopFlag}:cp:${compactFlag}:sk:${sessionSuffix}`;
+  return `summary:${params.variant}:v:${viewerId}:p:${params.page}:s:${params.size}:l:${loopFlag}:sk:${sessionSuffix}`;
 };
 
 const cloneCacheValue = <T>(value: T): T => {
@@ -761,10 +770,10 @@ export const reels_feed = async (req: Request, res: Response) => {
     const page = Math.max(0, Number((req.query as any)?.page ?? 0) || 0);
     const size = Math.min(Math.max(Number((req.query as any)?.size ?? 15) || 15, 1), 20);
     const summary = isSummaryMode((req.query as any)?.summary);
-    const compact = summary && isCompactMode((req.query as any)?.compact);
     const canUseSummaryServerCache =
       summary && !isAuthenticatedRequest(req) && !hasAuthCredentialsHint(req);
     setReelListCacheHeaders(req, res, summary);
+    setOptionalAuthDebugHeaders(req, res);
     const allowLoop = shouldLoopFeed(
       (req.query as any)?.loop ?? (req.query as any)?.repeat
     );
@@ -779,7 +788,6 @@ export const reels_feed = async (req: Request, res: Response) => {
             viewerId,
             sessionKey,
             allowLoop,
-            compact,
           })
         : "";
     if (summary) {
@@ -831,14 +839,9 @@ export const reels_feed = async (req: Request, res: Response) => {
         count: data.count,
         looped,
         reels: summary
-          ? (data.rows ?? []).map((row: any) => {
-              const reelSummary = toReelSummary(
-                row,
-                (req as any).userId,
-                relationshipByUserId
-              );
-              return compact ? toReelSummaryCompact(reelSummary) : reelSummary;
-            })
+          ? (data.rows ?? []).map((row: any) =>
+              toReelSummary(row, (req as any).userId, relationshipByUserId)
+            )
           : data.rows,
       };
     };
@@ -876,10 +879,10 @@ export const reels_suggested = async (req: Request, res: Response) => {
     const page = Math.max(0, Number((req.query as any)?.page ?? 0) || 0);
     const size = Math.min(Math.max(Number((req.query as any)?.size ?? 15) || 15, 1), 20);
     const summary = isSummaryMode((req.query as any)?.summary);
-    const compact = summary && isCompactMode((req.query as any)?.compact);
     const canUseSummaryServerCache =
       summary && !isAuthenticatedRequest(req) && !hasAuthCredentialsHint(req);
     setReelListCacheHeaders(req, res, summary);
+    setOptionalAuthDebugHeaders(req, res);
     const allowLoop = shouldLoopFeed(
       (req.query as any)?.loop ?? (req.query as any)?.repeat
     );
@@ -914,14 +917,9 @@ export const reels_suggested = async (req: Request, res: Response) => {
             count: Number(lockedData?.count ?? 0),
             looped: allowLoop,
             reels: summary
-              ? lockedRows.map((row: any) => {
-                  const reelSummary = toReelSummary(
-                    row,
-                    (req as any).userId,
-                    relationshipByUserId
-                  );
-                  return compact ? toReelSummaryCompact(reelSummary) : reelSummary;
-                })
+              ? lockedRows.map((row: any) =>
+                  toReelSummary(row, (req as any).userId, relationshipByUserId)
+                )
               : lockedRows,
             profileLocked: true,
             profileUserId: profileFeedLock.targetUserId,
@@ -946,7 +944,6 @@ export const reels_suggested = async (req: Request, res: Response) => {
             viewerId,
             sessionKey,
             allowLoop,
-            compact,
           })
         : "";
     if (summary) {
@@ -998,14 +995,9 @@ export const reels_suggested = async (req: Request, res: Response) => {
         count: data.count,
         looped,
         reels: summary
-          ? (data.rows ?? []).map((row: any) => {
-              const reelSummary = toReelSummary(
-                row,
-                (req as any).userId,
-                relationshipByUserId
-              );
-              return compact ? toReelSummaryCompact(reelSummary) : reelSummary;
-            })
+          ? (data.rows ?? []).map((row: any) =>
+              toReelSummary(row, (req as any).userId, relationshipByUserId)
+            )
           : data.rows,
       };
     };

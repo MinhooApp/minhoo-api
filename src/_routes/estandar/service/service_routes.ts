@@ -13,6 +13,10 @@ import {
   historyWorkers,
   update,
   finalized,
+  finalizeSearch,
+  moveToHistory,
+  rateWorkerByClient,
+  rateClientByWorker,
   report,
   deleteService,
   sendTestNotification,
@@ -24,6 +28,10 @@ import EnsureAdmin from "../../../libs/middlewares/ensure_admin";
 const router = Router();
 router.post("/", TokenValidation(), add);
 router.post("/send", TokenValidation(), EnsureAdmin(), sendTestNotification);
+router.post("/:serviceId/worker/:workerId/rating", TokenValidation(), rateWorkerByClient);
+router.post("/:serviceId/client/:clientId/rating", TokenValidation(), rateClientByWorker);
+router.post("/:id/finalize-search", TokenValidation(), finalizeSearch);
+router.post("/:id/move-to-history", TokenValidation(), moveToHistory);
 router.put("/:id/finalize", TokenValidation(), finalized);
 router.put("/:id", TokenValidation(), update);
 router.get("/myonGoing", TokenValidation(), myonGoing);

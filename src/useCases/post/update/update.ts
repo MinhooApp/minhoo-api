@@ -6,6 +6,7 @@ import {
   socket,
   sendNotification,
 } from "../_module/module";
+import { resolvePushActorLabel } from "../../../libs/push_actor_label";
 
 const toCounter = (value: any): number => {
   const numeric = Number(value);
@@ -182,12 +183,14 @@ export const like = async (req: Request, res: Response) => {
     });
 
     if (result?.liked) {
+      const actorLabel = await resolvePushActorLabel(req.userId);
       await sendNotification({
         postId: post?.id,
         userId: post?.userId,
         interactorId: req.userId,
         type: "like",
-        message: `Has given your post a star!`,
+        senderName: actorLabel,
+        message: `${actorLabel} has given your post a star!`,
       });
     }
     return formatResponse({ res: res, success: true, body: { post: post } });

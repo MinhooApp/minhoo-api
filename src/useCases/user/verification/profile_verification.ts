@@ -7,6 +7,10 @@ import ProfileVerificationRequest from "../../../_models/user/profile_verificati
 import ProfileVerificationIdentity from "../../../_models/user/profile_verification_identity";
 import { writeSecurityAuditFromRequest } from "../../../libs/security/security_audit_log";
 import { emitProfileUpdatedRealtime } from "../_shared/profile_realtime";
+import {
+  invalidateAuthUserCache,
+  invalidateUserCache,
+} from "../../../libs/cache/user_cache";
 
 const STATUS = {
   UNVERIFIED: "unverified",
@@ -1034,6 +1038,12 @@ const updateUserVerificationState = async ({
       id: userId,
     },
   });
+
+  // Force fresh profile/auth reads after verification changes.
+  await Promise.allSettled([
+    invalidateUserCache(userId),
+    invalidateAuthUserCache(userId),
+  ]);
 };
 
 const emitVerificationUserRealtime = async (userId: number) => {
@@ -1145,6 +1155,10 @@ export const submit_profile_verification = async (req: Request, res: Response) =
       },
       { where: { id: userId } }
     );
+    await Promise.allSettled([
+      invalidateUserCache(userId),
+      invalidateAuthUserCache(userId),
+    ]);
 
     let requestRow: any = latestRequestForUser;
     if (requestRow) {
@@ -1881,17 +1895,12 @@ export const admin_revoke_profile_verification = async (
 
     // Revocar badge NO borra evidencias enviadas (fotos/documentos).
     // Se conserva trazabilidad para revisión futura.
-    await User.update(
-      {
-        profile_verified: false,
-        profile_verification_status: STATUS.UNVERIFIED,
-        profile_verified_at: null,
-        profile_verification_failure_reason: null,
-        profile_verification_reviewed_at: null,
-        profile_verification_reviewed_by: null,
-      },
-      { where: { id: userId } }
-    );
+    await updateUserVerificationState({
+      userId,
+      status: STATUS.UNVERIFIED,
+      failureReason: null,
+      reviewerUserId: actorUserId ?? null,
+    });
 
     const [updatedVerificationRequests] = await ProfileVerificationRequest.update(
       {

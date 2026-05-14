@@ -85,6 +85,198 @@ const parseOptionalString = (value: any): string | undefined => {
   return parsed ? parsed : undefined;
 };
 
+const readPath = (source: any, path: string): any => {
+  if (!source || typeof source !== "object") return undefined;
+  if (!path.includes(".")) return (source as any)?.[path];
+  const segments = path.split(".");
+  let cursor: any = source;
+  for (const segment of segments) {
+    if (cursor === null || cursor === undefined || typeof cursor !== "object") {
+      return undefined;
+    }
+    cursor = cursor[segment];
+  }
+  return cursor;
+};
+
+const pickFirstLocationValue = (body: any, candidates: readonly string[]): any => {
+  for (const candidate of candidates) {
+    const value = readPath(body, candidate);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+};
+
+const LOCATION_FIELD_ALIASES = {
+  countryOriginId: [
+    "country_origin_id",
+    "countryOriginId",
+    "origin_country_id",
+    "originCountryId",
+    "country_of_origin_id",
+    "countryOfOriginId",
+    "country_origin",
+    "countryOrigin",
+    "location.country_origin_id",
+    "location.countryOriginId",
+    "location.origin_country_id",
+    "location.originCountryId",
+    "location.country_of_origin_id",
+    "location.countryOfOriginId",
+    "location.origin_country",
+    "location.originCountry",
+    "origin.country_id",
+    "origin.countryId",
+    "origin.country.id",
+  ],
+  countryOriginCode: [
+    "country_origin_code",
+    "countryOriginCode",
+    "origin_country_code",
+    "originCountryCode",
+    "country_of_origin_code",
+    "countryOfOriginCode",
+    "country_origin_iso",
+    "countryOriginIso",
+    "location.country_origin_code",
+    "location.countryOriginCode",
+    "location.origin_country_code",
+    "location.originCountryCode",
+    "origin.country_code",
+    "origin.countryCode",
+    "origin.country.code",
+    "origin.country.iso_code",
+  ],
+  countryResidenceId: [
+    "country_residence_id",
+    "countryResidenceId",
+    "residence_country_id",
+    "residenceCountryId",
+    "country_id",
+    "countryId",
+    "country_residence",
+    "countryResidence",
+    "location.country_residence_id",
+    "location.countryResidenceId",
+    "location.residence_country_id",
+    "location.residenceCountryId",
+    "location.country_id",
+    "location.countryId",
+    "residence.country_id",
+    "residence.countryId",
+    "residence.country.id",
+    "residence.country",
+  ],
+  stateResidenceId: [
+    "state_residence_id",
+    "stateResidenceId",
+    "residence_state_id",
+    "residenceStateId",
+    "state_id",
+    "stateId",
+    "state_residence",
+    "stateResidence",
+    "location.state_residence_id",
+    "location.stateResidenceId",
+    "location.residence_state_id",
+    "location.residenceStateId",
+    "location.state_id",
+    "location.stateId",
+    "residence.state_id",
+    "residence.stateId",
+    "residence.state.id",
+    "residence.state",
+  ],
+  stateResidenceCode: [
+    "state_residence_code",
+    "stateResidenceCode",
+    "residence_state_code",
+    "residenceStateCode",
+    "state_code",
+    "stateCode",
+    "location.state_residence_code",
+    "location.stateResidenceCode",
+    "location.state_code",
+    "location.stateCode",
+    "residence.state_code",
+    "residence.stateCode",
+    "residence.state.code",
+  ],
+  cityResidenceId: [
+    "city_residence_id",
+    "cityResidenceId",
+    "residence_city_id",
+    "residenceCityId",
+    "city_id",
+    "cityId",
+    "city_residence",
+    "cityResidence",
+    "location.city_residence_id",
+    "location.cityResidenceId",
+    "location.residence_city_id",
+    "location.residenceCityId",
+    "location.city_id",
+    "location.cityId",
+    "residence.city_id",
+    "residence.cityId",
+    "residence.city.id",
+    "residence.city",
+  ],
+  cityResidenceName: [
+    "city_residence_name",
+    "cityResidenceName",
+    "residence_city_name",
+    "residenceCityName",
+    "city_name",
+    "cityName",
+    "city",
+    "location.city_residence_name",
+    "location.cityResidenceName",
+    "location.city_name",
+    "location.cityName",
+    "location.city",
+    "residence.city_name",
+    "residence.cityName",
+    "residence.city.name",
+    "address.city",
+    "address.city_name",
+  ],
+} as const;
+
+const extractNormalizedLocationFromBody = (body: any) => {
+  const countryOriginId = parseOptionalPositiveInt(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.countryOriginId)
+  );
+  const countryOriginCode = parseOptionalString(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.countryOriginCode)
+  );
+  const countryResidenceId = parseOptionalPositiveInt(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.countryResidenceId)
+  );
+  const stateResidenceId = parseOptionalPositiveInt(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.stateResidenceId)
+  );
+  const stateResidenceCode = parseOptionalString(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.stateResidenceCode)
+  );
+  const cityResidenceId = parseOptionalPositiveInt(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.cityResidenceId)
+  );
+  const cityResidenceName = parseOptionalString(
+    pickFirstLocationValue(body, LOCATION_FIELD_ALIASES.cityResidenceName)
+  );
+
+  return {
+    countryOriginId,
+    countryOriginCode,
+    countryResidenceId,
+    stateResidenceId,
+    stateResidenceCode,
+    cityResidenceId,
+    cityResidenceName,
+  };
+};
+
 const normalizePreferredLanguage = (value: any): "es" | "en" | null | undefined => {
   if (value === undefined || value === null) return undefined;
   const normalized = String(value).trim().toLowerCase();
@@ -131,6 +323,11 @@ const toText = (value: any): string | null => {
   const normalized = String(value).trim();
   return normalized.length ? normalized : null;
 };
+
+const shouldRotateAuthOnWorkerCreate = () =>
+  String(process.env.AUTH_ROTATE_ON_WORKER_CREATE ?? "0")
+    .trim()
+    .toLowerCase() === "1";
 
 const buildUserUpdatedRealtimePayload = (user: any, fallbackUserId: number) => {
   const safeUser = user ?? {};
@@ -275,6 +472,9 @@ export const update = async (req: Request, res: Response) => {
             ? PROFILE_DEFAULT
             : avatarUrl,
       };
+      if (Object.prototype.hasOwnProperty.call(req.body, "about")) {
+        bodyUser.about = toText((req.body as any)?.about);
+      }
 
       const languageRaw = extractLanguageRawFromBody(req.body);
       const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
@@ -301,44 +501,28 @@ export const update = async (req: Request, res: Response) => {
         }
       }
 
-      const countryOriginId = parseOptionalPositiveInt(
-        (req.body as any)?.country_origin_id ?? (req.body as any)?.countryOriginId
-      );
-      if (countryOriginId !== undefined) bodyUser.country_origin_id = countryOriginId;
-
-      const countryOriginCode = parseOptionalString(
-        (req.body as any)?.country_origin_code ?? (req.body as any)?.countryOriginCode
-      );
-      if (countryOriginCode !== undefined)
-        bodyUser.country_origin_code = countryOriginCode;
-
-      const countryResidenceId = parseOptionalPositiveInt(
-        (req.body as any)?.country_residence_id ?? (req.body as any)?.countryResidenceId
-      );
-      if (countryResidenceId !== undefined)
-        bodyUser.country_residence_id = countryResidenceId;
-
-      const stateResidenceId = parseOptionalPositiveInt(
-        (req.body as any)?.state_residence_id ?? (req.body as any)?.stateResidenceId
-      );
-      if (stateResidenceId !== undefined) bodyUser.state_residence_id = stateResidenceId;
-
-      const stateResidenceCode = parseOptionalString(
-        (req.body as any)?.state_residence_code ?? (req.body as any)?.stateResidenceCode
-      );
-      if (stateResidenceCode !== undefined)
-        bodyUser.state_residence_code = stateResidenceCode;
-
-      const cityResidenceId = parseOptionalPositiveInt(
-        (req.body as any)?.city_residence_id ?? (req.body as any)?.cityResidenceId
-      );
-      if (cityResidenceId !== undefined) bodyUser.city_residence_id = cityResidenceId;
-
-      const cityResidenceName = parseOptionalString(
-        (req.body as any)?.city_residence_name ?? (req.body as any)?.cityResidenceName
-      );
-      if (cityResidenceName !== undefined)
-        bodyUser.city_residence_name = cityResidenceName;
+      const location = extractNormalizedLocationFromBody(req.body);
+      if (location.countryOriginId !== undefined) {
+        bodyUser.country_origin_id = location.countryOriginId;
+      }
+      if (location.countryOriginCode !== undefined) {
+        bodyUser.country_origin_code = location.countryOriginCode;
+      }
+      if (location.countryResidenceId !== undefined) {
+        bodyUser.country_residence_id = location.countryResidenceId;
+      }
+      if (location.stateResidenceId !== undefined) {
+        bodyUser.state_residence_id = location.stateResidenceId;
+      }
+      if (location.stateResidenceCode !== undefined) {
+        bodyUser.state_residence_code = location.stateResidenceCode;
+      }
+      if (location.cityResidenceId !== undefined) {
+        bodyUser.city_residence_id = location.cityResidenceId;
+      }
+      if (location.cityResidenceName !== undefined) {
+        bodyUser.city_residence_name = location.cityResidenceName;
+      }
 
       // ---- Body Worker ----
       const bodyWorker: any = {
@@ -356,13 +540,16 @@ export const update = async (req: Request, res: Response) => {
       } else {
         bodyWorker.planId = 1;
         const workerTemp = await repository.add(bodyWorker);
-        const roles = (userTemp?.roles ?? []).map((r: any) => r.id);
-        await authRepository.saveToken({
-          userId: userTemp?.get("id"),
-          uuid: userTemp?.get("uuid"),
-          workerId: workerTemp?.get("id"),
-          roles,
-        });
+        if (shouldRotateAuthOnWorkerCreate()) {
+          const roles = (userTemp?.roles ?? []).map((r: any) => r.id);
+          const workerId = Number(workerTemp?.get?.("id") ?? 0) || null;
+          await authRepository.saveToken({
+            userId: userTemp?.get("id"),
+            uuid: userTemp?.get("uuid"),
+            workerId,
+            roles,
+          });
+        }
       }
 
       const user = await uRepository.get((req as any).userId);
@@ -379,12 +566,161 @@ export const update = async (req: Request, res: Response) => {
   });
 };
 
+const toBool = (value: any): boolean | undefined => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value === 1;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (["1", "true", "yes", "on"].includes(normalized)) return true;
+    if (["0", "false", "no", "off"].includes(normalized)) return false;
+  }
+  return undefined;
+};
+
 export const visibleProfile = async (req: Request, res: Response) => {
-  const { visible, alert } = req.body;
-  var body = {
-    visible: visible,
-    alert: alert,
-  };
+  const debugEnabled =
+    String(process.env.WORKER_VISIBLE_AUDIT_LOG ?? "1").trim().toLowerCase() !== "0";
+  const rawVisibleCandidates: Array<{ key: string; raw: any }> = [
+    { key: "visible", raw: (req.body as any)?.visible },
+    { key: "is_visible", raw: (req.body as any)?.is_visible },
+    { key: "isVisible", raw: (req.body as any)?.isVisible },
+    { key: "visible_profile", raw: (req.body as any)?.visible_profile },
+    { key: "visibleProfile", raw: (req.body as any)?.visibleProfile },
+    { key: "show_profile", raw: (req.body as any)?.show_profile },
+    { key: "showProfile", raw: (req.body as any)?.showProfile },
+    { key: "active", raw: (req.body as any)?.active },
+    { key: "is_active", raw: (req.body as any)?.is_active },
+    { key: "isActive", raw: (req.body as any)?.isActive },
+    { key: "activate", raw: (req.body as any)?.activate },
+    { key: "available", raw: (req.body as any)?.available },
+    { key: "worker_visible", raw: (req.body as any)?.worker_visible },
+    { key: "directory_visible", raw: (req.body as any)?.directory_visible },
+    { key: "show_in_directory", raw: (req.body as any)?.show_in_directory },
+  ];
+  const rawAlertCandidates: Array<{ key: string; raw: any }> = [
+    { key: "alert", raw: (req.body as any)?.alert },
+    { key: "worker_alert", raw: (req.body as any)?.worker_alert },
+    { key: "directory_alert", raw: (req.body as any)?.directory_alert },
+  ];
+  const visibleCandidates = rawVisibleCandidates
+    .filter((entry) => entry.raw !== undefined)
+    .map((entry) => ({ key: entry.key, parsed: toBool(entry.raw) }));
+  const alertCandidates = rawAlertCandidates
+    .filter((entry) => entry.raw !== undefined)
+    .map((entry) => ({ key: entry.key, parsed: toBool(entry.raw) }));
+  const body: any = {};
+  const explicitDeactivate = toBool(
+    (req.body as any)?.deactivate ??
+      (req.body as any)?.disable_directory ??
+      (req.body as any)?.disableDirectory ??
+      (req.body as any)?.hide_profile ??
+      (req.body as any)?.hideProfile
+  );
+  if (debugEnabled) {
+    const debugSnapshot = {
+      userId: Number((req as any)?.userId ?? 0) || null,
+      keys: Object.keys((req.body as any) || {}),
+      visible_candidates: rawVisibleCandidates
+        .filter((entry) => entry.raw !== undefined)
+        .map((entry) => ({ key: entry.key, raw: entry.raw })),
+      alert_candidates: rawAlertCandidates
+        .filter((entry) => entry.raw !== undefined)
+        .map((entry) => ({ key: entry.key, raw: entry.raw })),
+      explicit_deactivate: explicitDeactivate,
+    };
+    console.log(`[worker/visible][incoming] ${JSON.stringify(debugSnapshot)}`);
+  }
+
+  const invalidVisible = visibleCandidates.find((entry) => entry.parsed === undefined);
+  if (invalidVisible) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: `${invalidVisible.key} must be a boolean`,
+    });
+  }
+  const invalidAlert = alertCandidates.find((entry) => entry.parsed === undefined);
+  if (invalidAlert) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: `${invalidAlert.key} must be a boolean`,
+    });
+  }
+
+  const explicitVisible = visibleCandidates.find((entry) =>
+    ["visible", "is_visible", "isVisible"].includes(entry.key)
+  );
+  const activationHintTrue = visibleCandidates.find(
+    (entry) => entry.parsed === true && entry.key !== "visible" && entry.key !== "is_visible" && entry.key !== "isVisible"
+  );
+  const activationIntentProvided = visibleCandidates.some(
+    (entry) =>
+      !["visible", "is_visible", "isVisible", "available"].includes(entry.key)
+  );
+  const anyVisibleFalse = visibleCandidates.some((entry) => entry.parsed === false);
+
+  const explicitVisibleKeys = new Set(["visible", "is_visible", "isVisible"]);
+  const hasOnlyExplicitVisibleSignals =
+    visibleCandidates.length > 0 &&
+    visibleCandidates.every((entry) => explicitVisibleKeys.has(entry.key));
+
+  let resolvedVisible: boolean | undefined = undefined;
+  if (activationHintTrue) {
+    // If any activation-intent alias is true, prioritize enabling visibility.
+    resolvedVisible = true;
+  } else if (explicitVisible) {
+    resolvedVisible = Boolean(explicitVisible.parsed);
+  } else if (visibleCandidates.length > 0) {
+    // No explicit `visible`, but we received compatible aliases.
+    resolvedVisible = anyVisibleFalse ? false : true;
+  }
+
+  const resolvedAlert =
+    alertCandidates.length > 0
+      ? Boolean(alertCandidates[alertCandidates.length - 1].parsed)
+      : undefined;
+
+  if (
+    resolvedVisible === false &&
+    resolvedAlert === true &&
+    hasOnlyExplicitVisibleSignals
+  ) {
+    // Compatibility guard: some legacy clients send `visible=false` by default
+    // while toggling only alert in the UI activation flow.
+    resolvedVisible = true;
+  }
+  if (resolvedVisible === false && activationIntentProvided) {
+    // Compatibility guard: activation-intent aliases should never end as false
+    // due to inverted client booleans.
+    resolvedVisible = true;
+  }
+  if (explicitDeactivate === true) {
+    resolvedVisible = false;
+  } else if (resolvedVisible === false && visibleCandidates.length > 0) {
+    // Last safety-net for legacy clients that invert the toggle payload.
+    // Any call to /worker/visible without explicit deactivation is treated as activation.
+    resolvedVisible = true;
+  }
+
+  if (resolvedVisible !== undefined) {
+    body.visible = resolvedVisible;
+  } else if (resolvedAlert !== undefined) {
+    // Legacy compatibility: allow activation flow with alert-only payload.
+    body.visible = resolvedAlert;
+  }
+  if (resolvedAlert !== undefined) body.alert = resolvedAlert;
+  if (!Object.keys(body).length) {
+    return formatResponse({
+      res,
+      success: false,
+      code: 400,
+      message: "visible or alert is required",
+    });
+  }
+
   try {
     const languageRaw = extractLanguageRawFromBody(req.body);
     const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
@@ -398,6 +734,22 @@ export const visibleProfile = async (req: Request, res: Response) => {
     }
 
     var worker = await repository.visibleProfile(req.userId, body);
+    if (debugEnabled) {
+      const debugApplied = {
+        userId: Number((req as any)?.userId ?? 0) || null,
+        applied_body: body,
+        worker_id: Number((worker as any)?.id ?? 0) || null,
+        worker_visible:
+          typeof (worker as any)?.get === "function"
+            ? (worker as any).get("visible")
+            : (worker as any)?.visible,
+        worker_alert:
+          typeof (worker as any)?.get === "function"
+            ? (worker as any).get("alert")
+            : (worker as any)?.alert,
+      };
+      console.log(`[worker/visible][applied] ${JSON.stringify(debugApplied)}`);
+    }
 
     if (normalizedPreferredLanguage) {
       await uRepository.update(req.userId, { language: normalizedPreferredLanguage });
@@ -561,6 +913,9 @@ export const updateProfile = async (req: Request, res: Response) => {
         phone: (req.body as any)?.phone,
         image_profil: avatarBody,
       };
+      if (Object.prototype.hasOwnProperty.call(req.body, "about")) {
+        bodyUser.about = toText((req.body as any)?.about);
+      }
 
       const languageRaw = extractLanguageRawFromBody(req.body);
       const normalizedPreferredLanguage = normalizePreferredLanguage(languageRaw);
@@ -604,44 +959,28 @@ export const updateProfile = async (req: Request, res: Response) => {
         }
       }
 
-      const countryOriginId = parseOptionalPositiveInt(
-        (req.body as any)?.country_origin_id ?? (req.body as any)?.countryOriginId
-      );
-      if (countryOriginId !== undefined) bodyUser.country_origin_id = countryOriginId;
-
-      const countryOriginCode = parseOptionalString(
-        (req.body as any)?.country_origin_code ?? (req.body as any)?.countryOriginCode
-      );
-      if (countryOriginCode !== undefined)
-        bodyUser.country_origin_code = countryOriginCode;
-
-      const countryResidenceId = parseOptionalPositiveInt(
-        (req.body as any)?.country_residence_id ?? (req.body as any)?.countryResidenceId
-      );
-      if (countryResidenceId !== undefined)
-        bodyUser.country_residence_id = countryResidenceId;
-
-      const stateResidenceId = parseOptionalPositiveInt(
-        (req.body as any)?.state_residence_id ?? (req.body as any)?.stateResidenceId
-      );
-      if (stateResidenceId !== undefined) bodyUser.state_residence_id = stateResidenceId;
-
-      const stateResidenceCode = parseOptionalString(
-        (req.body as any)?.state_residence_code ?? (req.body as any)?.stateResidenceCode
-      );
-      if (stateResidenceCode !== undefined)
-        bodyUser.state_residence_code = stateResidenceCode;
-
-      const cityResidenceId = parseOptionalPositiveInt(
-        (req.body as any)?.city_residence_id ?? (req.body as any)?.cityResidenceId
-      );
-      if (cityResidenceId !== undefined) bodyUser.city_residence_id = cityResidenceId;
-
-      const cityResidenceName = parseOptionalString(
-        (req.body as any)?.city_residence_name ?? (req.body as any)?.cityResidenceName
-      );
-      if (cityResidenceName !== undefined)
-        bodyUser.city_residence_name = cityResidenceName;
+      const location = extractNormalizedLocationFromBody(req.body);
+      if (location.countryOriginId !== undefined) {
+        bodyUser.country_origin_id = location.countryOriginId;
+      }
+      if (location.countryOriginCode !== undefined) {
+        bodyUser.country_origin_code = location.countryOriginCode;
+      }
+      if (location.countryResidenceId !== undefined) {
+        bodyUser.country_residence_id = location.countryResidenceId;
+      }
+      if (location.stateResidenceId !== undefined) {
+        bodyUser.state_residence_id = location.stateResidenceId;
+      }
+      if (location.stateResidenceCode !== undefined) {
+        bodyUser.state_residence_code = location.stateResidenceCode;
+      }
+      if (location.cityResidenceId !== undefined) {
+        bodyUser.city_residence_id = location.cityResidenceId;
+      }
+      if (location.cityResidenceName !== undefined) {
+        bodyUser.city_residence_name = location.cityResidenceName;
+      }
 
       await uRepository.update((req as any).userId, bodyUser);
 

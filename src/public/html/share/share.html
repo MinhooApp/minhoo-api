@@ -4853,12 +4853,86 @@
       const deepLink = {{deepLinkJson}};
       const fallback = {{fallbackJson}};
 
-      document.getElementById("openApp")?.addEventListener("click", () => {
-        window.location.href = deepLink;
+      const normalizedDeepLink = String(deepLink || "").trim();
+      const isLikelyIos = /iPhone|iPad|iPod/i.test(navigator.userAgent || "");
+
+      const buildDeepLinkCandidates = () => {
+        const links = [];
+        if (normalizedDeepLink) links.push(normalizedDeepLink);
+
+        if (/^minhoo:\/\/orbit\/[^/?#]+$/i.test(normalizedDeepLink)) {
+          links.push(normalizedDeepLink.replace("minhoo://orbit/", "minhoo://reel/"));
+        }
+
+        if (/^minhoo:\/\/reel\/[^/?#]+$/i.test(normalizedDeepLink)) {
+          links.push(normalizedDeepLink.replace("minhoo://reel/", "minhoo://orbit/"));
+        }
+
+        return Array.from(new Set(links.filter(Boolean)));
+      };
+
+      const deepLinkCandidates = buildDeepLinkCandidates();
+      let appSwitchDetected = false;
+
+      const markAppSwitch = () => {
+        if (document.visibilityState === "hidden") {
+          appSwitchDetected = true;
+        }
+      };
+
+      document.addEventListener("visibilitychange", markAppSwitch, true);
+      window.addEventListener(
+        "pagehide",
+        () => {
+          appSwitchDetected = true;
+        },
+        true
+      );
+      window.addEventListener(
+        "blur",
+        () => {
+          appSwitchDetected = true;
+        },
+        true
+      );
+
+      const navigateTo = (url) => {
+        if (!url) return;
+        window.location.assign(url);
+      };
+
+      const openApp = () => {
+        if (!deepLinkCandidates.length) {
+          if (fallback) navigateTo(fallback);
+          return;
+        }
+
+        appSwitchDetected = false;
+        const startedAt = Date.now();
+        navigateTo(deepLinkCandidates[0]);
+
+        if (isLikelyIos && deepLinkCandidates.length > 1) {
+          window.setTimeout(() => {
+            if (!appSwitchDetected) navigateTo(deepLinkCandidates[1]);
+          }, 250);
+        }
+
+        window.setTimeout(() => {
+          const elapsed = Date.now() - startedAt;
+          if (!appSwitchDetected && elapsed < 3000 && fallback) {
+            navigateTo(fallback);
+          }
+        }, isLikelyIos ? 1400 : 1000);
+      };
+
+      document.getElementById("openApp")?.addEventListener("click", (event) => {
+        event.preventDefault();
+        openApp();
       });
 
-      document.getElementById("downloadApp")?.addEventListener("click", () => {
-        window.location.href = fallback;
+      document.getElementById("downloadApp")?.addEventListener("click", (event) => {
+        event.preventDefault();
+        navigateTo(fallback);
       });
     </script>
   </body>

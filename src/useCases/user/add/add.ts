@@ -9,6 +9,30 @@ import {
 import { emitProfileUpdatedRealtime } from "../_shared/profile_realtime";
 import { BlockUserRepository } from "../../../repository/user/block_user_repository";
 
+const sendAdminActionForbidden = (
+  req: Request,
+  res: Response,
+  params: { code: string; message: string; status?: number }
+) => {
+  const status = Number(params?.status ?? 403) || 403;
+  const message = String(params?.message ?? "forbidden").trim() || "forbidden";
+  const code = String(params?.code ?? "FORBIDDEN").trim() || "FORBIDDEN";
+  const authenticated = Number(req.userId) > 0;
+  return res.status(status).json({
+    success: false,
+    code,
+    message,
+    header: {
+      success: false,
+      authenticated,
+      message,
+      messages: [message],
+    },
+    messages: [message],
+    body: { code },
+  });
+};
+
 export const follow = async (req: Request, res: Response) => {
   const viewerId = Number(req.userId);
   const targetId = Number(
@@ -44,6 +68,14 @@ export const follow = async (req: Request, res: Response) => {
         success: false,
         code: 404,
         message: "user not found",
+      });
+    }
+
+    const targetIsAdmin = await repository.isUserAdminById(targetId);
+    if (targetIsAdmin) {
+      return sendAdminActionForbidden(req, res, {
+        code: "ADMIN_NOT_FOLLOWABLE",
+        message: "admin accounts cannot be followed",
       });
     }
 
@@ -157,6 +189,14 @@ export const follow_by_id = async (req: Request, res: Response) => {
         success: false,
         code: 404,
         message: "user not found",
+      });
+    }
+
+    const targetIsAdmin = await repository.isUserAdminById(targetId);
+    if (targetIsAdmin) {
+      return sendAdminActionForbidden(req, res, {
+        code: "ADMIN_NOT_FOLLOWABLE",
+        message: "admin accounts cannot be followed",
       });
     }
 

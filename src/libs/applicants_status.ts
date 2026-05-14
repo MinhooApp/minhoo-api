@@ -1,3 +1,8 @@
+import {
+  SERVICE_STATUS_INITIALIZED,
+  attachServiceRoutingFields,
+} from "./service_client_bucket";
+
 export type ApplicantsLevel = "low" | "high";
 
 export type ApplicantsStatus = {
@@ -68,6 +73,31 @@ export const resolveApplicantsCount = (serviceRaw: any): number => {
   return uniqueApplicants.size;
 };
 
+export const attachApplicantsCountAliases = (
+  targetRaw: any,
+  applicantsCountRaw: any
+): number => {
+  const applicantsCount = toCount(applicantsCountRaw);
+  if (!targetRaw || typeof targetRaw !== "object") return applicantsCount;
+
+  const aliases = {
+    applicants_count: applicantsCount,
+    applicantsCount,
+    offers_count: applicantsCount,
+    offersCount: applicantsCount,
+  };
+
+  if (typeof (targetRaw as any).setDataValue === "function") {
+    Object.entries(aliases).forEach(([key, value]) => {
+      (targetRaw as any).setDataValue(key, value);
+    });
+  } else {
+    Object.assign(targetRaw as any, aliases);
+  }
+
+  return applicantsCount;
+};
+
 export const normalizeApplicantsStatus = (statusRaw: any, applicantsCountRaw: any) => {
   const status = statusRaw ?? {};
   const normalizedLevel =
@@ -84,16 +114,29 @@ export const normalizeApplicantsStatus = (statusRaw: any, applicantsCountRaw: an
 export const enrichServiceApplicantsStatus = (serviceRaw: any) => {
   if (!serviceRaw || typeof serviceRaw !== "object") return serviceRaw;
 
+  const routing = attachServiceRoutingFields(serviceRaw);
+  const canApply =
+    Number(routing.status_id) === SERVICE_STATUS_INITIALIZED &&
+    String(routing.client_bucket).toLowerCase() === "searching" &&
+    !Boolean(routing.has_assigned_workers);
   const applicantsCount = resolveApplicantsCount(serviceRaw);
-  const applicantsStatus = normalizeApplicantsStatus(
+  const normalizedApplicantsStatus = normalizeApplicantsStatus(
     serviceRaw.applicants_status ?? serviceRaw.applicantsStatus,
     applicantsCount
   );
+  const applicantsStatus = canApply
+    ? normalizedApplicantsStatus
+    : {
+        ...normalizedApplicantsStatus,
+        label_es: "",
+        label_en: "",
+      };
 
-  (serviceRaw as any).applicants_count = applicantsCount;
-  (serviceRaw as any).applicantsCount = applicantsCount;
+  attachApplicantsCountAliases(serviceRaw, applicantsCount);
   (serviceRaw as any).applicants_status = applicantsStatus;
   (serviceRaw as any).applicantsStatus = applicantsStatus;
+  (serviceRaw as any).can_apply = canApply;
+  (serviceRaw as any).canApply = canApply;
   return serviceRaw;
 };
 

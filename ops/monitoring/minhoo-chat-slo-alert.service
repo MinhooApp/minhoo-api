@@ -1,0 +1,13 @@
+[Unit]
+Description=Minhoo Chat SLO Monitor Failure Alert
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=appuser
+Group=appuser
+WorkingDirectory=/var/www/minhoo-api/minhoo_api
+Environment=NODE_ENV=production
+Environment="FEED_CACHE_ALERT_TITLE=[Minhoo] Chat SLO monitor FAILED"
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/scripts/notify-feed-cache-alert.js --unit minhoo-chat-slo-monitor.service --since-minutes 30 --lines 180

@@ -5,6 +5,7 @@ import * as reelRepository from "../../../repository/reel/reel_repository";
 import * as serviceRepository from "../../../repository/service/service_repository";
 import * as notificationRepository from "../../../repository/notification/notification_repository";
 import * as savedRepository from "../../../repository/saved/saved_repository";
+import * as userRepository from "../../../repository/user/user_repository";
 
 export {
   Request,
@@ -15,4 +16,5 @@ export {
   serviceRepository,
   notificationRepository,
   savedRepository,
+  userRepository,
 };

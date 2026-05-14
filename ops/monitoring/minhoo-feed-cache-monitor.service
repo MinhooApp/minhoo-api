@@ -1,0 +1,18 @@
+[Unit]
+Description=Minhoo Feed Cache Monitor (Cloudflare + summary cache)
+After=network-online.target
+Wants=network-online.target
+OnFailure=minhoo-feed-cache-alert.service
+
+[Service]
+Type=oneshot
+User=appuser
+Group=appuser
+WorkingDirectory=/var/www/minhoo-api/minhoo_api
+Environment=NODE_ENV=production
+Environment=CACHE_MONITOR_STRICT=1
+Environment=CACHE_MONITOR_INTERVAL_SECONDS=0
+Environment=CACHE_MONITOR_CYCLES=1
+Environment=CACHE_MONITOR_MIN_ANON_HIT=1
+Environment=CACHE_MONITOR_MIN_AUTH_DYNAMIC=1
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/scripts/monitor-feed-cache-hit.js
