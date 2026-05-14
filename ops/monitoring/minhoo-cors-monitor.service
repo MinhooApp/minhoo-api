@@ -1,0 +1,19 @@
+[Unit]
+Description=Minhoo CORS Monitor (frontend preflight contract)
+After=network-online.target
+Wants=network-online.target
+OnFailure=minhoo-cors-alert.service
+
+[Service]
+Type=oneshot
+User=appuser
+Group=appuser
+WorkingDirectory=/var/www/minhoo-api/minhoo_api
+Environment=NODE_ENV=production
+Environment=CORS_MONITOR_STRICT=1
+Environment=CORS_MONITOR_JSON=1
+Environment=CORS_MONITOR_ENDPOINT=/auth/login
+Environment=CORS_MONITOR_REQUEST_METHOD=POST
+Environment=CORS_MONITOR_REQUEST_HEADERS=content-type,authorization
+Environment=CORS_MONITOR_EXPECTED_STATUSES=204,200
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/scripts/smoke-cors-origins.js

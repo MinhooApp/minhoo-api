@@ -70,7 +70,7 @@ const toIsoDate = (value: any) => {
 const MEDIA_ACCESS_TOKEN_QUERY_KEY = "sat";
 const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
   30,
-  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 10 * 60) || 10 * 60
+  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 60 * 60) || 60 * 60
 );
 
 const getMediaAccessSigningSecret = () =>
@@ -294,9 +294,15 @@ const pickPrimaryMedia = (itemsRaw: any) => {
   const items = Array.isArray(itemsRaw) ? itemsRaw : [];
   const item = items[0] ? toPlain(items[0]) : null;
   if (!item) return null;
+  const url = toText(item.url ?? item.mediaUrl ?? item.media_url);
+  const isImage = Boolean(item.is_img ?? item.isImage ?? item.is_image ?? false);
   return {
-    url: toText(item.url ?? item.mediaUrl),
-    is_image: Boolean(item.is_img ?? item.isImage ?? false),
+    url,
+    media_url: url,
+    mediaUrl: url,
+    is_img: isImage,
+    is_image: isImage,
+    type: isImage ? "image" : "video",
   };
 };
 
@@ -356,11 +362,18 @@ export const toPostSummary = (
   const author = toUserSummary(post?.user, viewerIdRaw, relationship);
   const userRaw = toPlain(post?.user);
   const postMediaRaw = Array.isArray(post?.post_media) ? post.post_media : [];
-  const postMedia = postMediaRaw.map((item: any) => ({
-    url: toText(item?.url ?? item?.mediaUrl),
-    is_img: Boolean(item?.is_img ?? item?.isImage ?? false),
-    is_image: Boolean(item?.is_img ?? item?.isImage ?? false),
-  }));
+  const postMedia = postMediaRaw.map((item: any) => {
+    const mediaUrl = toText(item?.url ?? item?.mediaUrl ?? item?.media_url);
+    const isImage = Boolean(item?.is_img ?? item?.isImage ?? item?.is_image ?? false);
+    return {
+      url: mediaUrl,
+      media_url: mediaUrl,
+      mediaUrl: mediaUrl,
+      is_img: isImage,
+      is_image: isImage,
+      type: isImage ? "image" : "video",
+    };
+  });
 
   const user = userRaw
     ? {
@@ -440,6 +453,9 @@ export const toReelSummary = (reelRaw: any, viewerIdRaw?: any, relationshipLooku
     description: truncateText(reel?.description, 140),
     hashtags: toHashtagSummary(reel?.hashtags),
     thumbnail_url: toText(reel?.thumbnail_url),
+    thumbnail: toText(reel?.thumbnail_url),
+    cover_url: toText(reel?.thumbnail_url),
+    coverUrl: toText(reel?.thumbnail_url),
     stream_url: toText(reel?.stream_url),
     video_uid: toText(reel?.video_uid),
     createdAt: toIsoDate(reel?.createdAt ?? reel?.updatedAt),

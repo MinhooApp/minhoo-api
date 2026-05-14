@@ -34,7 +34,7 @@ const PROFILE_REPORT_DISABLE_THRESHOLD = Math.max(
 const MEDIA_ACCESS_TOKEN_QUERY_KEY = "sat";
 const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
   30,
-  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 10 * 60) || 10 * 60
+  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 60 * 60) || 60 * 60
 );
 const ADMIN_ROLE_IDS = new Set<number>([8088]);
 const ADMIN_USERNAME_FALLBACKS = Array.from(

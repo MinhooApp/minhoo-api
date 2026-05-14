@@ -258,6 +258,44 @@ Verify runtime:
 ```bash
 systemctl status minhoo-chat-slo-monitor.timer --no-pager -n 30
 systemctl list-timers minhoo-chat-slo-monitor.timer
+
+## 11) CORS monitor (frontend origin preflight)
+
+Manual run:
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+npm run -s ops:smoke:cors -- --strict
+```
+
+JSON output:
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+npm run -s ops:monitor:cors
+```
+
+Install automatic timer (every 5 minutes):
+
+```bash
+cd /var/www/minhoo-api/minhoo_api
+sudo bash ops/monitoring/install-cors-monitor.sh
+```
+
+Verify runtime:
+
+```bash
+systemctl status minhoo-cors-monitor.timer --no-pager -n 30
+systemctl list-timers minhoo-cors-monitor.timer
+journalctl -u minhoo-cors-monitor.service --since "60 min ago" --no-pager
+journalctl -u minhoo-cors-alert.service --since "60 min ago" --no-pager
+```
+
+Key vars:
+
+- `CORS_ORIGINS`: allowlist usada por el backend.
+- `CORS_MONITOR_ORIGINS`: opcional; si se define, el monitor valida esta lista en vez de `CORS_ORIGINS`.
+- `CORS_REQUIRED_ORIGINS`: dominios que deben existir siempre (usado por `ops:preflight:prod`).
 journalctl -u minhoo-chat-slo-monitor.service --since "60 min ago" --no-pager
 journalctl -u minhoo-chat-slo-alert.service --since "60 min ago" --no-pager
 ```

@@ -11,7 +11,7 @@ import {
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import { QueryTypes } from "sequelize";
-import { getRefreshJwtSecrets } from "../../../libs/helper/generate_jwt";
+import { getAccessJwtSecrets, getRefreshJwtSecrets } from "../../../libs/helper/generate_jwt";
 import { getSocketInstance } from "../../../_sockets/socket_instance";
 import User from "../../../_models/user/user";
 import sequelize from "../../../_db/connection";
@@ -227,6 +227,42 @@ const resolveTokenType = (payload: any): string => {
   return String(payload?.tokenType ?? payload?.token_type ?? "")
     .trim()
     .toLowerCase();
+};
+
+const canRecoverRefreshWithActiveAccessToken = async ({
+  req,
+  userId,
+  rawRefreshToken,
+  storedAuthToken,
+}: {
+  req: Request;
+  userId: number;
+  rawRefreshToken: string;
+  storedAuthToken: string;
+}): Promise<boolean> => {
+  const bearerAccessToken = extractBearerToken(req);
+  if (!bearerAccessToken) return false;
+  if (bearerAccessToken === rawRefreshToken) return false;
+
+  const accessVerified = verifyJwtWithSecretsDetailed(
+    bearerAccessToken,
+    getAccessJwtSecrets()
+  );
+  const accessPayload = accessVerified.payload;
+  if (!accessPayload) return false;
+
+  const accessTokenType = resolveTokenType(accessPayload);
+  if (accessTokenType && accessTokenType !== "access") return false;
+
+  const accessUserId = Number(accessPayload?.userId ?? 0);
+  if (!Number.isFinite(accessUserId) || accessUserId <= 0 || accessUserId !== userId) {
+    return false;
+  }
+
+  const matchesLegacy = Boolean(storedAuthToken && storedAuthToken === bearerAccessToken);
+  if (matchesLegacy) return true;
+
+  return isUserAuthSessionActive(userId, bearerAccessToken).catch(() => false);
 };
 
 const AUTH_OP_SINGLE_FLIGHT_WINDOW_MS = Math.max(
@@ -634,7 +670,7 @@ export const refreshToken = async (req: Request, res: Response) => {
 
     const storedAuthToken = normalizeAuthToken((userStatus as any)?.auth_token);
     const tokenMatchesLegacy = Boolean(storedAuthToken && storedAuthToken === rawRefreshToken);
-    const tokenMatchesSession = tokenMatchesLegacy
+    let tokenMatchesSession = tokenMatchesLegacy
       ? true
       : await isUserAuthSessionActive(userId, rawRefreshToken, {
           allowRefreshGrace: true,
@@ -662,15 +698,36 @@ export const refreshToken = async (req: Request, res: Response) => {
           );
         }
 
-        if (hasRecoverableSession) {
+        const recoveredWithActiveAccess = await canRecoverRefreshWithActiveAccessToken({
+          req,
+          userId,
+          rawRefreshToken,
+          storedAuthToken,
+        });
+        if (recoveredWithActiveAccess) {
+          // Client may be presenting a stale rotated refresh token while still
+          // holding a valid access token for the same user/device.
+          // Allow this request to re-issue tokens and heal local storage.
+          tokenMatchesSession = true;
+        } else if (hasRecoverableSession) {
           return sendAuthError(
             res,
             401,
             "AUTH_TOKEN_EXPIRED",
-            "Refresh token rotated. Retry with latest session token."
+            "Refresh token rotated. Retry with latest session token.",
+            false,
+            "stale_refresh_token"
+          );
+        } else {
+          return sendAuthError(
+            res,
+            401,
+            "AUTH_SESSION_REVOKED",
+            "Refresh token revoked.",
+            false,
+            "refresh_token_revoked"
           );
         }
-        return sendAuthError(res, 401, "AUTH_SESSION_REVOKED", "Refresh token revoked.");
       }
       // Refresh token is cryptographically valid but has no session record — allow it.
     }

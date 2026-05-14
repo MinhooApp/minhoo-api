@@ -71,7 +71,7 @@ const IMPERSONATION_REPORT_REASON = "impersonation_or_identity_fraud";
 const MEDIA_ACCESS_TOKEN_QUERY_KEY = "sat";
 const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
   30,
-  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 10 * 60) || 10 * 60
+  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 60 * 60) || 60 * 60
 );
 
 type SignedMediaKind = "audio" | "document" | "video_key" | "video_uid" | "image_id";

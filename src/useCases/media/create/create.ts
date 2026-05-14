@@ -817,7 +817,7 @@ const DOCUMENT_DOWNLOAD_TTL_SECONDS = 60 * 10;
 const MEDIA_ACCESS_TOKEN_QUERY_KEY = "sat";
 const MEDIA_ACCESS_TOKEN_TTL_SECONDS = Math.max(
   30,
-  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 10 * 60) || 10 * 60
+  Number(process.env.MEDIA_ACCESS_TOKEN_TTL_SECONDS ?? 60 * 60) || 60 * 60
 );
 const MEDIA_ACCESS_TOKEN_ENFORCE =
   String(process.env.MEDIA_ACCESS_TOKEN_ENFORCE ?? (IS_PRODUCTION ? "1" : "0"))
@@ -1081,26 +1081,32 @@ const buildMediaAccessToken = (kind: SignedMediaKind, resourceKey: string): stri
   return `${exp}.${toBase64Url(signature)}`;
 };
 
+type MediaAccessTokenValidationResult =
+  | { status: "valid"; exp: number }
+  | { status: "expired"; exp: number }
+  | { status: "invalid" };
+
 const validateMediaAccessToken = (
   tokenRaw: any,
   kind: SignedMediaKind,
   resourceKey: string
-): boolean => {
+): MediaAccessTokenValidationResult => {
   const secret = getMediaAccessSigningSecret();
-  if (!secret) return false;
+  if (!secret) return { status: "invalid" };
   const token = String(tokenRaw ?? "").trim();
   const key = String(resourceKey ?? "").trim();
-  if (!token || !key) return false;
+  if (!token || !key) return { status: "invalid" };
   const [expRaw, signatureRaw] = token.split(".");
   const exp = Number(expRaw);
-  if (!Number.isFinite(exp) || exp <= 0) return false;
-  if (Math.floor(Date.now() / 1000) > exp) return false;
+  if (!Number.isFinite(exp) || exp <= 0) return { status: "invalid" };
   const providedSignature = bufferFromBase64Url(signatureRaw ?? "");
-  if (!providedSignature) return false;
+  if (!providedSignature) return { status: "invalid" };
   const payload = `${kind}:${key}:${exp}`;
   const expectedSignature = createHmac("sha256", secret).update(payload).digest();
-  if (expectedSignature.length !== providedSignature.length) return false;
-  return timingSafeEqual(expectedSignature, providedSignature);
+  if (expectedSignature.length !== providedSignature.length) return { status: "invalid" };
+  if (!timingSafeEqual(expectedSignature, providedSignature)) return { status: "invalid" };
+  if (Math.floor(Date.now() / 1000) > exp) return { status: "expired", exp };
+  return { status: "valid", exp };
 };
 
 const appendMediaAccessToken = (
@@ -1112,6 +1118,36 @@ const appendMediaAccessToken = (
   if (!token) return path;
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}${MEDIA_ACCESS_TOKEN_QUERY_KEY}=${encodeURIComponent(token)}`;
+};
+
+const canAutoRefreshSignedMediaAccess = (kind: SignedMediaKind): boolean =>
+  kind !== "image_upload";
+
+const buildMediaAccessRefreshRedirect = (
+  req: Request,
+  kind: SignedMediaKind,
+  resourceKey: string
+): string | null => {
+  if (!canAutoRefreshSignedMediaAccess(kind)) return null;
+  const method = String(req.method ?? "")
+    .trim()
+    .toUpperCase();
+  if (method !== "GET" && method !== "HEAD") return null;
+
+  const refreshedToken = buildMediaAccessToken(kind, resourceKey);
+  if (!refreshedToken) return null;
+
+  const originalUrl = String((req as any)?.originalUrl ?? req.url ?? "").trim();
+  if (!originalUrl) return null;
+  const normalizedPath = originalUrl.startsWith("/") ? originalUrl : `/${originalUrl}`;
+
+  try {
+    const refreshUrl = new URL(normalizedPath, "http://localhost");
+    refreshUrl.searchParams.set(MEDIA_ACCESS_TOKEN_QUERY_KEY, refreshedToken);
+    return `${refreshUrl.pathname}${refreshUrl.search}`;
+  } catch {
+    return null;
+  }
 };
 
 const enforceSignedMediaAccess = (
@@ -1149,12 +1185,22 @@ const enforceSignedMediaAccess = (
   const hasToken = String(tokenRaw ?? "").trim().length > 0;
 
   if (hasToken) {
-    const valid = validateMediaAccessToken(tokenRaw, kind, resourceKey);
-    if (valid) return true;
+    const validation = validateMediaAccessToken(tokenRaw, kind, resourceKey);
+    if (validation.status === "valid") return true;
 
     // If the request carries a valid authenticated session, do not fail
     // only because an old/stale `sat` query param is still present.
     if (hasAuthenticatedSession) return true;
+
+    if (validation.status === "expired") {
+      // Mobile clients that wake from background may keep stale signed URLs.
+      // If signature is valid but expired, transparently re-issue `sat`.
+      const refreshRedirect = buildMediaAccessRefreshRedirect(req, kind, resourceKey);
+      if (refreshRedirect) {
+        res.redirect(302, refreshRedirect);
+        return false;
+      }
+    }
 
     if (!MEDIA_ACCESS_TOKEN_ENFORCE) return true;
 

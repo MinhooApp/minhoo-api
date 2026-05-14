@@ -24,6 +24,7 @@ Target: secure, stable, and fast on one server first.
 - [ ] `GET /api/v1/live` returns `200`
 - [ ] `GET /api/v1/ready` returns `200` (or `503` if DB is not ready)
 - [ ] Ready endpoint is used by orchestrator/load balancer (not ping)
+- [ ] `npm run -s ops:smoke:cors -- --strict` passes for all frontend domains
 
 ## Performance Baseline
 
@@ -38,6 +39,7 @@ Target: secure, stable, and fast on one server first.
 cd /var/www/minhoo-api/minhoo_api
 npm run build
 npm run ops:preflight:prod
+npm run -s ops:smoke:cors -- --strict
 curl -s -o /dev/null -w "live=%{http_code}\n" http://127.0.0.1:3000/api/v1/live
 curl -s -o /dev/null -w "ready=%{http_code}\n" http://127.0.0.1:3000/api/v1/ready
 ```

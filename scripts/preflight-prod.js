@@ -38,6 +38,11 @@ const loadPreflightEnv = () => {
 loadPreflightEnv();
 
 const hasValue = (value) => String(value ?? "").trim().length > 0;
+const splitCsv = (value) =>
+  String(value ?? "")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
 
 const checks = [];
 const addCheck = (name, ok, details, severity = "error") => {
@@ -48,6 +53,7 @@ const NODE_ENV = String(process.env.NODE_ENV ?? "").trim().toLowerCase();
 const DB_SYNC_ON_BOOT = process.env.DB_SYNC_ON_BOOT;
 const SHUTDOWN_GRACE_MS = Number(process.env.SHUTDOWN_GRACE_MS ?? 0);
 const CORS_ORIGINS = String(process.env.CORS_ORIGINS ?? "").trim();
+const CORS_REQUIRED_ORIGINS = String(process.env.CORS_REQUIRED_ORIGINS ?? "").trim();
 const CORS_ALLOW_ALL_IN_PROD = isTruthy(process.env.CORS_ALLOW_ALL_IN_PROD);
 const INTERNAL_DEBUG_TOKEN = String(process.env.INTERNAL_DEBUG_TOKEN ?? "").trim();
 const INTERNAL_DEBUG_ALLOW_REMOTE = isTruthy(process.env.INTERNAL_DEBUG_ALLOW_REMOTE);
@@ -75,6 +81,23 @@ const REEL_RATE_MAX_WRITE = Number(process.env.REEL_RATE_MAX_WRITE ?? 0);
 const INTERNAL_RATE_MAX = Number(process.env.INTERNAL_RATE_MAX ?? 0);
 const SOCKET_MAX_HTTP_BUFFER_SIZE = Number(process.env.SOCKET_MAX_HTTP_BUFFER_SIZE ?? 0);
 const SOCKET_CONNECT_TIMEOUT_MS = Number(process.env.SOCKET_CONNECT_TIMEOUT_MS ?? 0);
+
+const corsOriginsList = splitCsv(CORS_ORIGINS);
+const corsRequiredList = splitCsv(CORS_REQUIRED_ORIGINS);
+const corsOriginSet = new Set(corsOriginsList.map((origin) => origin.toLowerCase()));
+const corsHasDuplicates = corsOriginsList.length !== corsOriginSet.size;
+const corsInvalidOrigins = corsOriginsList.filter((origin) => {
+  try {
+    const parsed = new URL(origin);
+    const hasPath = parsed.pathname && parsed.pathname !== "/";
+    return parsed.protocol !== "https:" || hasPath || Boolean(parsed.search) || Boolean(parsed.hash);
+  } catch (_error) {
+    return true;
+  }
+});
+const corsMissingRequired = corsRequiredList.filter(
+  (origin) => !corsOriginSet.has(origin.toLowerCase())
+);
 
 addCheck(
   "NODE_ENV is production",
@@ -108,6 +131,37 @@ if (CORS_ALLOW_ALL_IN_PROD) {
     hasValue(CORS_ORIGINS),
     `CORS_ORIGINS=${CORS_ORIGINS || "<empty>"}`
   );
+  addCheck(
+    "CORS_ORIGINS has no duplicates",
+    !corsHasDuplicates,
+    corsHasDuplicates
+      ? `Duplicated origins detected in CORS_ORIGINS=${CORS_ORIGINS || "<empty>"}`
+      : "no duplicates found"
+  );
+  addCheck(
+    "CORS_ORIGINS contains valid HTTPS origins",
+    corsInvalidOrigins.length === 0,
+    corsInvalidOrigins.length
+      ? `invalid origins: ${corsInvalidOrigins.join(", ")}`
+      : "all origins are valid HTTPS origins"
+  );
+  addCheck(
+    "CORS_REQUIRED_ORIGINS configured",
+    corsRequiredList.length > 0,
+    corsRequiredList.length > 0
+      ? `CORS_REQUIRED_ORIGINS=${corsRequiredList.join(",")}`
+      : "Set CORS_REQUIRED_ORIGINS to prevent missing frontend domains",
+    corsRequiredList.length > 0 ? "info" : "warn"
+  );
+  if (corsRequiredList.length > 0) {
+    addCheck(
+      "CORS_ORIGINS includes CORS_REQUIRED_ORIGINS",
+      corsMissingRequired.length === 0,
+      corsMissingRequired.length
+        ? `missing required origins: ${corsMissingRequired.join(", ")}`
+        : "all required origins are present"
+    );
+  }
 }
 
 addCheck(
