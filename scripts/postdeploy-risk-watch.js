@@ -151,10 +151,20 @@ const OBSERVABILITY_HOTSPOT_P95_WARN_MS = toPositiveNumber(
   1800,
   100
 );
+const OBSERVABILITY_HOTSPOT_MIN_SAMPLES = Math.max(
+  1,
+  Math.trunc(toPositiveNumber(process.env.RISK_OBSERVABILITY_HOTSPOT_MIN_SAMPLES, 5, 1))
+);
 const OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS = toPositiveNumber(
   process.env.RISK_OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS,
   1800,
   100
+);
+const OBSERVABILITY_MEDIA_CONFIRM_MIN_SAMPLES = Math.max(
+  1,
+  Math.trunc(
+    toPositiveNumber(process.env.RISK_OBSERVABILITY_MEDIA_CONFIRM_MIN_SAMPLES, 5, 1)
+  )
 );
 const OBSERVABILITY_MEDIA_CONFIRM_ROUTE_FRAGMENT = String(
   process.env.RISK_OBSERVABILITY_MEDIA_CONFIRM_ROUTE_FRAGMENT || "/api/v1/media/image/confirm"
@@ -778,8 +788,10 @@ const probeObservabilityOverview = ({ headers = {}, baseUrl = BLUE_API_BASE_URL,
         ? bootstrapNotificationsSamplesTotal
         : 0,
       hotspot_route: formatHotspotRoute(topHotspot),
+      hotspot_count: toFiniteNumber(topHotspot?.count, 0),
       hotspot_p95_ms: toFiniteNumber(topHotspot?.p95_ms, null),
       media_confirm_hotspot_route: formatHotspotRoute(mediaConfirmHotspot),
+      media_confirm_hotspot_count: toFiniteNumber(mediaConfirmHotspot?.count, 0),
       media_confirm_hotspot_p95_ms: toFiniteNumber(mediaConfirmHotspot?.p95_ms, null),
     };
   } catch (error) {
@@ -888,11 +900,17 @@ const formatTelegramRiskMessage = ({ summary, checks, risks, reason }) => {
         observability.bootstrap_hit_rate_percent
       )}% notif_hit=${escapeHtml(observability.bootstrap_notifications_hit_rate_percent)}%`
     );
-    if (Number.isFinite(observability.media_confirm_hotspot_p95_ms)) {
+    if (
+      Number.isFinite(observability.media_confirm_hotspot_p95_ms) &&
+      Math.trunc(toFiniteNumber(observability.media_confirm_hotspot_count, 0)) >=
+        OBSERVABILITY_MEDIA_CONFIRM_MIN_SAMPLES
+    ) {
       lines.push(
         `Media confirm p95=${escapeHtml(
           observability.media_confirm_hotspot_p95_ms
-        )}ms umbral=${escapeHtml(OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS)}ms`
+        )}ms umbral=${escapeHtml(OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS)}ms muestras=${escapeHtml(
+          observability.media_confirm_hotspot_count
+        )}`
       );
     }
   }
@@ -1155,7 +1173,16 @@ const main = async () => {
           );
           addAction("Revisar hotspots del overview y caches de bootstrap/home.");
         }
-        if (Number.isFinite(check.p99_ms) && check.p99_ms > OBSERVABILITY_P99_WARN_MS) {
+        const hotspotSampleCountForP99 = Math.trunc(toFiniteNumber(check.hotspot_count, 0));
+        const p95AlsoElevated =
+          Number.isFinite(check.p95_ms) && check.p95_ms > OBSERVABILITY_P95_WARN_MS;
+        const p99HasEnoughHotspotSamples =
+          hotspotSampleCountForP99 >= OBSERVABILITY_HOTSPOT_MIN_SAMPLES;
+        if (
+          Number.isFinite(check.p99_ms) &&
+          check.p99_ms > OBSERVABILITY_P99_WARN_MS &&
+          (p95AlsoElevated || p99HasEnoughHotspotSamples)
+        ) {
           risks.push(
             `[MEDIA] Latencia global p99 alta (${check.instance || "unknown"}): p99_ms=${check.p99_ms} umbral_ms=${OBSERVABILITY_P99_WARN_MS}`
           );
@@ -1203,26 +1230,32 @@ const main = async () => {
         const isTopHotspotMediaConfirm = String(check.hotspot_route || "")
           .toLowerCase()
           .includes(OBSERVABILITY_MEDIA_CONFIRM_ROUTE_FRAGMENT);
+        const hotspotSampleCount = Math.trunc(toFiniteNumber(check.hotspot_count, 0));
         if (
           Number.isFinite(check.hotspot_p95_ms) &&
+          hotspotSampleCount >= OBSERVABILITY_HOTSPOT_MIN_SAMPLES &&
           check.hotspot_p95_ms > OBSERVABILITY_HOTSPOT_P95_WARN_MS &&
           !isTopHotspotMediaConfirm
         ) {
           risks.push(
             `[MEDIA] Hotspot lento detectado: route=${check.hotspot_route || "n/a"} p95_ms=${
               check.hotspot_p95_ms
-            } umbral_ms=${OBSERVABILITY_HOTSPOT_P95_WARN_MS}`
+            } umbral_ms=${OBSERVABILITY_HOTSPOT_P95_WARN_MS} muestras=${hotspotSampleCount}`
           );
           addAction("Optimizar endpoint hotspot (indices, payload y cache selectivo).");
         }
+        const mediaConfirmHotspotSampleCount = Math.trunc(
+          toFiniteNumber(check.media_confirm_hotspot_count, 0)
+        );
         if (
           Number.isFinite(check.media_confirm_hotspot_p95_ms) &&
+          mediaConfirmHotspotSampleCount >= OBSERVABILITY_MEDIA_CONFIRM_MIN_SAMPLES &&
           check.media_confirm_hotspot_p95_ms > OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS
         ) {
           risks.push(
             `[MEDIA] Hotspot lento detectado: route=${
               check.media_confirm_hotspot_route || "POST /api/v1/media/image/confirm:full"
-            } p95_ms=${check.media_confirm_hotspot_p95_ms} umbral_ms=${OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS}`
+            } p95_ms=${check.media_confirm_hotspot_p95_ms} umbral_ms=${OBSERVABILITY_MEDIA_CONFIRM_P95_WARN_MS} muestras=${mediaConfirmHotspotSampleCount}`
           );
           addAction(
             "Optimizar /api/v1/media/image/confirm (imagenes grandes, IO, payload y cache selectivo)."
@@ -1317,8 +1350,10 @@ const main = async () => {
           bootstrap_notifications_hit_rate_percent: check.bootstrap_notifications_hit_rate_percent,
           bootstrap_notifications_samples_total: check.bootstrap_notifications_samples_total,
           hotspot_route: check.hotspot_route,
+          hotspot_count: check.hotspot_count,
           hotspot_p95_ms: check.hotspot_p95_ms,
           media_confirm_hotspot_route: check.media_confirm_hotspot_route,
+          media_confirm_hotspot_count: check.media_confirm_hotspot_count,
           media_confirm_hotspot_p95_ms: check.media_confirm_hotspot_p95_ms,
         };
       return acc;
@@ -1374,6 +1409,8 @@ const main = async () => {
       check_green_enabled: RISK_CHECK_GREEN_ENABLED,
       internal_perf_check_enabled: RISK_INTERNAL_PERF_CHECK_ENABLED,
       low_sample_grace_minutes: OBSERVABILITY_MIN_REQUESTS_GRACE_MINUTES,
+      hotspot_min_samples: OBSERVABILITY_HOTSPOT_MIN_SAMPLES,
+      media_confirm_hotspot_min_samples: OBSERVABILITY_MEDIA_CONFIRM_MIN_SAMPLES,
     },
     alert_decision: {
       should_send_risk_alert: shouldSendRiskAlert,
@@ -1401,8 +1438,10 @@ const main = async () => {
           bootstrap_notifications_hit_rate_percent:
             observabilityCheck.bootstrap_notifications_hit_rate_percent,
           hotspot_route: observabilityCheck.hotspot_route,
+          hotspot_count: observabilityCheck.hotspot_count,
           hotspot_p95_ms: observabilityCheck.hotspot_p95_ms,
           media_confirm_hotspot_route: observabilityCheck.media_confirm_hotspot_route,
+          media_confirm_hotspot_count: observabilityCheck.media_confirm_hotspot_count,
           media_confirm_hotspot_p95_ms: observabilityCheck.media_confirm_hotspot_p95_ms,
         }
       : null,

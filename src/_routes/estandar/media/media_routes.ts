@@ -13,6 +13,8 @@ import {
   create_audio_direct_upload,
   create_document_direct_upload,
   create_image_direct_upload,
+  image_direct_upload_fallback,
+  image_direct_upload_fallback_middleware,
   create_video_direct_upload,
   delete_audio_asset,
   delete_document_asset,
@@ -34,6 +36,11 @@ router.get("/rules", TokenValidation(), media_rules);
 router.post("/moderate", TokenValidation(), moderate_media_asset);
 
 router.post("/image/direct-upload", TokenValidation(), create_image_direct_upload);
+router.post(
+  "/image/direct-upload/fallback",
+  image_direct_upload_fallback_middleware,
+  image_direct_upload_fallback
+);
 router.post("/image/confirm", TokenValidation(), confirm_image_upload);
 router.delete("/image/:id", TokenValidation(), delete_image_asset);
 

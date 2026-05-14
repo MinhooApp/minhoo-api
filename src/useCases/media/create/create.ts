@@ -149,6 +149,21 @@ type ModerationDecision = {
 
 type ModerationAssetType = "image" | "video";
 
+type CachedModerationDecisionEntry = {
+  decision: ModerationDecision;
+  expiresAt: number;
+};
+
+const MODERATION_DECISION_CACHE_TTL_MS = Math.max(
+  5000,
+  Number(process.env.MEDIA_MODERATION_DECISION_CACHE_TTL_MS ?? 10 * 60 * 1000) || 10 * 60 * 1000
+);
+const MODERATION_DECISION_CACHE_MAX_ITEMS = Math.max(
+  100,
+  Number(process.env.MEDIA_MODERATION_DECISION_CACHE_MAX_ITEMS ?? 10000) || 10000
+);
+const moderationDecisionCache = new Map<string, CachedModerationDecisionEntry>();
+
 const MODERATION_CATEGORY_KEYWORDS: Record<ModerationCategory, string[]> = {
   sexual: [
     "sexual",
@@ -193,6 +208,68 @@ const isTruthyLike = (value: any): boolean => {
   if (value === true || value === 1) return true;
   const raw = String(value ?? "").trim().toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "y";
+};
+
+const buildModerationDecisionCacheKey = ({
+  assetType,
+  imageId,
+  videoUid,
+  context,
+}: {
+  assetType: ModerationAssetType;
+  imageId?: string | null;
+  videoUid?: string | null;
+  context: string;
+}): string | null => {
+  const normalizedContext = String(context || "feed").trim().toLowerCase() || "feed";
+  if (assetType === "image") {
+    const id = String(imageId ?? "").trim();
+    if (!id) return null;
+    return `image:${id}:${normalizedContext}`;
+  }
+  const uid = String(videoUid ?? "").trim();
+  if (!uid) return null;
+  return `video:${uid}:${normalizedContext}`;
+};
+
+const getCachedModerationDecision = (cacheKey: string): ModerationDecision | null => {
+  const entry = moderationDecisionCache.get(cacheKey);
+  if (!entry) return null;
+  if (!Number.isFinite(entry.expiresAt) || entry.expiresAt <= Date.now()) {
+    moderationDecisionCache.delete(cacheKey);
+    return null;
+  }
+  return {
+    blocked: Boolean(entry.decision?.blocked),
+    categories: Array.isArray(entry.decision?.categories) ? [...entry.decision.categories] : [],
+    rawSignals: Array.isArray(entry.decision?.rawSignals) ? [...entry.decision.rawSignals] : [],
+  };
+};
+
+const saveModerationDecisionCache = (cacheKey: string, decision: ModerationDecision) => {
+  const now = Date.now();
+  if (moderationDecisionCache.size >= MODERATION_DECISION_CACHE_MAX_ITEMS) {
+    for (const [key, value] of moderationDecisionCache.entries()) {
+      if (!Number.isFinite(value.expiresAt) || value.expiresAt <= now) {
+        moderationDecisionCache.delete(key);
+      }
+    }
+  }
+
+  while (moderationDecisionCache.size >= MODERATION_DECISION_CACHE_MAX_ITEMS) {
+    const oldestKey = moderationDecisionCache.keys().next().value;
+    if (!oldestKey) break;
+    moderationDecisionCache.delete(oldestKey);
+  }
+
+  moderationDecisionCache.set(cacheKey, {
+    decision: {
+      blocked: Boolean(decision?.blocked),
+      categories: Array.isArray(decision?.categories) ? [...decision.categories] : [],
+      rawSignals: Array.isArray(decision?.rawSignals) ? [...decision.rawSignals] : [],
+    },
+    expiresAt: now + MODERATION_DECISION_CACHE_TTL_MS,
+  });
 };
 
 const prefersSpanishLocale = (req: Request): boolean => {
@@ -560,6 +637,22 @@ const fetchModerationDecisionFromProvider = async ({
   videoUid?: string | null;
   context: string;
 }): Promise<ModerationProviderResult> => {
+  const cacheKey = buildModerationDecisionCacheKey({
+    assetType,
+    imageId: imageId ?? null,
+    videoUid: videoUid ?? null,
+    context,
+  });
+  if (cacheKey) {
+    const cached = getCachedModerationDecision(cacheKey);
+    if (cached) {
+      return {
+        ok: true,
+        decision: cached,
+      };
+    }
+  }
+
   const providerUrl = getModerationProviderUrl();
   if (!providerUrl) {
     return {
@@ -610,9 +703,13 @@ const fetchModerationDecisionFromProvider = async ({
     const providerPayload = response?.data ?? {};
     const normalizedDecision = normalizeModerationDecisionFromObject(providerPayload);
     const guardedDecision = applyModerationProviderGuards(providerPayload, normalizedDecision);
+    const finalDecision = applyModerationBlockingPolicy(guardedDecision);
+    if (cacheKey) {
+      saveModerationDecisionCache(cacheKey, finalDecision);
+    }
     return {
       ok: true,
-      decision: applyModerationBlockingPolicy(guardedDecision),
+      decision: finalDecision,
     };
   } catch (error: any) {
     const providerMessage =
