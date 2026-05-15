@@ -64,6 +64,13 @@ const VIDEO_OUTPUT_RESOLUTION = "720p";
 const VIDEO_OUTPUT_CODEC = "H.264 MP4";
 const VIDEO_STREAMING = "HLS";
 const VIDEO_R2_STREAMING = "Progressive MP4";
+const VIDEO_ALLOWED_MIME_TYPES = new Set<string>([
+  "video/mp4",
+  "video/quicktime",
+  "video/webm",
+  "video/x-msvideo",
+]);
+const VIDEO_ALLOWED_MIME_TYPES_MESSAGE = Array.from(VIDEO_ALLOWED_MIME_TYPES).join(", ");
 const CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS = Math.max(
   5000,
   Number(process.env.CLOUDFLARE_VIDEO_HTTP_TIMEOUT_MS ?? 20000) || 20000
@@ -94,6 +101,12 @@ const VIDEO_DOWNLOAD_STREAM_MODE = String(
   .trim()
   .toLowerCase();
 const VIDEO_DOWNLOAD_SHOULD_PROXY = VIDEO_DOWNLOAD_STREAM_MODE === "proxy";
+const VIDEO_R2_CONTEXTS = new Set(
+  String(process.env.MEDIA_VIDEO_R2_CONTEXTS ?? "chat,chat-video")
+    .split(/[,\s;|]+/)
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+);
 
 const AUDIO_MAX_BYTES = 10 * 1024 * 1024;
 const AUDIO_MAX_DURATION_SECONDS = 60;
@@ -129,6 +142,20 @@ const parsePositiveInt = (value: any): number | null => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return Math.floor(parsed);
+};
+
+const normalizeMimeType = (contentType: string): string => {
+  return String(contentType ?? "")
+    .trim()
+    .toLowerCase()
+    .split(";")[0]
+    .trim();
+};
+
+const isAllowedVideoContentType = (contentType: string): boolean => {
+  const normalized = normalizeMimeType(contentType);
+  if (!normalized) return false;
+  return VIDEO_ALLOWED_MIME_TYPES.has(normalized);
 };
 
 const parseCsv = (value: any): string[] => {
@@ -613,6 +640,67 @@ const shouldEnforceModerationAtConfirm = (context: string): boolean => {
   return contexts.has(context);
 };
 
+const shouldFailOpenModerationOnProviderError = (
+  assetType: ModerationAssetType,
+  context: string
+): boolean => {
+  const configured = String(
+    process.env.MEDIA_MODERATION_FAIL_OPEN_ASSET_TYPES ?? "video"
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!configured) return false;
+  if (configured === "*" || configured === "all") return true;
+
+  const values = new Set(
+    configured
+      .split(/[,\s;|]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+
+  if (values.has(assetType)) return true;
+  const contextKey = `context:${normalizeMediaContext(context)}`;
+  return values.has(contextKey);
+};
+
+const shouldBypassModerationAtConfirm = (
+  assetType: ModerationAssetType,
+  context: string
+): boolean => {
+  const configured = String(
+    process.env.MEDIA_MODERATION_BYPASS ?? "video,context:post,context:feed,context:reel,context:orbit,context:public"
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!configured) return false;
+  if (configured === "*" || configured === "all") return true;
+
+  const values = new Set(
+    configured
+      .split(/[,\s;|]+/)
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+  );
+
+  if (values.has(assetType)) return true;
+
+  const normalizedContext = normalizeMediaContext(context);
+  const contextKey = `context:${normalizedContext}`;
+  if (values.has(contextKey)) return true;
+
+  const scopedKey = `${assetType}:${normalizedContext}`;
+  return values.has(scopedKey);
+};
+
+const buildManualModerationBypassDecision = (reason = "manual_review_bypass"): ModerationDecision => ({
+  blocked: false,
+  categories: [],
+  rawSignals: [reason],
+});
+
 type ModerationProviderResult =
   | {
       ok: true;
@@ -740,6 +828,12 @@ const resolveConfirmModerationDecision = async ({
   videoUid?: string | null;
 }): Promise<ModerationProviderResult> => {
   const context = normalizeMediaContext((req.body as any)?.context ?? "feed");
+  if (shouldBypassModerationAtConfirm(assetType, context)) {
+    return {
+      ok: true,
+      decision: buildManualModerationBypassDecision(),
+    };
+  }
   const clientDecision = resolveModerationDecision(req);
 
   if (!shouldEnforceModerationAtConfirm(context)) {
@@ -753,7 +847,31 @@ const resolveConfirmModerationDecision = async ({
     videoUid: videoUid ?? null,
     context,
   });
-  if (!providerResult.ok) return providerResult;
+  if (!providerResult.ok) {
+    // Keep video upload/confirm resilient when provider cannot fetch media
+    // (e.g. transient 403/5xx on playback probe). This avoids "stuck uploading"
+    // UX while preserving client-side moderation hints.
+    if (
+      shouldFailOpenModerationOnProviderError(assetType, context) &&
+      providerResult.code >= 500
+    ) {
+      return {
+        ok: true,
+        decision: applyModerationBlockingPolicy({
+          blocked: clientDecision.blocked,
+          categories: clientDecision.categories,
+          rawSignals: Array.from(
+            new Set([
+              ...clientDecision.rawSignals,
+              `provider_unavailable:${providerResult.code}`,
+              String(providerResult.message || "").trim().slice(0, 120),
+            ].filter(Boolean))
+          ),
+        }),
+      };
+    }
+    return providerResult;
+  }
 
   const categories = Array.from(
     new Set([...providerResult.decision.categories, ...clientDecision.categories])
@@ -1593,8 +1711,10 @@ const buildR2VideoDownloadPath = (key: string) =>
   );
 
 const normalizeMediaContext = (value: any): string => String(value ?? "feed").trim().toLowerCase();
-const shouldUseR2ForVideoContext = (context: string) =>
-  context === "chat" || context === "chat-video";
+const shouldUseR2ForVideoContext = (context: string) => {
+  if (VIDEO_R2_CONTEXTS.has("*") || VIDEO_R2_CONTEXTS.has("all")) return true;
+  return VIDEO_R2_CONTEXTS.has(context);
+};
 
 const normalizeImageId = (value: any): string | null => {
   if (value === undefined || value === null) return null;
@@ -1836,12 +1956,25 @@ const buildVideoConfirmResponseBody = (
     durationCandidate >= 0
       ? durationCandidate
       : null;
+  const durationMs =
+    durationSeconds !== null && durationSeconds > 0 ? Math.floor(durationSeconds * 1000) : null;
+  const mediaUrl = snapshot.ready ? playbackPath : null;
+  const thumbnailUrl = snapshot.ready ? snapshot.thumbnail : null;
 
   return {
+    ready: snapshot.ready,
+    uid: snapshot.uid,
+    object_key: snapshot.uid,
+    media_url: mediaUrl,
+    thumbnail_url: thumbnailUrl,
     video: {
       uid: snapshot.uid,
+      key: snapshot.uid,
+      object_key: snapshot.uid,
       ready: snapshot.ready,
       duration_seconds: durationSeconds,
+      duration_ms: durationMs,
+      size_bytes: mediaSizeBytes,
       hls: snapshot.hls,
       playback_url: snapshot.hls,
       proxy_playback_url: playbackPath,
@@ -1858,8 +1991,7 @@ const buildVideoConfirmResponseBody = (
       message_type: "video",
       media_url: playbackPath,
       media_mime: "application/x-mpegurl",
-      media_duration_ms:
-        durationSeconds !== null && durationSeconds > 0 ? Math.floor(durationSeconds * 1000) : null,
+      media_duration_ms: durationMs,
       media_size_bytes: mediaSizeBytes,
     },
     recommended_download: {
@@ -1996,12 +2128,31 @@ export const moderate_media_asset = async (req: Request, res: Response) => {
     });
   }
 
+  const context = normalizeMediaContext(body?.context);
+  if (shouldBypassModerationAtConfirm(assetType, context)) {
+    const decision = buildManualModerationBypassDecision();
+    return formatResponse({
+      res,
+      success: true,
+      body: {
+        moderation: {
+          blocked: decision.blocked,
+          categories: decision.categories,
+          signals: decision.rawSignals,
+          bypassed: true,
+          mode: "manual_review",
+        },
+        confirm_payload: buildModerationConfirmPayload(decision),
+      },
+    });
+  }
+
   const moderationResult = await fetchModerationDecisionFromProvider({
     req,
     assetType,
     imageId,
     videoUid,
-    context: normalizeMediaContext(body?.context),
+    context,
   });
 
   if (!moderationResult.ok) {
@@ -2115,6 +2266,8 @@ const buildR2VideoDirectUploadBody = (params: {
         object_key: objectKey,
         content_type: safeContentType,
         upload_url: uploadUrl,
+        upload_method: "PUT",
+        upload_fields: null,
         upload_expires_at: null,
         playback_url: buildR2VideoPlaybackPath(objectKey),
         download_url: buildR2VideoDownloadPath(objectKey),
@@ -2813,12 +2966,12 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
   const context = normalizeMediaContext((req.body as any)?.context);
   const useR2 = shouldUseR2ForVideoContext(context);
   const contentType = String((req.body as any)?.content_type ?? "").trim().toLowerCase();
-  if (contentType && !contentType.startsWith("video/")) {
+  if (contentType && !isAllowedVideoContentType(contentType)) {
     return formatResponse({
       res,
       success: false,
       code: 400,
-      message: "content_type must be a video/* mime type",
+      message: `content_type must be one of: ${VIDEO_ALLOWED_MIME_TYPES_MESSAGE}`,
     });
   }
 
@@ -2888,8 +3041,15 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
       success: true,
       body: {
         uid: result.uid ?? null,
+        key: result.uid ?? null,
+        object_key: result.uid ?? null,
         upload_url: result.uploadURL ?? null,
+        upload_method: "POST",
+        upload_fields: {
+          file: "binary",
+        },
         upload_expires_at: result.expiry ?? null,
+        delivery: "cloudflare",
         rules: mediaRules.video,
       },
     });
@@ -2928,10 +3088,17 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
 
 export const confirm_video_upload = async (req: Request, res: Response) => {
   const context = normalizeMediaContext((req.body as any)?.context);
-  const requestedKey =
+  const requestedObjectKeyRaw =
     normalizeVideoStorageKey((req.body as any)?.object_key) ??
     normalizeVideoStorageKey((req.body as any)?.key);
-  const requestedUid = normalizeVideoUid((req.body as any)?.uid);
+  const requestedUidDirect = normalizeVideoUid((req.body as any)?.uid);
+  const requestedUidFromObjectKey =
+    !requestedUidDirect && requestedObjectKeyRaw
+      ? normalizeVideoUid(requestedObjectKeyRaw)
+      : null;
+  const requestedUid = requestedUidDirect ?? requestedUidFromObjectKey;
+  const requestedKey =
+    requestedUidFromObjectKey && requestedObjectKeyRaw ? null : requestedObjectKeyRaw;
   const requestedKeyFromUid = !requestedUid
     ? normalizeVideoStorageKey((req.body as any)?.uid)
     : null;
@@ -2948,7 +3115,10 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
     });
   }
 
-  const moderationResult = useR2
+  const moderationBypass = shouldBypassModerationAtConfirm("video", context);
+  const moderationResult = moderationBypass
+    ? ({ ok: true, decision: buildManualModerationBypassDecision() } as const)
+    : useR2
     ? ({ ok: true, decision: resolveModerationDecision(req) } as const)
     : await resolveConfirmModerationDecision({
         req,
@@ -3027,12 +3197,12 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
       }
 
       const mime = String(headResponse.headers.get("content-type") ?? "").trim() || null;
-      if (mime && !mime.toLowerCase().startsWith("video/")) {
+      if (mime && !isAllowedVideoContentType(mime)) {
         return formatResponse({
           res,
           success: false,
           code: 409,
-          message: "uploaded object is not a video/* mime type",
+          message: `uploaded object content_type must be one of: ${VIDEO_ALLOWED_MIME_TYPES_MESSAGE}`,
         });
       }
 
@@ -3064,6 +3234,11 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
         res,
         success: true,
         body: {
+          ready: true,
+          uid: objectKey,
+          object_key: objectKey,
+          media_url: playbackPath,
+          thumbnail_url: thumbnailUrl,
           video: {
             uid: objectKey,
             key: objectKey,
@@ -3071,6 +3246,8 @@ export const confirm_video_upload = async (req: Request, res: Response) => {
             delivery: "r2",
             ready: true,
             duration_seconds: durationMs !== null ? Math.floor(durationMs / 1000) : null,
+            duration_ms: durationMs,
+            size_bytes: sizeBytes,
             hls: null,
             playback_url: playbackPath,
             download_url: downloadPath,

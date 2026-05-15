@@ -190,6 +190,11 @@ const allowRefreshFromAccessToken = () =>
     .trim()
     .match(/^(0|false|no|off)$/i);
 
+const allowStaleRefreshTokenRecovery = () =>
+  !String(process.env.AUTH_REFRESH_STALE_TOKEN_RECOVERY ?? "1")
+    .trim()
+    .match(/^(0|false|no|off)$/i);
+
 const verifyJwtWithSecretsDetailed = (
   token: string,
   secrets: string[],
@@ -686,12 +691,13 @@ export const refreshToken = async (req: Request, res: Response) => {
         const storedUuid = normalizeDeviceToken((userStatus as any)?.uuid ?? "");
         const uuidHint = requestUuid || storedUuid;
 
-        let hasRecoverableSession = false;
+        let hasRecoverableSessionForDevice = false;
         if (uuidHint) {
-          hasRecoverableSession = await hasUserActivePersistentAuthSession(userId, {
+          hasRecoverableSessionForDevice = await hasUserActivePersistentAuthSession(userId, {
             deviceUuid: uuidHint,
           }).catch(() => false);
         }
+        let hasRecoverableSession = hasRecoverableSessionForDevice;
         if (!hasRecoverableSession) {
           hasRecoverableSession = await hasUserActivePersistentAuthSession(userId).catch(
             () => false
@@ -708,6 +714,15 @@ export const refreshToken = async (req: Request, res: Response) => {
           // Client may be presenting a stale rotated refresh token while still
           // holding a valid access token for the same user/device.
           // Allow this request to re-issue tokens and heal local storage.
+          tokenMatchesSession = true;
+        } else if (
+          allowStaleRefreshTokenRecovery() &&
+          hasRecoverableSessionForDevice &&
+          Boolean(uuidHint)
+        ) {
+          console.warn(
+            `[auth][refresh] recover stale refresh token with active device session userId=${userId}`
+          );
           tokenMatchesSession = true;
         } else if (hasRecoverableSession) {
           return sendAuthError(
