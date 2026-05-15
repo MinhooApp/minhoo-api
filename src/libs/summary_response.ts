@@ -361,6 +361,11 @@ export const toPostSummary = (
   const counts = buildCounts(post);
   const author = toUserSummary(post?.user, viewerIdRaw, relationship);
   const userRaw = toPlain(post?.user);
+  const profileVerified = Boolean(
+    userRaw?.profile_verified ?? userRaw?.profileVerified ?? userRaw?.verified_badge ?? false
+  );
+  const profileVerificationStatus =
+    toText(userRaw?.profile_verification_status ?? userRaw?.profileVerificationStatus) ?? null;
   const postMediaRaw = Array.isArray(post?.post_media) ? post.post_media : [];
   const postMedia = postMediaRaw.map((item: any) => {
     const mediaUrl = toText(item?.url ?? item?.mediaUrl ?? item?.media_url);
@@ -386,6 +391,14 @@ export const toPostSummary = (
         imageProfil: toText(userRaw.image_profil),
         avatar: toText(userRaw.image_profil),
         verified: Boolean(userRaw.verified),
+        profile_verified: profileVerified,
+        profileVerified,
+        verified_badge: profileVerified,
+        verifiedBadge: profileVerified,
+        is_verified_profile: profileVerified,
+        isVerifiedProfile: profileVerified,
+        profile_verification_status: profileVerificationStatus,
+        profileVerificationStatus: profileVerificationStatus,
         has_active_orbit: author?.has_active_orbit ?? false,
         hasActiveOrbit: author?.hasActiveOrbit ?? false,
         isFollowing: author?.isFollowing ?? false,
@@ -437,6 +450,7 @@ export const toReelSummary = (reelRaw: any, viewerIdRaw?: any, relationshipLooku
   const reel = toPlain(reelRaw);
   const creatorId = Number(reel?.user?.id ?? 0) || null;
   const relationship = getRelationshipFromLookup(relationshipLookup, creatorId);
+  const creator = toUserSummary(reel?.user, viewerIdRaw, relationship);
   const isStarred =
     pickFirstBool(
       reel?.is_starred,
@@ -465,7 +479,8 @@ export const toReelSummary = (reelRaw: any, viewerIdRaw?: any, relationshipLooku
       saves: toCount(reel?.saves_count),
       views: toCount(reel?.views_count),
     },
-    creator: toUserSummary(reel?.user, viewerIdRaw, relationship),
+    creator,
+    user: creator ? { ...creator } : null,
     starred: isStarred,
     liked: isStarred,
     saved: isSaved,

@@ -39,6 +39,10 @@ const MAX_WORKER_SESSION_SEEN = 200;
 const MAX_WORKER_SESSION_TOPICS = 60;
 const MAX_WORKER_SESSION_IMPRESSIONS = 400;
 const MAX_WORKER_SESSION_RECENT_TOP = 24;
+const MAX_WORKER_PAGINATION_SNAPSHOT_IDS = Math.max(
+  MAX_WORKER_PAGE_SIZE,
+  Number(process.env.WORKER_PAGINATION_SNAPSHOT_MAX_IDS ?? 1000) || 1000
+);
 
 type WorkerFeedOptions = {
   sessionKey?: any;
@@ -52,6 +56,9 @@ type WorkerSessionState = {
   recentCategoryIds: number[];
   recentTopUserIds: number[];
   workerImpressions: Record<string, number>;
+  paginationSeedBucket: number | null;
+  paginationTotalCount: number;
+  paginationOrderedWorkerIds: number[];
 };
 
 type WorkerViewerContext = {
@@ -193,6 +200,9 @@ const buildEmptyWorkerSessionState = (): WorkerSessionState => ({
   recentCategoryIds: [],
   recentTopUserIds: [],
   workerImpressions: {},
+  paginationSeedBucket: null,
+  paginationTotalCount: 0,
+  paginationOrderedWorkerIds: [],
 });
 
 const sanitizeWorkerSessionState = (raw: any): WorkerSessionState => {
@@ -218,6 +228,17 @@ const sanitizeWorkerSessionState = (raw: any): WorkerSessionState => {
       workerImpressions[String(userId)] = count;
     }
   );
+  const paginationSeedBucketRaw = Number((base as any)?.paginationSeedBucket);
+  const paginationSeedBucket = Number.isFinite(paginationSeedBucketRaw)
+    ? Math.max(0, Math.floor(paginationSeedBucketRaw))
+    : null;
+  const paginationTotalCountRaw = Number((base as any)?.paginationTotalCount ?? 0);
+  const paginationTotalCount = Number.isFinite(paginationTotalCountRaw)
+    ? Math.max(0, Math.floor(paginationTotalCountRaw))
+    : 0;
+  const paginationOrderedWorkerIds = Array.from(
+    toPositiveIntSet((base as any)?.paginationOrderedWorkerIds)
+  ).slice(0, MAX_WORKER_PAGINATION_SNAPSHOT_IDS);
 
   return {
     updatedAt: Number((base as any)?.updatedAt ?? nowMs()) || nowMs(),
@@ -225,6 +246,9 @@ const sanitizeWorkerSessionState = (raw: any): WorkerSessionState => {
     recentCategoryIds,
     recentTopUserIds,
     workerImpressions,
+    paginationSeedBucket,
+    paginationTotalCount,
+    paginationOrderedWorkerIds,
   };
 };
 
@@ -916,6 +940,16 @@ export const workers = async (
   const seedBase = sessionMemoryKey || `viewer:${viewerId ?? "anon"}`;
   const seedBucket = Math.floor(nowMs() / WORKER_RANK_ROTATION_WINDOW_MS);
   const rankingSeed = `${seedBase}:r:${seedBucket}`;
+  const desiredSnapshotCount = Math.min(
+    MAX_WORKER_PAGINATION_SNAPSHOT_IDS,
+    Math.max(desiredCount, Number(totalCount || 0))
+  );
+  const stableSnapshotMatches =
+    pageNumber > 0 &&
+    sessionState.paginationSeedBucket === seedBucket &&
+    sessionState.paginationTotalCount === Number(totalCount || 0) &&
+    Array.isArray(sessionState.paginationOrderedWorkerIds) &&
+    sessionState.paginationOrderedWorkerIds.length > start;
   const scoredCandidates = candidatePoolRows
     .map((row) =>
       buildWorkerCandidate({
@@ -941,14 +975,14 @@ export const workers = async (
   });
 
   const bucketTargets = buildWorkerBucketTargets({
-    desiredCount,
+    desiredCount: desiredSnapshotCount,
     availableByBucket,
     hasViewer: Boolean(viewerId),
   });
 
   const selectedCandidates = selectWorkerCandidates({
     scoredCandidates,
-    desiredCount,
+    desiredCount: desiredSnapshotCount,
     bucketTargets,
     recentTopUserIds: sessionState.recentTopUserIds,
   });
@@ -957,10 +991,25 @@ export const workers = async (
     rankingSeed,
     sessionState.recentTopUserIds
   );
-  const pageCandidates = shuffledCandidates.slice(start, end);
-  const pageIds = pageCandidates.map((candidate) => candidate.id);
+  const scoredByWorkerId = new Map<number, WorkerCandidate>();
+  shuffledCandidates.forEach((candidate) => {
+    scoredByWorkerId.set(candidate.id, candidate);
+  });
+  const rankedWorkerIds = stableSnapshotMatches
+    ? sessionState.paginationOrderedWorkerIds.slice(0, MAX_WORKER_PAGINATION_SNAPSHOT_IDS)
+    : shuffledCandidates.map((candidate) => candidate.id);
+  const pageIds = rankedWorkerIds.slice(start, end);
+  const pageCandidates = pageIds
+    .map((workerId) => scoredByWorkerId.get(workerId))
+    .filter(Boolean) as WorkerCandidate[];
 
   const orderedWorkers = await fetchWorkersByIdsOrdered(pageIds);
+  sessionState.paginationSeedBucket = seedBucket;
+  sessionState.paginationTotalCount = Number(totalCount || 0);
+  sessionState.paginationOrderedWorkerIds = rankedWorkerIds.slice(
+    0,
+    MAX_WORKER_PAGINATION_SNAPSHOT_IDS
+  );
   await updateWorkerSessionState(
     sessionMemoryKey,
     sessionState,

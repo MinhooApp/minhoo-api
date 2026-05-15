@@ -244,17 +244,19 @@ const maybeDispatchProfileRecommendationNotification = async ({
 export const workers = async (req: Request, res: Response) => {
   try {
     setPrivateNoStore(res);
-    const { page = 0, size = 5 } = req.query;
+    const page = Math.max(0, Number((req.query as any)?.page ?? 0) || 0);
+    const size = Math.min(Math.max(Number((req.query as any)?.size ?? 20) || 20, 1), 20);
     const workers: any = await repository.workers(page, size, req.userId, {
       sessionKey: toSessionKey(req),
     });
-    await attachRelationshipsToWorkers(req.userId, workers?.rows ?? []);
+    const rows = Array.isArray(workers?.rows) ? workers.rows.slice(0, size) : [];
+    await attachRelationshipsToWorkers(req.userId, rows);
 
     // Non-blocking: recommendation push should never slow down feed response.
     void maybeDispatchProfileRecommendationNotification({
       viewerIdRaw: req.userId,
       pageRaw: page,
-      rowsRaw: workers?.rows ?? [],
+      rowsRaw: rows,
     }).catch((error) => {
       console.log("[worker][recommendation_notification] skipped", error);
     });
@@ -266,7 +268,7 @@ export const workers = async (req: Request, res: Response) => {
         page: +page,
         size: +size,
         count: workers.count,
-        workers: workers.rows,
+        workers: rows,
       },
     });
   } catch (error) {

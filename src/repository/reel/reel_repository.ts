@@ -31,6 +31,9 @@ const reelUserInclude = {
     "last_name",
     "username",
     "image_profil",
+    "verified",
+    "profile_verified",
+    "profile_verification_status",
     "job_categories_labels",
   ],
 };
@@ -45,6 +48,8 @@ const reelUserSummaryInclude = {
     "username",
     "image_profil",
     "verified",
+    "profile_verified",
+    "profile_verification_status",
     "job_categories_labels",
   ],
 };
