@@ -695,3 +695,37 @@ async function loadHomeAndFeedSafe() {
   }
 }
 ```
+
+---
+
+## 13. Contrato Avatar — Cloudflare Direct Only (2026-05-15)
+
+### Objetivo
+
+Unificar la carga de avatar para evitar perfiles que abren sin foto y luego muestran imagen con retraso.
+
+### Regla backend (nuevo)
+
+Para `avatar_url` / `image_profil` en update de perfil:
+
+- Aceptado:
+  - URL directa Cloudflare Images (`https://imagedelivery.net/.../<image_id>/public`)
+  - `image_id` de Cloudflare Images (el backend lo resuelve a URL directa)
+  - `/api/v1/media/image/play?id=<cloudflare_image_id>` (el backend lo resuelve a URL directa)
+- Rechazado:
+  - `r2img-*` como avatar persistido
+  - `/api/v1/media/image/play?id=r2img-*`
+  - URLs externas que no sean Cloudflare Images
+
+### Endpoints impactados
+
+- `POST /api/v1/worker`
+- `PUT /api/v1/worker/profile`
+- `PUT /api/v1/user/profile` (update perfil usuario)
+- `POST /api/v1/auth` (signup, cuando llega avatar por URL)
+
+### Recomendación frontend
+
+1. Para avatar nuevo, preferir multipart directo al endpoint de profile.
+2. Si frontend usa `image_id`, enviar solo `cloudflare_image_id` (no `r2img-*`).
+3. No persistir ni reutilizar `avatar_url` con `/api/v1/media/image/play?id=r2img-*`.

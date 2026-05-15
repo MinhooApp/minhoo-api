@@ -20,6 +20,40 @@ const setPrivateNoStore = (res: Response) => {
   res.set("Vary", "Accept-Encoding, Authorization");
 };
 
+const toTextOrNull = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized.length ? normalized : null;
+};
+
+const resolveAvatarValue = (entity: any): string | null =>
+  toTextOrNull(entity?.image_profil) ??
+  toTextOrNull(entity?.image_profile) ??
+  toTextOrNull(entity?.avatar_url) ??
+  toTextOrNull(entity?.avatarUrl);
+
+const attachAvatarAliases = (entity: any) => {
+  if (!entity) return;
+  const avatar = resolveAvatarValue(entity);
+  if (!avatar) return;
+
+  const fields: Record<string, string> = {
+    image_profil: avatar,
+    image_profile: avatar,
+    avatar_url: avatar,
+    avatarUrl: avatar,
+  };
+
+  if (typeof entity?.setDataValue === "function") {
+    Object.entries(fields).forEach(([key, value]) => {
+      entity.setDataValue(key, value);
+    });
+    return;
+  }
+
+  Object.assign(entity, fields);
+};
+
 const sendAdminProfileUnavailable = (
   req: Request,
   res: Response,
@@ -49,15 +83,9 @@ const sendAdminProfileUnavailable = (
 
 const assignAdminMarkersToUserObject = (userRaw: any, isAdmin: boolean) => {
   if (!userRaw) return;
-  const roles = isAdmin
-    ? [{ id: 8088, role: "admin", description: "admin role" }]
-    : Array.isArray((userRaw as any)?.roles)
-    ? (userRaw as any).roles
-    : [];
   const fields: Record<string, any> = {
     is_admin: isAdmin,
     isAdmin: isAdmin,
-    roles,
   };
 
   if (typeof (userRaw as any)?.setDataValue === "function") {
@@ -67,7 +95,12 @@ const assignAdminMarkersToUserObject = (userRaw: any, isAdmin: boolean) => {
     return;
   }
 
-  Object.assign(userRaw, fields);
+  const roles = isAdmin
+    ? [{ id: 8088, role: "admin", description: "admin role" }]
+    : Array.isArray((userRaw as any)?.roles)
+    ? (userRaw as any).roles
+    : [];
+  Object.assign(userRaw, { ...fields, roles });
 };
 
 const collectFollowUsers = (entries: any[]) =>
@@ -584,6 +617,7 @@ export const get = async (req: Request, res: Response) => {
 
     const user = await repository.get(id, req.userId);
     if (user) {
+      attachAvatarAliases(user);
       const resolvedTargetUserId = Number((user as any)?.id ?? targetIdCandidate);
       if (Number.isFinite(resolvedTargetUserId) && resolvedTargetUserId > 0) {
         targetIsAdmin = await repository.isUserAdminById(resolvedTargetUserId);
@@ -682,7 +716,15 @@ export const get = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(req.userId);
+    console.error(
+      `[user/get one] error ${JSON.stringify({
+        viewerId: Number((req as any)?.userId ?? 0) || null,
+        targetIdRaw: (req.params as any)?.id ?? null,
+        errorName: (error as any)?.name ?? null,
+        errorMessage: (error as any)?.message ?? null,
+        stack: (error as any)?.stack ?? null,
+      })}`
+    );
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -691,6 +733,7 @@ export const myData = async (req: Request, res: Response) => {
   try {
     setPrivateNoStore(res);
     const user = await repository.get(req.userId);
+    attachAvatarAliases(user);
     const [counts, _likedState, _savedState, reputationSnapshot] = await Promise.all([
       enrichUserFollowCounts(user),
       attachLikedStateToUserPosts(req.userId, user),

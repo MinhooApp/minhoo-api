@@ -3,6 +3,12 @@ import path from "path";
 const CLOUDFLARE_API_BASE = "https://api.cloudflare.com/client/v4";
 const DEFAULT_VARIANT = "public";
 const IMAGE_ID_REGEX = /^[a-zA-Z0-9._-]{6,255}$/;
+const CLOUDFLARE_DELIVERY_HOST_SUFFIX = String(
+  process.env.CLOUDFLARE_IMAGES_DELIVERY_HOST_SUFFIX ?? "imagedelivery.net"
+)
+  .trim()
+  .toLowerCase();
+const IMAGE_PLAYBACK_PATH = "/api/v1/media/image/play";
 const IMAGE_URL_CACHE_TTL_MS = Math.max(
   30_000,
   Number(process.env.CLOUDFLARE_IMAGE_URL_CACHE_TTL_MS ?? 5 * 60 * 1000) ||
@@ -87,6 +93,60 @@ const normalizeImageId = (value: any): string | null => {
   return normalized;
 };
 
+const isCloudflareImageIdCandidate = (value: string): boolean => {
+  if (!IMAGE_ID_REGEX.test(value)) return false;
+  // Prevent persisting R2 object keys as avatars in user profiles.
+  if (/^r2img-/i.test(value)) return false;
+  return true;
+};
+
+const extractCloudflareImageIdFromPlaybackUrl = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+
+  try {
+    const parsed = new URL(normalized, "http://local");
+    if (
+      String(parsed.pathname ?? "").trim().toLowerCase() !==
+      IMAGE_PLAYBACK_PATH
+    ) {
+      return null;
+    }
+    const imageId = normalizeImageId(parsed.searchParams.get("id"));
+    if (!imageId || !isCloudflareImageIdCandidate(imageId)) return null;
+    return imageId;
+  } catch {
+    return null;
+  }
+};
+
+export const extractCloudflareImageIdFromDeliveryUrl = (
+  value: any
+): string | null => {
+  const remoteUrl = normalizeRemoteHttpUrl(value);
+  if (!remoteUrl) return null;
+
+  try {
+    const parsed = new URL(remoteUrl);
+    const host = String(parsed.hostname ?? "").trim().toLowerCase();
+    if (!host) return null;
+    if (
+      CLOUDFLARE_DELIVERY_HOST_SUFFIX &&
+      !host.endsWith(CLOUDFLARE_DELIVERY_HOST_SUFFIX)
+    ) {
+      return null;
+    }
+    const parts = parsed.pathname.split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    const imageId = normalizeImageId(parts[1]);
+    if (!imageId || !isCloudflareImageIdCandidate(imageId)) return null;
+    return imageId;
+  } catch {
+    return null;
+  }
+};
+
 const getCachedImageUrlById = (imageId: string): string | null => {
   const cached = imageUrlByIdCache.get(imageId);
   if (!cached) return null;
@@ -132,7 +192,7 @@ export const resolveCloudflareImageUrlById = async (
   imageIdRaw: any
 ): Promise<string | null> => {
   const imageId = normalizeImageId(imageIdRaw);
-  if (!imageId) return null;
+  if (!imageId || !isCloudflareImageIdCandidate(imageId)) return null;
 
   const cached = getCachedImageUrlById(imageId);
   if (cached) return cached;
@@ -168,6 +228,33 @@ export const resolveCloudflareImageUrlById = async (
   } catch {
     return null;
   }
+};
+
+export const resolveCloudflareDirectAvatarUrl = async (
+  value: any
+): Promise<string | null> => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  if (!normalized) return null;
+
+  const remoteUrl = normalizeRemoteHttpUrl(normalized);
+  if (remoteUrl) {
+    const deliveryImageId = extractCloudflareImageIdFromDeliveryUrl(remoteUrl);
+    if (deliveryImageId) return remoteUrl;
+
+    const playbackImageId = extractCloudflareImageIdFromPlaybackUrl(remoteUrl);
+    if (!playbackImageId) return null;
+
+    return resolveCloudflareImageUrlById(playbackImageId);
+  }
+
+  const playbackImageId = extractCloudflareImageIdFromPlaybackUrl(normalized);
+  if (playbackImageId) {
+    return resolveCloudflareImageUrlById(playbackImageId);
+  }
+
+  if (!isCloudflareImageIdCandidate(normalized)) return null;
+  return resolveCloudflareImageUrlById(normalized);
 };
 
 export const uploadImageBufferToCloudflare = async ({

@@ -2073,6 +2073,69 @@ const buildR2ImageDirectUploadBody = (params: {
   }
 };
 
+const buildR2VideoDirectUploadBody = (params: {
+  req: Request;
+  contentType: string;
+  requestedObjectKey?: any;
+  context: string;
+}) => {
+  const config = ensureR2Config();
+  if (!config.ok) {
+    return {
+      ok: false as const,
+      code: 500,
+      message: config.message,
+      body: null,
+    };
+  }
+
+  const safeContentType = params.contentType || "video/mp4";
+  const objectKey =
+    normalizeVideoStorageKey(params.requestedObjectKey) ??
+    buildChatVideoObjectKey(params.req.userId, safeContentType);
+
+  try {
+    const uploadUrl = buildR2PresignedUrl({
+      method: "PUT",
+      bucket: config.bucket,
+      endpoint: config.endpoint,
+      key: objectKey,
+      accessKeyId: config.accessKeyId,
+      secretAccessKey: config.secretAccessKey,
+      expiresSeconds: VIDEO_UPLOAD_TTL_SECONDS,
+    });
+
+    return {
+      ok: true as const,
+      code: 200,
+      message: "",
+      body: {
+        uid: objectKey,
+        key: objectKey,
+        object_key: objectKey,
+        content_type: safeContentType,
+        upload_url: uploadUrl,
+        upload_expires_at: null,
+        playback_url: buildR2VideoPlaybackPath(objectKey),
+        download_url: buildR2VideoDownloadPath(objectKey),
+        delivery: "r2",
+        context: params.context,
+        rules: {
+          ...mediaRules.video,
+          streaming: VIDEO_R2_STREAMING,
+        },
+      },
+    };
+  } catch (error: any) {
+    return {
+      ok: false as const,
+      code: 502,
+      message: error?.message ?? "video direct upload init failed",
+      body: null,
+    };
+  }
+};
+
 export const create_image_direct_upload = async (req: Request, res: Response) => {
   const fileSize = parsePositiveInt((req.body as any)?.file_size_bytes);
   if (fileSize !== null && fileSize > IMAGE_MAX_BYTES) {
@@ -2760,59 +2823,19 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
   }
 
   if (useR2) {
-    const config = ensureR2Config();
-    if (!config.ok) {
-      return formatResponse({
-        res,
-        success: false,
-        code: 500,
-        message: config.message,
-      });
-    }
-
-    try {
-      const safeContentType = contentType || "video/mp4";
-      const objectKey =
-        normalizeVideoStorageKey((req.body as any)?.object_key) ??
-        buildChatVideoObjectKey(req.userId, safeContentType);
-      const uploadUrl = buildR2PresignedUrl({
-        method: "PUT",
-        bucket: config.bucket,
-        endpoint: config.endpoint,
-        key: objectKey,
-        accessKeyId: config.accessKeyId,
-        secretAccessKey: config.secretAccessKey,
-        expiresSeconds: VIDEO_UPLOAD_TTL_SECONDS,
-      });
-
-      return formatResponse({
-        res,
-        success: true,
-        body: {
-          uid: objectKey,
-          key: objectKey,
-          object_key: objectKey,
-          content_type: safeContentType,
-          upload_url: uploadUrl,
-          upload_expires_at: null,
-          playback_url: buildR2VideoPlaybackPath(objectKey),
-          download_url: buildR2VideoDownloadPath(objectKey),
-          delivery: "r2",
-          context,
-          rules: {
-            ...mediaRules.video,
-            streaming: VIDEO_R2_STREAMING,
-          },
-        },
-      });
-    } catch (error: any) {
-      return formatResponse({
-        res,
-        success: false,
-        code: 502,
-        message: error?.message ?? "video direct upload init failed",
-      });
-    }
+    const fallback = buildR2VideoDirectUploadBody({
+      req,
+      contentType,
+      requestedObjectKey: (req.body as any)?.object_key,
+      context,
+    });
+    return formatResponse({
+      res,
+      success: fallback.ok,
+      code: fallback.code,
+      message: fallback.message || undefined,
+      body: fallback.body ?? undefined,
+    });
   }
 
   const config = ensureCloudflareConfig("media");
@@ -2871,6 +2894,21 @@ export const create_video_direct_upload = async (req: Request, res: Response) =>
       },
     });
   } catch (error: any) {
+    if (isCloudflareAuthError(error) || isCloudflareTransientError(error)) {
+      const fallback = buildR2VideoDirectUploadBody({
+        req,
+        contentType,
+        requestedObjectKey: (req.body as any)?.object_key,
+        context,
+      });
+      if (fallback.ok) {
+        return formatResponse({
+          res,
+          success: true,
+          body: fallback.body,
+        });
+      }
+    }
     if (isAxiosTimeoutError(error)) {
       return formatResponse({
         res,

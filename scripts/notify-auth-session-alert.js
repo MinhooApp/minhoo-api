@@ -206,8 +206,10 @@ const buildFingerprint = (report) => {
   const parts = {
     failures,
     revokedSessionRatePct: Number(db?.revokedSessionRatePct || 0),
+    revokedUnexpectedSessionRatePct: Number(db?.revokedUnexpectedSessionRatePct || 0),
     createdWindow: Number(db?.createdWindow || 0),
     revokedWindow: Number(db?.revokedWindow || 0),
+    revokedUnexpectedWindow: Number(db?.revokedUnexpectedWindow || 0),
     quickReloginUserRatePct: Number(report?.logs?.quick_relogin_user_rate_pct || 0),
     hardLogoutErrorPct: Number(report?.logs?.hard_logout_error_pct || 0),
   };
@@ -267,7 +269,7 @@ const main = async () => {
   const hardLogoutFailure = isHardLogoutFailure(report);
   const quickReloginFailure = isQuickReloginFailure(report);
   const impactFailure = hardLogoutFailure || quickReloginFailure;
-  const revokedRatePct = Number(report?.db?.revokedSessionRatePct || 0);
+  const revokedRatePct = Number(report?.db?.revokedUnexpectedSessionRatePct || 0);
   const revokedCreatedWindow = Number(report?.db?.createdWindow || 0);
   const revokedCritical =
     revokedRateFailure &&
@@ -336,6 +338,9 @@ const main = async () => {
   const checks = Array.isArray(report?.checks) ? report.checks : [];
   const topAuthAppVersions = formatTopAuthAppVersions(logs?.top_auth_app_versions, 5);
   const topRevokedReasons = formatRevokedReasons(db?.revokedReasonCounts, 6);
+  const ignoredRevokedReasons = Array.isArray(db?.revokedIgnoredReasons)
+    ? db.revokedIgnoredReasons.slice(0, 10).map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
   const formattedFailures = failures.length
     ? failures.map((item) => `<li>${escapeHtml(item)}</li>`).join("")
     : "<li>none</li>";
@@ -362,7 +367,10 @@ const main = async () => {
     `<b>Host:</b> ${escapeHtml(hostname)}`,
     `<b>Mode:</b> ${escapeHtml(mode)}`,
     `<b>Window (hours):</b> ${escapeHtml(report?.window_hours)}`,
-    `<b>Revoked session rate:</b> ${escapeHtml(db?.revokedSessionRatePct)}% (${escapeHtml(
+    `<b>Unexpected revoked session rate:</b> ${escapeHtml(
+      db?.revokedUnexpectedSessionRatePct
+    )}% (${escapeHtml(db?.revokedUnexpectedWindow)}/${escapeHtml(db?.createdWindow)})`,
+    `<b>Total revoked session rate:</b> ${escapeHtml(db?.revokedSessionRatePct)}% (${escapeHtml(
       db?.revokedWindow
     )}/${escapeHtml(db?.createdWindow)})`,
     `<b>Hard logout auth errors:</b> ${escapeHtml(logs?.hard_logout_error_pct)}% (${escapeHtml(
@@ -379,6 +387,9 @@ const main = async () => {
     topRevokedReasons.length
       ? `<b>Top revoked reasons:</b> ${escapeHtml(topRevokedReasons.join(" | "))}`
       : "",
+    ignoredRevokedReasons.length
+      ? `<b>Ignored revoked reasons:</b> ${escapeHtml(ignoredRevokedReasons.join(", "))}`
+      : "",
     topAuthAppVersions.length
       ? `<b>Top app versions (hard/total):</b> ${escapeHtml(topAuthAppVersions.join(" | "))}`
       : "",
@@ -392,11 +403,15 @@ const main = async () => {
     `Host: ${hostname}`,
     `Mode: ${mode}`,
     `Window (hours): ${report?.window_hours}`,
-    `Revoked session rate: ${db?.revokedSessionRatePct}% (${db?.revokedWindow}/${db?.createdWindow})`,
+    `Unexpected revoked session rate: ${db?.revokedUnexpectedSessionRatePct}% (${db?.revokedUnexpectedWindow}/${db?.createdWindow})`,
+    `Total revoked session rate: ${db?.revokedSessionRatePct}% (${db?.revokedWindow}/${db?.createdWindow})`,
     `Hard logout auth errors: ${logs?.hard_logout_error_pct}% (${logs?.hard_logout_errors}/${logs?.auth_errors})`,
     `Quick relogin users: ${logs?.quick_relogin_user_rate_pct}% (${logs?.quick_relogin_users}/${logs?.unique_login_users})`,
     `Startup polling 401: total=${logs?.startup_polling_401_total} hard_logout=${logs?.startup_polling_401_hard_logout} retryable=${logs?.startup_polling_401_retryable} hard_logout_pct=${logs?.startup_polling_401_hard_logout_pct}%`,
     ...(topRevokedReasons.length ? [`Top revoked reasons: ${topRevokedReasons.join(" | ")}`] : []),
+    ...(ignoredRevokedReasons.length
+      ? [`Ignored revoked reasons: ${ignoredRevokedReasons.join(", ")}`]
+      : []),
     ...(topAuthAppVersions.length
       ? [`Top app versions (hard/total): ${topAuthAppVersions.join(" | ")}`]
       : []),
@@ -497,6 +512,8 @@ const main = async () => {
     host: hostname,
     report_snapshot: {
       failures,
+      revokedUnexpectedSessionRatePct: Number(db?.revokedUnexpectedSessionRatePct || 0),
+      revokedUnexpectedWindow: Number(db?.revokedUnexpectedWindow || 0),
       revokedSessionRatePct: Number(db?.revokedSessionRatePct || 0),
       createdWindow: Number(db?.createdWindow || 0),
       revokedWindow: Number(db?.revokedWindow || 0),

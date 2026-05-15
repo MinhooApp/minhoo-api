@@ -1,6 +1,25 @@
 import { DataTypes, Model } from "sequelize";
 import sequelize from "../../_db/connection";
 
+const IMAGE_ID_REGEX = /^[a-zA-Z0-9._-]{6,255}$/;
+
+const normalizeImageProfilePlaybackPath = (rawValue: string): string | null => {
+  const raw = String(rawValue ?? "").trim();
+  if (!raw) return null;
+
+  try {
+    const parsed = new URL(raw, "http://local");
+    if (String(parsed.pathname ?? "").trim().toLowerCase() !== "/api/v1/media/image/play") {
+      return null;
+    }
+    const imageId = String(parsed.searchParams.get("id") ?? "").trim();
+    if (!IMAGE_ID_REGEX.test(imageId)) return null;
+    return `/api/v1/media/image/play?id=${encodeURIComponent(imageId)}`;
+  } catch {
+    return null;
+  }
+};
+
 class User extends Model {
   [x: string]: any;
 }
@@ -147,10 +166,20 @@ User.init(
       get() {
         const raw = this.getDataValue("image_profil");
         if (!raw) return raw;
-        const value = String(raw);
-        if (/^https?:\/\//i.test(value) || value.startsWith("data:")) {
+        const value = String(raw).trim();
+        if (!value) return value;
+
+        if (value.startsWith("data:")) {
           return value;
         }
+
+        const playbackPath = normalizeImageProfilePlaybackPath(value);
+        if (playbackPath) return playbackPath;
+
+        if (/^https?:\/\//i.test(value)) {
+          return value;
+        }
+
         const normalized = value.replace(/\\/g, "/");
         return normalized.startsWith("/") ? normalized : `/${normalized}`;
       },

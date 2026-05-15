@@ -107,6 +107,13 @@ const resolveExpiresAtFromToken = (token: string): Date => {
 
 type SessionTokenKind = "access" | "refresh" | "unknown";
 
+const normalizeTokenKind = (
+  raw: SessionTokenKind
+): "access" | "refresh" | "unknown" => {
+  if (raw === "access" || raw === "refresh") return raw;
+  return "unknown";
+};
+
 const resolveSessionTokenKind = (
   token: string,
   expiresAt: Date
@@ -146,6 +153,10 @@ const persistentSessionCutoffSql =
   sequelize.getDialect() === "postgres"
     ? `${nowSql} + (:persistentHours * INTERVAL '1 hour')`
     : `DATE_ADD(${nowSql}, INTERVAL :persistentHours HOUR)`;
+const unknownTokenKindSql =
+  "(token_kind IS NULL OR TRIM(token_kind) = '' OR token_kind = 'unknown')";
+const refreshSessionKindFilterSql = `(token_kind = 'refresh' OR (${unknownTokenKindSql} AND (expires_at IS NULL OR expires_at > ${persistentSessionCutoffSql})))`;
+const accessSessionKindFilterSql = `(token_kind = 'access' OR (${unknownTokenKindSql} AND expires_at IS NOT NULL AND expires_at <= ${persistentSessionCutoffSql}))`;
 
 const ensureTable = async (): Promise<void> => {
   if (!AUTH_MULTI_DEVICE_SESSIONS_ENABLED) return;
@@ -161,6 +172,7 @@ const ensureTable = async (): Promise<void> => {
             user_id BIGINT NOT NULL,
             device_uuid VARCHAR(255) NULL,
             token_hash VARCHAR(64) NOT NULL UNIQUE,
+            token_kind VARCHAR(16) NULL,
             expires_at TIMESTAMPTZ NULL,
             revoked_at TIMESTAMPTZ NULL,
             revoked_reason VARCHAR(64) NULL,
@@ -178,6 +190,13 @@ const ensureTable = async (): Promise<void> => {
         { type: QueryTypes.RAW }
       );
       await sequelize.query(
+        `
+          ALTER TABLE ${TABLE_NAME}
+          ADD COLUMN IF NOT EXISTS token_kind VARCHAR(16) NULL;
+        `,
+        { type: QueryTypes.RAW }
+      );
+      await sequelize.query(
         `CREATE INDEX IF NOT EXISTS idx_user_auth_sessions_user_active ON ${TABLE_NAME}(user_id, revoked_at, expires_at);`,
         { type: QueryTypes.RAW }
       );
@@ -187,6 +206,10 @@ const ensureTable = async (): Promise<void> => {
       );
       await sequelize.query(
         `CREATE INDEX IF NOT EXISTS idx_user_auth_sessions_revoked_reason ON ${TABLE_NAME}(revoked_reason, revoked_at);`,
+        { type: QueryTypes.RAW }
+      );
+      await sequelize.query(
+        `CREATE INDEX IF NOT EXISTS idx_user_auth_sessions_token_kind ON ${TABLE_NAME}(token_kind, revoked_at, expires_at);`,
         { type: QueryTypes.RAW }
       );
       return;
@@ -199,6 +222,7 @@ const ensureTable = async (): Promise<void> => {
           \`user_id\` BIGINT UNSIGNED NOT NULL,
           \`device_uuid\` VARCHAR(255) NULL,
           \`token_hash\` VARCHAR(64) NOT NULL,
+          \`token_kind\` VARCHAR(16) NULL,
           \`expires_at\` DATETIME NULL,
           \`revoked_at\` DATETIME NULL,
           \`revoked_reason\` VARCHAR(64) NULL,
@@ -207,27 +231,31 @@ const ensureTable = async (): Promise<void> => {
           PRIMARY KEY (\`id\`),
           UNIQUE KEY \`uq_user_auth_sessions_token_hash\` (\`token_hash\`),
           KEY \`idx_user_auth_sessions_user_active\` (\`user_id\`, \`revoked_at\`, \`expires_at\`),
-          KEY \`idx_user_auth_sessions_device_uuid\` (\`device_uuid\`)
+          KEY \`idx_user_auth_sessions_device_uuid\` (\`device_uuid\`),
+          KEY \`idx_user_auth_sessions_token_kind\` (\`token_kind\`, \`revoked_at\`, \`expires_at\`)
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
       `,
       { type: QueryTypes.RAW }
     );
 
-    const columnRows = (await sequelize.query(
-      `
-        SELECT COUNT(*) AS column_exists
-        FROM information_schema.columns
-        WHERE table_schema = DATABASE()
-          AND table_name = :tableName
-          AND column_name = 'revoked_reason'
-      `,
-      {
-        replacements: { tableName: TABLE_NAME },
-        type: QueryTypes.SELECT,
-      }
-    )) as Array<{ column_exists?: number | string }>;
-    const hasRevokedReasonColumn =
-      Number(columnRows?.[0]?.column_exists ?? 0) > 0;
+    const hasColumn = async (columnName: string): Promise<boolean> => {
+      const rows = (await sequelize.query(
+        `
+          SELECT COUNT(*) AS column_exists
+          FROM information_schema.columns
+          WHERE table_schema = DATABASE()
+            AND table_name = :tableName
+            AND column_name = :columnName
+        `,
+        {
+          replacements: { tableName: TABLE_NAME, columnName },
+          type: QueryTypes.SELECT,
+        }
+      )) as Array<{ column_exists?: number | string }>;
+      return Number(rows?.[0]?.column_exists ?? 0) > 0;
+    };
+
+    const hasRevokedReasonColumn = await hasColumn("revoked_reason");
     if (!hasRevokedReasonColumn) {
       await sequelize.query(
         `
@@ -238,11 +266,35 @@ const ensureTable = async (): Promise<void> => {
       );
     }
 
+    const hasTokenKindColumn = await hasColumn("token_kind");
+    if (!hasTokenKindColumn) {
+      await sequelize.query(
+        `
+          ALTER TABLE \`${TABLE_NAME}\`
+          ADD COLUMN \`token_kind\` VARCHAR(16) NULL AFTER \`token_hash\`;
+        `,
+        { type: QueryTypes.RAW }
+      );
+    }
+
     try {
       await sequelize.query(
         `
           ALTER TABLE \`${TABLE_NAME}\`
           ADD KEY \`idx_user_auth_sessions_revoked_reason\` (\`revoked_reason\`, \`revoked_at\`);
+        `,
+        { type: QueryTypes.RAW }
+      );
+    } catch (error: any) {
+      const msg = String(error?.message || error).toLowerCase();
+      if (!msg.includes("duplicate key name")) throw error;
+    }
+
+    try {
+      await sequelize.query(
+        `
+          ALTER TABLE \`${TABLE_NAME}\`
+          ADD KEY \`idx_user_auth_sessions_token_kind\` (\`token_kind\`, \`revoked_at\`, \`expires_at\`);
         `,
         { type: QueryTypes.RAW }
       );
@@ -270,10 +322,7 @@ const pruneUserSessions = async (userId: number): Promise<void> => {
       FROM ${TABLE_NAME}
       WHERE user_id = :userId
         AND revoked_at IS NULL
-        AND (
-          expires_at IS NULL
-          OR expires_at > ${persistentSessionCutoffSql}
-        )
+        AND ${refreshSessionKindFilterSql}
       ORDER BY COALESCE(last_seen_at, created_at) DESC, id DESC
     `,
     {
@@ -323,20 +372,21 @@ export const registerUserAuthSession = async (
   const tokenHash = hashToken(token);
   const deviceUuid = normalizeDeviceUuid(options?.deviceUuid);
   const expiresAt = resolveExpiresAtFromToken(token);
-  const tokenKind = resolveSessionTokenKind(token, expiresAt);
+  const tokenKind = normalizeTokenKind(resolveSessionTokenKind(token, expiresAt));
   const dialect = sequelize.getDialect();
 
   if (dialect === "postgres") {
       await sequelize.query(
         `
         INSERT INTO ${TABLE_NAME}
-          (user_id, device_uuid, token_hash, expires_at, revoked_at, revoked_reason, last_seen_at, created_at)
+          (user_id, device_uuid, token_hash, token_kind, expires_at, revoked_at, revoked_reason, last_seen_at, created_at)
         VALUES
-          (:userId, :deviceUuid, :tokenHash, :expiresAt, NULL, NULL, ${nowSql}, ${nowSql})
+          (:userId, :deviceUuid, :tokenHash, :tokenKind, :expiresAt, NULL, NULL, ${nowSql}, ${nowSql})
         ON CONFLICT (token_hash)
         DO UPDATE SET
           user_id = EXCLUDED.user_id,
           device_uuid = EXCLUDED.device_uuid,
+          token_kind = EXCLUDED.token_kind,
           expires_at = EXCLUDED.expires_at,
           revoked_at = NULL,
           revoked_reason = NULL,
@@ -347,6 +397,7 @@ export const registerUserAuthSession = async (
           userId,
           deviceUuid,
           tokenHash,
+          tokenKind,
           expiresAt,
         },
         type: QueryTypes.INSERT,
@@ -356,12 +407,13 @@ export const registerUserAuthSession = async (
     await sequelize.query(
       `
         INSERT INTO ${TABLE_NAME}
-          (user_id, device_uuid, token_hash, expires_at, revoked_at, revoked_reason, last_seen_at, created_at)
+          (user_id, device_uuid, token_hash, token_kind, expires_at, revoked_at, revoked_reason, last_seen_at, created_at)
         VALUES
-          (:userId, :deviceUuid, :tokenHash, :expiresAt, NULL, NULL, ${nowSql}, ${nowSql})
+          (:userId, :deviceUuid, :tokenHash, :tokenKind, :expiresAt, NULL, NULL, ${nowSql}, ${nowSql})
         ON DUPLICATE KEY UPDATE
           user_id = VALUES(user_id),
           device_uuid = VALUES(device_uuid),
+          token_kind = VALUES(token_kind),
           expires_at = VALUES(expires_at),
           revoked_at = NULL,
           revoked_reason = NULL,
@@ -372,6 +424,7 @@ export const registerUserAuthSession = async (
           userId,
           deviceUuid,
           tokenHash,
+          tokenKind,
           expiresAt,
         },
         type: QueryTypes.INSERT,
@@ -384,8 +437,10 @@ export const registerUserAuthSession = async (
     // Critical: do not revoke refresh when persisting access (e.g. /auth/device-token).
     const sameKindFilterSql =
       tokenKind === "refresh"
-        ? `AND (expires_at IS NULL OR expires_at > ${persistentSessionCutoffSql})`
-        : `AND (expires_at IS NOT NULL AND expires_at <= ${persistentSessionCutoffSql})`;
+        ? `AND ${refreshSessionKindFilterSql}`
+        : tokenKind === "access"
+          ? `AND ${accessSessionKindFilterSql}`
+          : "";
     const recentProtectionSql =
       AUTH_DEVICE_ROTATION_PROTECT_SECONDS > 0
         ? `AND created_at < ${rotationProtectCutoffSql}`
@@ -455,14 +510,14 @@ export const isUserAuthSessionActive = async (
             :allowRefreshGrace = 1
             AND s.revoked_at IS NOT NULL
             AND s.revoked_at >= ${refreshGraceCutoffSql}
-            AND (s.expires_at IS NULL OR s.expires_at > ${persistentSessionCutoffSql})
+            AND ${refreshSessionKindFilterSql}
             AND EXISTS (
               SELECT 1
               FROM ${TABLE_NAME} n
               WHERE n.user_id = s.user_id
                 AND n.id <> s.id
                 AND n.revoked_at IS NULL
-                AND (n.expires_at IS NULL OR n.expires_at > ${persistentSessionCutoffSql})
+                AND ${refreshSessionKindFilterSql}
                 AND (
                   s.device_uuid IS NULL
                   OR n.device_uuid = s.device_uuid
@@ -526,10 +581,7 @@ export const hasUserActivePersistentAuthSession = async (
       FROM ${TABLE_NAME}
       WHERE user_id = :userId
         AND revoked_at IS NULL
-        AND (
-          expires_at IS NULL
-          OR expires_at > ${persistentSessionCutoffSql}
-        )
+        AND ${refreshSessionKindFilterSql}
         ${whereDeviceSql}
       LIMIT 1
     `,

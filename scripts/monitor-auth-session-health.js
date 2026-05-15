@@ -49,6 +49,19 @@ const pct = (part, total) => {
 
 const round2 = (value) => Math.round(Number(value || 0) * 100) / 100;
 
+const parseLowerSet = (raw, fallback = []) => {
+  const value = String(raw ?? "")
+    .split(",")
+    .map((item) => item.trim().toLowerCase())
+    .filter(Boolean);
+  if (value.length) return new Set(value);
+  return new Set(
+    (Array.isArray(fallback) ? fallback : [])
+      .map((item) => String(item || "").trim().toLowerCase())
+      .filter(Boolean)
+  );
+};
+
 const loadEnv = () => {
   dotenv.config();
   const envFile = String(process.env.ENV_FILE || "").trim();
@@ -207,7 +220,12 @@ const checkRevokedReasonColumnExists = async (connection) => {
   return Number(rows?.[0]?.column_exists || 0) > 0;
 };
 
-const getSessionStats = async (connection, windowHours, hasRevokedReasonColumn) => {
+const getSessionStats = async (
+  connection,
+  windowHours,
+  hasRevokedReasonColumn,
+  ignoredRevokedReasons
+) => {
   const [rows] = await connection.query(
     `
       SELECT
@@ -241,14 +259,34 @@ const getSessionStats = async (connection, windowHours, hasRevokedReasonColumn) 
     reasonRows = [{ reason: "unknown", count: revokedWindow }];
   }
 
+  const normalizedReasonRows = (Array.isArray(reasonRows) ? reasonRows : []).map((row) => ({
+    reason: String(row?.reason || "unknown").trim().toLowerCase() || "unknown",
+    count: Number(row?.count || 0),
+  }));
+  const ignoredReasons = ignoredRevokedReasons instanceof Set ? ignoredRevokedReasons : new Set();
+  let revokedExpectedWindow = 0;
+  let revokedUnexpectedWindow = 0;
+  for (const row of normalizedReasonRows) {
+    if (ignoredReasons.has(row.reason)) revokedExpectedWindow += Number(row.count || 0);
+    else revokedUnexpectedWindow += Number(row.count || 0);
+  }
+  // Fallback when reasons are missing or partial.
+  if (hasRevokedReasonColumn && normalizedReasonRows.length > 0) {
+    const covered = revokedExpectedWindow + revokedUnexpectedWindow;
+    if (covered < revokedWindow) revokedUnexpectedWindow += revokedWindow - covered;
+  }
+  if (!hasRevokedReasonColumn) {
+    revokedExpectedWindow = 0;
+    revokedUnexpectedWindow = revokedWindow;
+  }
+
   return {
     createdWindow: Number(rows?.[0]?.created_window || 0),
     revokedWindow,
     activeNow: Number(rows?.[0]?.active_now || 0),
-    revokedReasons: (Array.isArray(reasonRows) ? reasonRows : []).map((row) => ({
-      reason: String(row?.reason || "unknown").trim().toLowerCase() || "unknown",
-      count: Number(row?.count || 0),
-    })),
+    revokedExpectedWindow,
+    revokedUnexpectedWindow,
+    revokedReasons: normalizedReasonRows,
   };
 };
 
@@ -283,6 +321,15 @@ const runAuthSessionMonitor = async (options = {}) => {
   const maxRevokedSessionRatePct = toNonNegativeNumber(
     process.env.AUTH_MONITOR_MAX_REVOKED_SESSION_RATE_PCT,
     35
+  );
+  const ignoredRevokedReasons = parseLowerSet(
+    process.env.AUTH_MONITOR_REVOKED_IGNORE_REASONS,
+    [
+      "session_cap_prune",
+      "device_rotation_access",
+      "device_rotation_refresh",
+      "refresh_rotation",
+    ]
   );
   const maxQuickReloginUserRatePct = toNonNegativeNumber(
     process.env.AUTH_MONITOR_MAX_QUICK_RELOGIN_USER_RATE_PCT,
@@ -470,10 +517,14 @@ const runAuthSessionMonitor = async (options = {}) => {
     tableExists: false,
     createdWindow: 0,
     revokedWindow: 0,
+    revokedExpectedWindow: 0,
+    revokedUnexpectedWindow: 0,
     activeNow: 0,
     revokedSessionRatePct: 0,
+    revokedUnexpectedSessionRatePct: 0,
     revokedReasonColumn: false,
     revokedReasonCounts: [],
+    revokedIgnoredReasons: Array.from(ignoredRevokedReasons),
     error: "",
   };
 
@@ -489,10 +540,13 @@ const runAuthSessionMonitor = async (options = {}) => {
       const stats = await getSessionStats(
         connection,
         windowHours,
-        dbSummary.revokedReasonColumn
+        dbSummary.revokedReasonColumn,
+        ignoredRevokedReasons
       );
       dbSummary.createdWindow = stats.createdWindow;
       dbSummary.revokedWindow = stats.revokedWindow;
+      dbSummary.revokedExpectedWindow = stats.revokedExpectedWindow;
+      dbSummary.revokedUnexpectedWindow = stats.revokedUnexpectedWindow;
       dbSummary.activeNow = stats.activeNow;
       dbSummary.revokedReasonCounts = Array.isArray(stats.revokedReasons)
         ? stats.revokedReasons
@@ -503,22 +557,34 @@ const runAuthSessionMonitor = async (options = {}) => {
       dbSummary.revokedSessionRatePct = round2(
         pct(stats.revokedWindow, Math.max(1, stats.createdWindow))
       );
+      dbSummary.revokedUnexpectedSessionRatePct = round2(
+        pct(stats.revokedUnexpectedWindow, Math.max(1, stats.createdWindow))
+      );
 
       if (
         stats.createdWindow >= minDbSamples &&
-        dbSummary.revokedSessionRatePct > maxRevokedSessionRatePct
+        dbSummary.revokedUnexpectedSessionRatePct > maxRevokedSessionRatePct
       ) {
-        const reason = `revoked sessions ${dbSummary.revokedSessionRatePct}% > ${maxRevokedSessionRatePct}%`;
+        const reason = `unexpected revoked sessions ${dbSummary.revokedUnexpectedSessionRatePct}% > ${maxRevokedSessionRatePct}%`;
         checks.push({ status: "fail", label: "revoked_session_rate", reason });
         failures.push(reason);
       } else {
         checks.push({
           status: stats.createdWindow >= minDbSamples ? "ok" : "warn",
           label: "revoked_session_rate",
-          reason: `revoked=${stats.revokedWindow}/${stats.createdWindow} (${dbSummary.revokedSessionRatePct}%)`,
+          reason: `unexpected_revoked=${stats.revokedUnexpectedWindow}/${stats.createdWindow} (${dbSummary.revokedUnexpectedSessionRatePct}%) total_revoked=${stats.revokedWindow}/${stats.createdWindow} (${dbSummary.revokedSessionRatePct}%)`,
         });
         if (stats.createdWindow < minDbSamples) {
           warnings.push(`session samples below threshold (${stats.createdWindow}/${minDbSamples})`);
+        }
+        if (
+          stats.createdWindow >= minDbSamples &&
+          dbSummary.revokedSessionRatePct > maxRevokedSessionRatePct &&
+          dbSummary.revokedUnexpectedSessionRatePct <= maxRevokedSessionRatePct
+        ) {
+          warnings.push(
+            `total revoked sessions high (${dbSummary.revokedSessionRatePct}%) but dominated by expected reasons`
+          );
         }
       }
     }
@@ -621,7 +687,7 @@ const main = async () => {
     console.log(JSON.stringify(payload, null, 2));
   } else {
     console.log(
-      `[auth-monitor] ok=${payload.ok} window=${payload.window_hours}h authErrors=${payload.logs.auth_errors} hardLogoutPct=${payload.logs.hard_logout_error_pct}% quickReloginPct=${payload.logs.quick_relogin_user_rate_pct}% revokedSessionPct=${payload.db.revokedSessionRatePct}%`
+      `[auth-monitor] ok=${payload.ok} window=${payload.window_hours}h authErrors=${payload.logs.auth_errors} hardLogoutPct=${payload.logs.hard_logout_error_pct}% quickReloginPct=${payload.logs.quick_relogin_user_rate_pct}% revokedUnexpectedPct=${payload.db.revokedUnexpectedSessionRatePct}% revokedTotalPct=${payload.db.revokedSessionRatePct}%`
     );
     console.log(
       `[auth-monitor] startup401 total=${payload.logs.startup_polling_401_total} hardLogout=${payload.logs.startup_polling_401_hard_logout} retryable=${payload.logs.startup_polling_401_retryable} hardLogoutPct=${payload.logs.startup_polling_401_hard_logout_pct}%`

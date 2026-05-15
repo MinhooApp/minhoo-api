@@ -9,7 +9,7 @@ import {
 import Category from "../../../_models/category/category";
 import multer from "multer";
 import {
-  normalizeRemoteHttpUrl,
+  resolveCloudflareDirectAvatarUrl,
   uploadImageBufferToCloudflare,
 } from "../../_utils/cloudflare_images";
 import * as chatRepository from "../../../repository/chat/chat_repository";
@@ -21,6 +21,11 @@ import {
 const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
 const PROFILE_DEFAULT =
   "https://imagedelivery.net/byMb3jxLYxr0Esz1Tf7NcQ/ff67a5c9-2984-45be-9502-925d46939100/public";
+const R2_IMAGE_ID_PREFIX = String(
+  process.env.CLOUDFLARE_R2_IMAGE_PREFIX ?? "r2img"
+)
+  .trim()
+  .toLowerCase();
 
 const uploadEither = multer({
   storage: multer.memoryStorage(),
@@ -324,6 +329,117 @@ const toText = (value: any): string | null => {
   return normalized.length ? normalized : null;
 };
 
+const isLegacyR2AvatarReference = (value: any): boolean => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return false;
+  const lower = raw.toLowerCase();
+  if (R2_IMAGE_ID_PREFIX && lower.startsWith(`${R2_IMAGE_ID_PREFIX}-`)) return true;
+
+  try {
+    const parsed = new URL(raw, "http://local");
+    if (String(parsed.pathname ?? "").trim().toLowerCase() !== "/api/v1/media/image/play") {
+      return false;
+    }
+    const imageId = String(parsed.searchParams.get("id") ?? "").trim().toLowerCase();
+    if (!imageId) return false;
+    return R2_IMAGE_ID_PREFIX
+      ? imageId.startsWith(`${R2_IMAGE_ID_PREFIX}-`)
+      : imageId.startsWith("r2img-");
+  } catch {
+    return false;
+  }
+};
+
+const buildImagePlaybackPath = (
+  imageId: string,
+  options?: { absoluteOrigin?: string | null }
+) => {
+  const playbackPath = `/api/v1/media/image/play?id=${encodeURIComponent(imageId)}`;
+  const origin = String(options?.absoluteOrigin ?? "").trim();
+  if (!origin) return playbackPath;
+  const normalizedOrigin = origin.replace(/\/+$/, "");
+  return `${normalizedOrigin}${playbackPath}`;
+};
+
+const extractLegacyR2ImageIdFromAvatarReference = (value: any): string | null => {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const lower = raw.toLowerCase();
+  if (R2_IMAGE_ID_PREFIX && lower.startsWith(`${R2_IMAGE_ID_PREFIX}-`)) return raw;
+
+  try {
+    const parsed = new URL(raw, "http://local");
+    if (String(parsed.pathname ?? "").trim().toLowerCase() !== "/api/v1/media/image/play") {
+      return null;
+    }
+    const imageId = String(parsed.searchParams.get("id") ?? "").trim();
+    if (!imageId) return null;
+    const imageIdLower = imageId.toLowerCase();
+    if (R2_IMAGE_ID_PREFIX && !imageIdLower.startsWith(`${R2_IMAGE_ID_PREFIX}-`)) {
+      return null;
+    }
+    return imageId;
+  } catch {
+    return null;
+  }
+};
+
+const resolvePlaybackRequestOrigin = (req: Request): string => {
+  const forwardedProto = String(req.header("x-forwarded-proto") ?? "")
+    .split(",")[0]
+    .trim()
+    .toLowerCase();
+  const proto = forwardedProto || req.protocol || "https";
+  const forwardedHost = String(req.header("x-forwarded-host") ?? "")
+    .split(",")[0]
+    .trim();
+  const host = forwardedHost || String(req.get("host") ?? "").trim();
+  if (host) return `${proto}://${host}`;
+  return String(process.env.PUBLIC_API_BASE_URL ?? "https://api.minhoo.xyz").trim();
+};
+
+const migrateLegacyR2AvatarToCloudflare = async (params: {
+  req: Request;
+  imageId: string;
+  userId: any;
+}): Promise<string | null> => {
+  const origin = resolvePlaybackRequestOrigin(params.req);
+  if (!origin) return null;
+  const playbackUrl = `${origin}/api/v1/media/image/play?id=${encodeURIComponent(
+    params.imageId
+  )}`;
+  const authHeader = String(params.req.header("authorization") ?? "").trim();
+
+  const response = await fetch(playbackUrl, {
+    method: "GET",
+    headers: authHeader ? { Authorization: authHeader } : undefined,
+    redirect: "follow",
+  });
+  if (!response.ok) return null;
+
+  const contentType = String(response.headers.get("content-type") ?? "")
+    .trim()
+    .toLowerCase();
+  if (!contentType.startsWith("image/")) return null;
+
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (!buffer.length || buffer.length > AVATAR_MAX_BYTES) return null;
+
+  const uploaded = await uploadImageBufferToCloudflare({
+    buffer,
+    filename: `${params.imageId}.jpg`,
+    mimeType: contentType,
+    metadata: {
+      app: "minhoo",
+      context: "avatar-r2-migration",
+      userId: String(params.userId ?? ""),
+      source_image_id: params.imageId,
+    },
+  });
+
+  return uploaded.url ?? null;
+};
+
 const shouldRotateAuthOnWorkerCreate = () =>
   String(process.env.AUTH_ROTATE_ON_WORKER_CREATE ?? "0")
     .trim()
@@ -411,23 +527,54 @@ export const update = async (req: Request, res: Response) => {
     const rawAvatarUrl =
       (req.body as any)?.avatar_url ??
       (req.body as any)?.image_profil ??
-      (req.body as any)?.image_profile;
-    const normalizedAvatarUrl = normalizeRemoteHttpUrl(rawAvatarUrl);
+      (req.body as any)?.image_profile ??
+      (req.body as any)?.image_id ??
+      (req.body as any)?.imageId;
+    const normalizedAvatarUrl = await resolveCloudflareDirectAvatarUrl(
+      rawAvatarUrl
+    );
     const hasAvatarUrlField =
       rawAvatarUrl !== undefined && String(rawAvatarUrl ?? "").trim() !== "";
+    const isLegacyR2Avatar = isLegacyR2AvatarReference(rawAvatarUrl);
 
-    if (hasAvatarUrlField && !normalizedAvatarUrl) {
+    if (hasAvatarUrlField && !normalizedAvatarUrl && !isLegacyR2Avatar) {
       return formatResponse({
         res,
         success: false,
         code: 400,
-        message: "avatar_url must be a valid http(s) URL",
+        message:
+          "avatar_url must be a Cloudflare Images direct URL (imagedelivery.net), Cloudflare image_id, or /api/v1/media/image/play?id=<cloudflare_image_id>",
       });
     }
 
     try {
       const worker = await repository.worker((req as any).userId);
       let avatarUrl = normalizedAvatarUrl || undefined;
+      if (isLegacyR2Avatar && !avatarUrl) {
+        // Backward compatibility: migrate legacy r2img avatar references to
+        // Cloudflare Images direct URL before persisting profile data.
+        const legacyImageId = extractLegacyR2ImageIdFromAvatarReference(rawAvatarUrl);
+        if (legacyImageId) {
+          try {
+            avatarUrl =
+              (await migrateLegacyR2AvatarToCloudflare({
+                req,
+                imageId: legacyImageId,
+                userId: (req as any).userId,
+              })) ?? undefined;
+          } catch (migrationError) {
+            console.warn("[worker/update] legacy r2 avatar migration failed", migrationError);
+            avatarUrl = undefined;
+          }
+          if (!avatarUrl) {
+            // Fallback safety: keep profile update successful even when
+            // Cloudflare server-to-server migration is unavailable.
+            avatarUrl = buildImagePlaybackPath(legacyImageId, {
+              absoluteOrigin: resolvePlaybackRequestOrigin(req),
+            });
+          }
+        }
+      }
 
       if (fileObj?.buffer) {
         const uploadedAvatar = await uploadImageBufferToCloudflare({
@@ -466,12 +613,12 @@ export const update = async (req: Request, res: Response) => {
         dialing_code: "+" + (req.body.dialing_code || "").replace("+", ""),
         iso_code: req.body.iso_code,
         phone: req.body.phone,
-        // Mantén image_profil como en tu BD
-        image_profil:
-          req.body.delete_image === true || req.body.delete_image === "true"
-            ? PROFILE_DEFAULT
-            : avatarUrl,
       };
+      if (req.body.delete_image === true || req.body.delete_image === "true") {
+        bodyUser.image_profil = PROFILE_DEFAULT;
+      } else if (avatarUrl !== undefined) {
+        bodyUser.image_profil = avatarUrl;
+      }
       if (Object.prototype.hasOwnProperty.call(req.body, "about")) {
         bodyUser.about = toText((req.body as any)?.about);
       }
@@ -824,17 +971,23 @@ export const updateProfile = async (req: Request, res: Response) => {
     const rawAvatarUrl =
       (req.body as any)?.avatar_url ??
       (req.body as any)?.image_profil ??
-      (req.body as any)?.image_profile;
-    const normalizedAvatarUrl = normalizeRemoteHttpUrl(rawAvatarUrl);
+      (req.body as any)?.image_profile ??
+      (req.body as any)?.image_id ??
+      (req.body as any)?.imageId;
+    const normalizedAvatarUrl = await resolveCloudflareDirectAvatarUrl(
+      rawAvatarUrl
+    );
     const hasAvatarUrlField =
       rawAvatarUrl !== undefined && String(rawAvatarUrl ?? "").trim() !== "";
+    const isLegacyR2Avatar = isLegacyR2AvatarReference(rawAvatarUrl);
 
-    if (hasAvatarUrlField && !normalizedAvatarUrl) {
+    if (hasAvatarUrlField && !normalizedAvatarUrl && !isLegacyR2Avatar) {
       return formatResponse({
         res,
         success: false,
         code: 400,
-        message: "avatar_url must be a valid http(s) URL",
+        message:
+          "avatar_url must be a Cloudflare Images direct URL (imagedelivery.net), Cloudflare image_id, or /api/v1/media/image/play?id=<cloudflare_image_id>",
       });
     }
 
@@ -886,6 +1039,34 @@ export const updateProfile = async (req: Request, res: Response) => {
       }
 
       let avatarBody = normalizedAvatarUrl || undefined;
+      if (isLegacyR2Avatar && !avatarBody) {
+        // Backward compatibility: migrate legacy r2img avatar references to
+        // Cloudflare Images direct URL before persisting profile data.
+        const legacyImageId = extractLegacyR2ImageIdFromAvatarReference(rawAvatarUrl);
+        if (legacyImageId) {
+          try {
+            avatarBody =
+              (await migrateLegacyR2AvatarToCloudflare({
+                req,
+                imageId: legacyImageId,
+                userId: (req as any).userId,
+              })) ?? undefined;
+          } catch (migrationError) {
+            console.warn(
+              "[worker/updateProfile] legacy r2 avatar migration failed",
+              migrationError
+            );
+            avatarBody = undefined;
+          }
+          if (!avatarBody) {
+            // Fallback safety: keep profile update successful even when
+            // Cloudflare server-to-server migration is unavailable.
+            avatarBody = buildImagePlaybackPath(legacyImageId, {
+              absoluteOrigin: resolvePlaybackRequestOrigin(req),
+            });
+          }
+        }
+      }
 
       if (fileObj?.buffer) {
         const uploadedAvatar = await uploadImageBufferToCloudflare({
@@ -911,8 +1092,10 @@ export const updateProfile = async (req: Request, res: Response) => {
         iso_code:
           (req.body as any)?.iso_code ?? (req.body as any)?.country_code,
         phone: (req.body as any)?.phone,
-        image_profil: avatarBody,
       };
+      if (avatarBody !== undefined) {
+        bodyUser.image_profil = avatarBody;
+      }
       if (Object.prototype.hasOwnProperty.call(req.body, "about")) {
         bodyUser.about = toText((req.body as any)?.about);
       }

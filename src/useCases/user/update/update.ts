@@ -10,7 +10,7 @@ import { emitProfileUpdatedRealtime } from "../_shared/profile_realtime";
 import multer from "multer";
 import Worker from "../../../_models/worker/worker";
 import {
-  normalizeRemoteHttpUrl,
+  resolveCloudflareDirectAvatarUrl,
   uploadImageBufferToCloudflare,
 } from "../../_utils/cloudflare_images";
 
@@ -512,7 +512,9 @@ export const update_profile = async (req: Request, res: Response) => {
         (req.body as any)?.avatar_url ??
         (req.body as any)?.image_profil ??
         (req.body as any)?.image_profile;
-      const normalizedAvatarUrl = normalizeRemoteHttpUrl(rawAvatarUrl);
+      const normalizedAvatarUrl = await resolveCloudflareDirectAvatarUrl(
+        rawAvatarUrl
+      );
       const hasAvatarUrlField =
         rawAvatarUrl !== undefined && String(rawAvatarUrl ?? "").trim() !== "";
       if (hasAvatarUrlField && !normalizedAvatarUrl) {
@@ -520,7 +522,8 @@ export const update_profile = async (req: Request, res: Response) => {
           res,
           success: false,
           code: 400,
-          message: "avatar_url must be a valid http(s) URL",
+          message:
+            "avatar_url must be a Cloudflare Images direct URL (imagedelivery.net), Cloudflare image_id, or /api/v1/media/image/play?id=<cloudflare_image_id>",
         });
       }
 

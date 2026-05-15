@@ -19,6 +19,40 @@ const setPrivateNoStore = (res: Response) => {
   res.set("Vary", "Accept-Encoding, Authorization");
 };
 
+const toTextOrNull = (value: any): string | null => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim();
+  return normalized.length ? normalized : null;
+};
+
+const resolveAvatarValue = (entity: any): string | null =>
+  toTextOrNull(entity?.image_profil) ??
+  toTextOrNull(entity?.image_profile) ??
+  toTextOrNull(entity?.avatar_url) ??
+  toTextOrNull(entity?.avatarUrl);
+
+const attachAvatarAliases = (entity: any) => {
+  if (!entity) return;
+  const avatar = resolveAvatarValue(entity);
+  if (!avatar) return;
+
+  const fields: Record<string, string> = {
+    image_profil: avatar,
+    image_profile: avatar,
+    avatar_url: avatar,
+    avatarUrl: avatar,
+  };
+
+  if (typeof entity?.setDataValue === "function") {
+    Object.entries(fields).forEach(([key, value]) => {
+      entity.setDataValue(key, value);
+    });
+    return;
+  }
+
+  Object.assign(entity, fields);
+};
+
 const attachFollowCountAliases = (entity: any, followersCount: number, followingCount: number) => {
   if (!entity) return;
 
@@ -92,6 +126,8 @@ const attachRelationshipsToWorkers = async (viewerIdRaw: any, workersRaw: any[])
   );
 
   (Array.isArray(workersRaw) ? workersRaw : []).forEach((worker: any) => {
+    attachAvatarAliases(worker);
+    attachAvatarAliases((worker as any)?.personal_data);
     const targetUserId = Number((worker as any)?.userId ?? (worker as any)?.personal_data?.id);
     const relationship =
       relationshipByUserId[targetUserId] ??
@@ -245,6 +281,8 @@ export const worker = async (req: Request, res: Response) => {
   try {
     setPrivateNoStore(res);
     const worker: any = await repository.worker(id ?? req.userId, req.userId);
+    attachAvatarAliases(worker);
+    attachAvatarAliases((worker as any)?.personal_data);
     let counts: { followersCount: number; followingCount: number } | null = null;
 
     const targetUserId = Number((worker as any)?.userId ?? (worker as any)?.personal_data?.id);

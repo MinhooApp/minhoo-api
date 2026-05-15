@@ -11,7 +11,7 @@ import {
 } from "../_module/module";
 import { buildAuthSessionResponseBody } from "../../../libs/auth/auth_response_contract";
 import {
-  normalizeRemoteHttpUrl,
+  resolveCloudflareDirectAvatarUrl,
   uploadImageBufferToCloudflare,
 } from "../../_utils/cloudflare_images";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
@@ -361,7 +361,7 @@ const processSignUp = async (req: Request, res: Response) => {
 
   const rawAvatarUrl =
     (req.body as any)?.image_profil ?? (req.body as any)?.image_profile;
-  const normalizedAvatarUrl = normalizeRemoteHttpUrl(rawAvatarUrl);
+  const normalizedAvatarUrl = await resolveCloudflareDirectAvatarUrl(rawAvatarUrl);
   const hasAvatarUrl =
     rawAvatarUrl !== undefined && String(rawAvatarUrl ?? "").trim() !== "";
   if (hasAvatarUrl && !normalizedAvatarUrl) {
@@ -369,7 +369,8 @@ const processSignUp = async (req: Request, res: Response) => {
       res,
       success: false,
       code: 400,
-      message: "image_profil must be a valid http(s) URL",
+      message:
+        "image_profil must be a Cloudflare Images direct URL (imagedelivery.net), Cloudflare image_id, or /api/v1/media/image/play?id=<cloudflare_image_id>",
     });
   }
   if (normalizedAvatarUrl) {
