@@ -28,6 +28,13 @@ const toUserIds = (values?: Array<number | string | null | undefined>) => {
   return [...new Set((values ?? []).map(toPositiveInt).filter(Boolean) as number[])];
 };
 
+const loadRealtimeUser = async (userId: number) => {
+  if (typeof (repository as any)?.getUserById === "function") {
+    return (repository as any).getUserById(userId);
+  }
+  return repository.get(userId);
+};
+
 const normalizeCounts = (counts: any) => {
   const followersCount =
     toNonNegativeInt(counts?.followersCount ?? counts?.followers_count) ?? 0;
@@ -129,7 +136,7 @@ export const emitProfileUpdatedRealtime = async ({
 
   try {
     const [resolvedUser, resolvedCounts] = await Promise.all([
-      user ?? repository.get(resolvedUserId),
+      user ?? loadRealtimeUser(resolvedUserId),
       counts ?? followerRepo.getCounts(resolvedUserId),
     ]);
     const basePayload = buildUserUpdatedRealtimePayload(

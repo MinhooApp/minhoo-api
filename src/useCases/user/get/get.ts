@@ -855,6 +855,7 @@ export const profile_completion = async (req: Request, res: Response) => {
 
 export const follows = async (req: Request, res: Response) => {
   try {
+    setPrivateNoStore(res);
     const { id } = req.params;
     const targetResolution = resolveTargetUserId(id, req.userId);
     if (!targetResolution.ok) {
@@ -883,9 +884,12 @@ export const follows = async (req: Request, res: Response) => {
         items.length >= limit
           ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
           : null;
+      const hasMore = nextCursor !== null;
+      const isLastPage = !hasMore;
       res.set("X-Paging-Limit", String(limit));
       res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
       res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
+      res.set("X-Paging-Has-More", hasMore ? "1" : "0");
       return formatResponse({
         res,
         success: true,
@@ -907,6 +911,10 @@ export const follows = async (req: Request, res: Response) => {
             followings_count: targetCounts.followingCount,
           },
           nextCursor,
+          hasMore,
+          has_more: hasMore,
+          isLastPage,
+          is_last_page: isLastPage,
           paging: { next_cursor: nextCursor, limit },
         },
       });
@@ -936,6 +944,10 @@ export const follows = async (req: Request, res: Response) => {
           followings_count: targetCounts.followingCount,
         },
         nextCursor: null,
+        hasMore: false,
+        has_more: false,
+        isLastPage: true,
+        is_last_page: true,
         paging: { next_cursor: null, limit: null },
       },
     });
@@ -952,6 +964,7 @@ export const follows = async (req: Request, res: Response) => {
 
 export const followers = async (req: Request, res: Response) => {
   try {
+    setPrivateNoStore(res);
     const { id } = req.params;
     const targetResolution = resolveTargetUserId(id, req.userId);
     if (!targetResolution.ok) {
@@ -980,9 +993,12 @@ export const followers = async (req: Request, res: Response) => {
         items.length >= limit
           ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
           : null;
+      const hasMore = nextCursor !== null;
+      const isLastPage = !hasMore;
       res.set("X-Paging-Limit", String(limit));
       res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
       res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
+      res.set("X-Paging-Has-More", hasMore ? "1" : "0");
       return formatResponse({
         res,
         success: true,
@@ -1003,6 +1019,10 @@ export const followers = async (req: Request, res: Response) => {
             followings_count: targetCounts.followingCount,
           },
           nextCursor,
+          hasMore,
+          has_more: hasMore,
+          isLastPage,
+          is_last_page: isLastPage,
           paging: { next_cursor: nextCursor, limit },
         },
       });
@@ -1030,6 +1050,10 @@ export const followers = async (req: Request, res: Response) => {
           followings_count: targetCounts.followingCount,
         },
         nextCursor: null,
+        hasMore: false,
+        has_more: false,
+        isLastPage: true,
+        is_last_page: true,
         paging: { next_cursor: null, limit: null },
       },
     });
@@ -1176,6 +1200,7 @@ export const get_username = async (req: Request, res: Response) => {
 
 export const followers_v2 = async (req: Request, res: Response) => {
   try {
+    setPrivateNoStore(res);
     const { id } = req.params;
     const cursorRaw = (req.query as any)?.cursor;
     const limitRaw = (req.query as any)?.limit;
@@ -1203,9 +1228,12 @@ export const followers_v2 = async (req: Request, res: Response) => {
       items.length >= limit
         ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
         : null;
+    const hasMore = nextCursor !== null;
+    const isLastPage = !hasMore;
     res.set("X-Paging-Limit", String(limit));
     res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
     res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
+    res.set("X-Paging-Has-More", hasMore ? "1" : "0");
 
     return formatResponse({
       res,
@@ -1227,6 +1255,10 @@ export const followers_v2 = async (req: Request, res: Response) => {
           followings_count: targetCounts.followingCount,
         },
         nextCursor,
+        hasMore,
+        has_more: hasMore,
+        isLastPage,
+        is_last_page: isLastPage,
         paging: { next_cursor: nextCursor, limit },
       },
     });
@@ -1243,6 +1275,7 @@ export const followers_v2 = async (req: Request, res: Response) => {
 
 export const following_v2 = async (req: Request, res: Response) => {
   try {
+    setPrivateNoStore(res);
     const { id } = req.params;
     const cursorRaw = (req.query as any)?.cursor;
     const limitRaw = (req.query as any)?.limit;
@@ -1270,9 +1303,12 @@ export const following_v2 = async (req: Request, res: Response) => {
       items.length >= limit
         ? Number((items[items.length - 1] as any)?.cursor_id ?? 0) || null
         : null;
+    const hasMore = nextCursor !== null;
+    const isLastPage = !hasMore;
     res.set("X-Paging-Limit", String(limit));
     res.set("X-Paging-Cursor", cursor == null ? "" : String(cursor));
     res.set("X-Paging-Next-Cursor", nextCursor == null ? "" : String(nextCursor));
+    res.set("X-Paging-Has-More", hasMore ? "1" : "0");
 
     return formatResponse({
       res: res,
@@ -1295,6 +1331,10 @@ export const following_v2 = async (req: Request, res: Response) => {
           followings_count: targetCounts.followingCount,
         },
         nextCursor,
+        hasMore,
+        has_more: hasMore,
+        isLastPage,
+        is_last_page: isLastPage,
         paging: { next_cursor: nextCursor, limit },
       },
     });
@@ -1311,6 +1351,7 @@ export const following_v2 = async (req: Request, res: Response) => {
 
 export const relationship = async (req: Request, res: Response) => {
   try {
+    setPrivateNoStore(res);
     const { id } = req.params;
     const targetId = Number(id);
 

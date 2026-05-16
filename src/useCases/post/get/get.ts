@@ -56,6 +56,9 @@ const postSummaryRelationshipCacheTtlMs = Math.max(
   0,
   Number(process.env.POST_SUMMARY_RELATIONSHIP_CACHE_TTL_MS ?? 10000) || 10000
 );
+const postSummaryRelationshipCacheAuthEnabled = isTruthy(
+  process.env.POST_SUMMARY_RELATIONSHIP_CACHE_AUTH_ENABLED ?? "0"
+);
 
 type PostSummaryCacheEntry = {
   cachedAtMs: number;
@@ -559,7 +562,11 @@ const attachRelationshipsToPostAuthors = async (
   options: { useCache?: boolean } = {}
 ) => {
   const authorIds = collectPostAuthorIds(postsRaw);
-  const useCache = Boolean(options.useCache);
+  const viewerId = normalizeUserId(viewerIdRaw);
+  const useCacheRequested = Boolean(options.useCache);
+  const canUseCacheForViewer =
+    !viewerId || postSummaryRelationshipCacheAuthEnabled;
+  const useCache = useCacheRequested && canUseCacheForViewer;
   const cacheKey = useCache ? buildPostRelationshipCacheKey(viewerIdRaw, authorIds) : "";
   const cachedMap = cacheKey ? readCachedPostRelationshipMap(cacheKey) : null;
   const relationshipByUserId =

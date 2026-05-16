@@ -67,6 +67,10 @@ const USER_GRAPH_RATE_MAX_AUTH = parsePositiveInt(
   process.env.USER_GRAPH_RATE_MAX_AUTH,
   120
 );
+const USER_GRAPH_RATE_MAX_AUTH_SELF = parsePositiveInt(
+  process.env.USER_GRAPH_RATE_MAX_AUTH_SELF,
+  300
+);
 const USER_GRAPH_RATE_BLOCK_MS = parsePositiveInt(
   process.env.USER_GRAPH_RATE_BLOCK_MS,
   15_000,
@@ -85,6 +89,23 @@ const normalizeIp = (rawIp: any) => {
   return ip;
 };
 
+const resolveGraphScope = (req: any) => {
+  const rawPath = String(req?.path ?? req?.route?.path ?? req?.originalUrl ?? "")
+    .trim()
+    .toLowerCase();
+  if (rawPath.includes("/followers")) return "followers";
+  if (rawPath.includes("/following")) return "following";
+  if (rawPath.includes("/follows")) return "follows";
+  return "graph";
+};
+
+const resolveGraphTargetUserId = (req: any, authUserId = 0) => {
+  const rawTarget = req?.params?.id ?? req?.query?.id;
+  const parsedTarget = Number(rawTarget);
+  if (Number.isFinite(parsedTarget) && parsedTarget > 0) return Math.trunc(parsedTarget);
+  return Number.isFinite(authUserId) && authUserId > 0 ? Math.trunc(authUserId) : 0;
+};
+
 const followGraphReadLimiter = createRequestRateLimiter({
   windowMs: USER_GRAPH_RATE_WINDOW_MS,
   max: USER_GRAPH_RATE_MAX_ANON,
@@ -95,18 +116,23 @@ const followGraphReadLimiter = createRequestRateLimiter({
   maxResolver: (req: any) => {
     const authUserId = Number(req?.userId ?? 0);
     const isAuthenticated = Boolean(req?.authenticated) && Number.isFinite(authUserId) && authUserId > 0;
-    return isAuthenticated ? USER_GRAPH_RATE_MAX_AUTH : USER_GRAPH_RATE_MAX_ANON;
+    if (!isAuthenticated) return USER_GRAPH_RATE_MAX_ANON;
+    const targetUserId = resolveGraphTargetUserId(req, authUserId);
+    const isSelfGraph = targetUserId > 0 && targetUserId === authUserId;
+    return isSelfGraph ? USER_GRAPH_RATE_MAX_AUTH_SELF : USER_GRAPH_RATE_MAX_AUTH;
   },
   keyGenerator: (req: any) => {
     const authUserId = Number(req?.userId ?? 0);
-    const targetId = String(req?.params?.id ?? req?.query?.id ?? "self")
+    const graphScope = resolveGraphScope(req);
+    const targetUserId = resolveGraphTargetUserId(req, authUserId);
+    const targetId = String(targetUserId > 0 ? targetUserId : "self")
       .trim()
       .slice(0, 64);
     if (Boolean(req?.authenticated) && Number.isFinite(authUserId) && authUserId > 0) {
-      return `u:${authUserId}:${targetId || "self"}`;
+      return `u:${authUserId}:${graphScope}:${targetId || "self"}`;
     }
     const ip = normalizeIp(req?.ip ?? req?.socket?.remoteAddress);
-    return `ip:${ip}:${targetId || "self"}`;
+    return `ip:${ip}:${graphScope}:${targetId || "self"}`;
   },
 });
 

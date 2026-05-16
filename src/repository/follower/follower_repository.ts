@@ -3,6 +3,15 @@ import Follower from "../../_models/follower/follower";
 import User from "../../_models/user/user";
 import { getCachedCounts, invalidateUserCounts } from "../../libs/cache/user_cache";
 const excludeKeys = ["createdAt", "updatedAt", "password"];
+const ADMIN_ROLE_IDS = new Set<number>([8088]);
+const ADMIN_USERNAME_FALLBACKS = Array.from(
+  new Set(
+    String(process.env.ADMIN_USERNAME_FALLBACKS ?? "admin_minhoo_app")
+      .split(",")
+      .map((item) => String(item ?? "").trim().toLowerCase())
+      .filter(Boolean)
+  )
+);
 
 const normalizeLimit = (value: any, fallback = 20, max = 50) => {
   const n = Number(value);
@@ -21,6 +30,45 @@ const buildBlockLiteral = (viewerId: number, columnSql: string) =>
         (ub.blocker_id = ${columnSql} AND ub.blocked_id = :viewerId)
     )
   `);
+
+const escapeSqlString = (value: string) => `'${String(value).replace(/'/g, "''")}'`;
+
+const buildAdminExclusionLiterals = (tableAlias: string) => {
+  const literals: any[] = [];
+
+  const roleIds = Array.from(ADMIN_ROLE_IDS)
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .map((value) => Math.trunc(value));
+  if (roleIds.length > 0) {
+    literals.push(
+      Sequelize.literal(`
+        NOT EXISTS (
+          SELECT 1
+          FROM \`user_role\` ur
+          WHERE ur.\`userId\` = \`${tableAlias}\`.\`id\`
+            AND ur.\`roleId\` IN (${roleIds.join(",")})
+        )
+      `)
+    );
+  }
+
+  const usernames = ADMIN_USERNAME_FALLBACKS.map((username) =>
+    escapeSqlString(String(username).trim().toLowerCase())
+  ).filter(Boolean);
+  if (usernames.length > 0) {
+    literals.push(
+      Sequelize.literal(`
+        (
+          \`${tableAlias}\`.\`username\` IS NULL
+          OR LOWER(\`${tableAlias}\`.\`username\`) NOT IN (${usernames.join(",")})
+        )
+      `)
+    );
+  }
+
+  return literals;
+};
 
 const toPositiveInt = (value: any): number | null => {
   const parsed = Number(value);
@@ -320,6 +368,57 @@ export const unfollowUser = async (targetId: number, viewerId: number) => {
   return { removed: deleted > 0 };
 };
 
+export const unfollowByRelationId = async (relationId: number, viewerId: number) => {
+  const relation = await Follower.findOne({
+    where: { id: relationId, followerId: viewerId },
+    attributes: ["id", "userId", "followerId"],
+  });
+
+  if (!relation) {
+    return { removed: false, targetId: null as number | null };
+  }
+
+  const targetId = Number((relation as any)?.userId);
+  await relation.destroy();
+
+  if (Number.isFinite(targetId) && targetId > 0) {
+    await Promise.all([
+      invalidateUserCounts(targetId),
+      invalidateUserCounts(Number(viewerId)),
+    ]);
+    return { removed: true, targetId };
+  }
+
+  await invalidateUserCounts(Number(viewerId));
+  return { removed: true, targetId: null as number | null };
+};
+
+export const resolveCounterpartUserIdByRelationId = async (
+  relationId: number,
+  viewerId: number
+): Promise<number | null> => {
+  const relation = await Follower.findOne({
+    where: {
+      id: relationId,
+      [Op.or]: [{ userId: viewerId }, { followerId: viewerId }],
+    },
+    attributes: ["id", "userId", "followerId"],
+  });
+
+  if (!relation) return null;
+
+  const ownerId = Number((relation as any)?.userId);
+  const followerId = Number((relation as any)?.followerId);
+  if (ownerId === viewerId && followerId > 0 && followerId !== viewerId) {
+    return followerId;
+  }
+  if (followerId === viewerId && ownerId > 0 && ownerId !== viewerId) {
+    return ownerId;
+  }
+
+  return null;
+};
+
 export const listFollowersWithFlags = async (
   userId: number,
   viewerId: number | null,
@@ -353,7 +452,11 @@ export const listFollowersWithFlags = async (
         model: User,
         as: "follower_data",
         attributes: ["id", "name", "last_name", "image_profil", "username"],
-        where: { disabled: false, is_deleted: false },
+        where: {
+          disabled: false,
+          is_deleted: false,
+          [Op.and]: buildAdminExclusionLiterals("follower_data"),
+        },
         required: true,
       },
     ],
@@ -399,7 +502,9 @@ export const listFollowersWithFlags = async (
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
     const isMutual = viewerFollowsUser && userFollowsViewer;
     return {
+      id: targetId || null,
       cursor_id: Number(row.id ?? 0) || null,
+      relationId: Number(row.id ?? 0) || null,
       user: row.follower_data,
       viewerFollowsUser,
       viewer_follows_user: viewerFollowsUser,
@@ -453,7 +558,11 @@ export const listFollowersSummary = async (
         model: User,
         as: "follower_data",
         attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
-        where: { disabled: false, is_deleted: false },
+        where: {
+          disabled: false,
+          is_deleted: false,
+          [Op.and]: buildAdminExclusionLiterals("follower_data"),
+        },
         required: true,
       },
     ],
@@ -495,7 +604,9 @@ export const listFollowersSummary = async (
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
     const isMutual = viewerFollowsUser && userFollowsViewer;
     return {
+      id: targetId || null,
       cursor_id: Number(row.id ?? 0) || null,
+      relationId: Number(row.id ?? 0) || null,
       user: row.follower_data,
       viewerFollowsUser,
       viewer_follows_user: viewerFollowsUser,
@@ -545,7 +656,11 @@ export const listFollowingWithFlags = async (
         model: User,
         as: "following_data",
         attributes: ["id", "name", "last_name", "image_profil", "username"],
-        where: { disabled: false, is_deleted: false },
+        where: {
+          disabled: false,
+          is_deleted: false,
+          [Op.and]: buildAdminExclusionLiterals("following_data"),
+        },
         required: true,
       },
     ],
@@ -591,7 +706,9 @@ export const listFollowingWithFlags = async (
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
     const isMutual = viewerFollowsUser && userFollowsViewer;
     return {
+      id: targetId || null,
       cursor_id: Number(row.id ?? 0) || null,
+      relationId: Number(row.id ?? 0) || null,
       user: row.following_data,
       viewerFollowsUser,
       viewer_follows_user: viewerFollowsUser,
@@ -644,7 +761,11 @@ export const listFollowingSummary = async (
         model: User,
         as: "following_data",
         attributes: ["id", "name", "last_name", "username", "image_profil", "verified"],
-        where: { disabled: false, is_deleted: false },
+        where: {
+          disabled: false,
+          is_deleted: false,
+          [Op.and]: buildAdminExclusionLiterals("following_data"),
+        },
         required: true,
       },
     ],
@@ -686,7 +807,9 @@ export const listFollowingSummary = async (
     const userFollowsViewer = userFollowsViewerSet.has(targetId);
     const isMutual = viewerFollowsUser && userFollowsViewer;
     return {
+      id: targetId || null,
       cursor_id: Number(row.id ?? 0) || null,
+      relationId: Number(row.id ?? 0) || null,
       user: row.following_data,
       viewerFollowsUser,
       viewer_follows_user: viewerFollowsUser,

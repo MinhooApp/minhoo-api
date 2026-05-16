@@ -47,6 +47,9 @@ const reelSummaryRelationshipCacheTtlMs = Math.max(
   0,
   Number(process.env.REEL_SUMMARY_RELATIONSHIP_CACHE_TTL_MS ?? 10000) || 10000
 );
+const reelSummaryRelationshipCacheAuthEnabled = isTruthy(
+  process.env.REEL_SUMMARY_RELATIONSHIP_CACHE_AUTH_ENABLED ?? "0"
+);
 
 type ReelSummaryCacheEntry = {
   cachedAtMs: number;
@@ -242,7 +245,11 @@ const attachRelationshipsToReels = async (
   options: { useCache?: boolean } = {}
 ) => {
   const creatorIds = collectReelCreatorIds(rowsRaw);
-  const useCache = Boolean(options.useCache);
+  const viewerId = normalizeUserId(viewerIdRaw);
+  const useCacheRequested = Boolean(options.useCache);
+  const canUseCacheForViewer =
+    !viewerId || reelSummaryRelationshipCacheAuthEnabled;
+  const useCache = useCacheRequested && canUseCacheForViewer;
   const cacheKey = useCache ? buildReelRelationshipCacheKey(viewerIdRaw, creatorIds) : "";
   const cachedMap = cacheKey ? readCachedReelRelationshipMap(cacheKey) : null;
   const relationshipByUserId =

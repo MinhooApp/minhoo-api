@@ -46,6 +46,13 @@ const parseFollowerId = (req: Request): number | null => {
   return Number.isFinite(followerId) ? followerId : null;
 };
 
+const parsePositiveId = (value: any): number | null => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return null;
+  const normalized = Math.trunc(parsed);
+  return normalized > 0 ? normalized : null;
+};
+
 export const block_user = async (req: Request, res: Response) => {
   try {
     const blockedId = parseBlockedId(req);
@@ -138,22 +145,22 @@ export const remove_follower = async (req: Request, res: Response) => {
     const ownerCounts = await followerRepo.getCounts(ownerId);
     const followerCounts = await followerRepo.getCounts(followerId);
     const relationship = await followerRepo.getRelationship(ownerId, followerId);
-    const recipientIds = [ownerId, Number(followerId)];
-
-    await Promise.all([
+    void Promise.all([
       emitProfileUpdatedRealtime({
         userId: ownerId,
         counts: ownerCounts,
-        targetUserIds: recipientIds,
+        targetUserIds: [ownerId],
         action: "follow_counts_updated",
       }),
       emitProfileUpdatedRealtime({
         userId: followerId,
         counts: followerCounts,
-        targetUserIds: recipientIds,
+        targetUserIds: [Number(followerId)],
         action: "follow_counts_updated",
       }),
-    ]);
+    ]).catch((error) => {
+      console.error("[user/remove_follower] realtime emit failed", error);
+    });
 
     return formatResponse({
       res,
@@ -188,26 +195,55 @@ export const remove_follower = async (req: Request, res: Response) => {
 
 
 export const unfollow_by_id = async (req: Request, res: Response) => {
-  const rawId =
+  const explicitTargetId =
     (req.params as any)?.id ??
     (req.body as any)?.userId ??
-    (req.body as any)?.id ??
     (req.body as any)?.targetId ??
+    (req.body as any)?.followedId ??
+    (req.body as any)?.followingUserId ??
     (req.query as any)?.userId ??
-    (req.query as any)?.id ??
-    (req.query as any)?.targetId;
-  const targetId = Number(rawId);
+    (req.query as any)?.targetId ??
+    (req.query as any)?.followedId ??
+    (req.query as any)?.followingUserId;
 
-  if (!Number.isFinite(targetId)) {
+  const legacyTargetId = (req.body as any)?.id ?? (req.query as any)?.id;
+
+  const rawTargetId =
+    explicitTargetId ??
+    legacyTargetId;
+
+  const rawRelationId =
+    (req.body as any)?.followId ??
+    (req.body as any)?.follow_id ??
+    (req.body as any)?.followingId ??
+    (req.body as any)?.following_id ??
+    (req.body as any)?.relationId ??
+    (req.body as any)?.relation_id ??
+    (req.body as any)?.cursor_id ??
+    (req.body as any)?.cursorId ??
+    (req.query as any)?.followId ??
+    (req.query as any)?.follow_id ??
+    (req.query as any)?.followingId ??
+    (req.query as any)?.following_id ??
+    (req.query as any)?.relationId ??
+    (req.query as any)?.relation_id ??
+    (req.query as any)?.cursor_id ??
+    (req.query as any)?.cursorId;
+
+  const viewerId = Number(req.userId);
+  const parsedTargetId = parsePositiveId(rawTargetId);
+  const parsedRelationId = parsePositiveId(rawRelationId);
+
+  if (!parsedTargetId && !parsedRelationId) {
     return formatResponse({
       res,
       success: false,
       code: 400,
-      message: "id must be a valid number",
+      message: "id/followedId/followingId must be a valid number",
     });
   }
 
-  if (Number(req.userId) === targetId) {
+  if (parsedTargetId && viewerId === parsedTargetId) {
     return formatResponse({
       res,
       success: false,
@@ -217,27 +253,59 @@ export const unfollow_by_id = async (req: Request, res: Response) => {
   }
 
   try {
-    await followerRepo.unfollowUser(targetId, req.userId);
+    let removed = false;
+    let resolvedTargetId = parsedTargetId;
+    let removedBy: "target_id" | "relation_id" | null = null;
 
-    const relationship = await followerRepo.getRelationship(req.userId, targetId);
-    const targetCounts = await followerRepo.getCounts(targetId);
-    const viewerCounts = await followerRepo.getCounts(req.userId);
-    const recipientIds = [targetId, Number(req.userId)];
+    if (parsedTargetId) {
+      const result = await followerRepo.unfollowUser(parsedTargetId, viewerId);
+      removed = Boolean(result?.removed);
+      if (removed) removedBy = "target_id";
+    }
 
-    await Promise.all([
+    const fallbackRelationId =
+      parsedRelationId ??
+      (explicitTargetId === undefined || explicitTargetId === null
+        ? parsedTargetId
+        : null);
+
+    if (!removed && fallbackRelationId) {
+      const fallback = await followerRepo.unfollowByRelationId(fallbackRelationId, viewerId);
+      removed = Boolean(fallback?.removed);
+      if (removed) {
+        removedBy = "relation_id";
+        if (fallback?.targetId) resolvedTargetId = fallback.targetId;
+      }
+    }
+
+    const effectiveTargetId = parsePositiveId(resolvedTargetId);
+    const relationship = effectiveTargetId
+      ? await followerRepo.getRelationship(viewerId, effectiveTargetId)
+      : { isFollowing: false, isFollowedBy: false, isMutual: false };
+    const targetCounts = effectiveTargetId
+      ? await followerRepo.getCounts(effectiveTargetId)
+      : { followersCount: 0, followingCount: 0 };
+    const viewerCounts = await followerRepo.getCounts(viewerId);
+    void Promise.all([
+      ...(effectiveTargetId
+        ? [
+            emitProfileUpdatedRealtime({
+              userId: effectiveTargetId,
+              counts: targetCounts,
+              targetUserIds: [effectiveTargetId],
+              action: "follow_counts_updated",
+            }),
+          ]
+        : []),
       emitProfileUpdatedRealtime({
-        userId: targetId,
-        counts: targetCounts,
-        targetUserIds: recipientIds,
-        action: "follow_counts_updated",
-      }),
-      emitProfileUpdatedRealtime({
-        userId: req.userId,
+        userId: viewerId,
         counts: viewerCounts,
-        targetUserIds: recipientIds,
+        targetUserIds: [viewerId],
         action: "follow_counts_updated",
       }),
-    ]);
+    ]).catch((error) => {
+      console.error("[user/unfollow_by_id] realtime emit failed", error);
+    });
 
     return formatResponse({
       res,
@@ -252,19 +320,42 @@ export const unfollow_by_id = async (req: Request, res: Response) => {
         mutual: relationship.isMutual,
         isMutual: relationship.isMutual,
         is_mutual: relationship.isMutual,
-        targetId,
-        viewerId: Number(req.userId),
-        followersCount: targetCounts.followersCount,
-        followingCount: targetCounts.followingCount,
-        followingsCount: targetCounts.followingCount,
-        followers_count: targetCounts.followersCount,
-        following_count: targetCounts.followingCount,
-        followings_count: targetCounts.followingCount,
+        removed,
+        removedBy,
+        targetId: effectiveTargetId ?? parsedTargetId ?? null,
+        relationId: parsedRelationId ?? null,
+        viewerId,
+        countsUserId: viewerId,
+        followersCount: viewerCounts.followersCount,
+        followingCount: viewerCounts.followingCount,
+        followingsCount: viewerCounts.followingCount,
+        followers_count: viewerCounts.followersCount,
+        following_count: viewerCounts.followingCount,
+        followings_count: viewerCounts.followingCount,
+        targetCounts: {
+          followersCount: targetCounts.followersCount,
+          followingCount: targetCounts.followingCount,
+          followingsCount: targetCounts.followingCount,
+          followers_count: targetCounts.followersCount,
+          following_count: targetCounts.followingCount,
+          followings_count: targetCounts.followingCount,
+        },
+        viewerCounts: {
+          followersCount: viewerCounts.followersCount,
+          followingCount: viewerCounts.followingCount,
+          followingsCount: viewerCounts.followingCount,
+          followers_count: viewerCounts.followersCount,
+          following_count: viewerCounts.followingCount,
+          followings_count: viewerCounts.followingCount,
+        },
         targetFollowersCount: targetCounts.followersCount,
         targetFollowingCount: targetCounts.followingCount,
         viewerFollowersCount: viewerCounts.followersCount,
         viewerFollowingCount: viewerCounts.followingCount,
+        refreshLists: ["followers", "following", "profile"],
+        shouldRefreshFollowing: true,
       },
+      message: "Dejaste de seguir a este usuario",
     });
   } catch (error) {
     console.log(error);

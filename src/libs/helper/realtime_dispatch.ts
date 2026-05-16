@@ -494,6 +494,9 @@ export const emitUserUpdatedRealtime = (
 ) => {
   const ids = toUserIds(userIds);
   if (ids.length === 0) return;
+  const payloadUserId = toPositiveInt(
+    (payload as any)?.userId ?? (payload as any)?.user_id ?? (payload as any)?.id
+  );
 
   emitToUsers("user:updated", payload, ids);
   emitToUsers("user/updated", payload, ids);
@@ -511,6 +514,7 @@ export const emitUserUpdatedRealtime = (
   }
 
   for (const userId of ids) {
+    if (payloadUserId && payloadUserId !== userId) continue;
     emitToUsers(`user/${userId}`, payload, [userId]);
   }
 };
