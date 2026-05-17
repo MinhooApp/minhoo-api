@@ -1,6 +1,7 @@
 import { axios, Request, Response, formatResponse } from "../_module/module";
 import { getResponseMetricsOverview } from "../../../_server/middleware/response_metrics";
 import { getFindSessionStoreInfo } from "../../../libs/cache/find_session_store";
+import logger from "../../../libs/logger/logger";
 
 const nowMs = () => Number(process.hrtime.bigint()) / 1_000_000;
 const round2 = (value: number) => Math.round(value * 100) / 100;
@@ -200,7 +201,7 @@ export const perfCheck = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };
@@ -231,7 +232,7 @@ export const observabilityOverview = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };

@@ -10,6 +10,7 @@ import {
   enrichServiceApplicantsStatus,
   enrichServicesApplicantsStatus,
 } from "../../../libs/applicants_status";
+import logger from "../../../libs/logger/logger";
 
 type ServiceHistoryDateRange = {
   from?: Date | null;
@@ -979,7 +980,7 @@ export const gets = async (req: Request, res: Response) => {
 
     return formatResponse({ res: res, success: true, body: { services } });
   } catch (error: any) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({
       res: res,
       success: false,
@@ -1002,7 +1003,7 @@ export const myonGoing = async (req: Request, res: Response) => {
 
     return formatResponse({ res: res, success: true, body: { services } });
   } catch (error: any) {
-    console.log(error.toString());
+    logger.error({ event: "error", error: error.toString() });
     return formatResponse({
       res: res,
       success: false,
@@ -1025,7 +1026,7 @@ export const onGoing = async (req: Request, res: Response) => {
 
     return formatResponse({ res: res, success: true, body: { services } });
   } catch (error: any) {
-    console.log(error.toString());
+    logger.error({ event: "error", error: error.toString() });
     return formatResponse({
       res: res,
       success: false,
@@ -1078,7 +1079,7 @@ export const getsOnGoing = async (req: Request, res: Response) => {
       body: payload,
     });
   } catch (error: any) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({
       res: res,
       success: false,
@@ -1142,7 +1143,7 @@ export const onGoingWorkers = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.log(error.toString());
+    logger.error({ event: "error", error: error.toString() });
     return formatResponse({
       res: res,
       success: false,
@@ -1186,7 +1187,7 @@ export const onGoingCanceledWorkers = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.log(error.toString());
+    logger.error({ event: "error", error: error.toString() });
     return formatResponse({
       res: res,
       success: false,
@@ -1277,7 +1278,7 @@ export const historyWorkers = async (req: Request, res: Response) => {
       },
     });
   } catch (error: any) {
-    console.log(error.toString());
+    logger.error({ event: "error", error: error.toString() });
     return formatResponse({
       res: res,
       success: false,
@@ -1306,7 +1307,7 @@ export const get = async (req: Request, res: Response) => {
 
     return formatResponse({ res: res, success: true, body: { service } });
   } catch (error: any) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({
       res: res,
       success: false,
@@ -1360,7 +1361,7 @@ export const myHistoryCanceled = async (req: Request, res: Response) => {
 
     return formatResponse({ res: res, success: true, body: { services } });
   } catch (error: any) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({
       res: res,
       success: false,
@@ -1387,7 +1388,7 @@ export const history = async (req: Request, res: Response) => {
 
     return formatResponse({ res: res, success: true, body: { services } });
   } catch (error: any) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({
       res: res,
       success: false,

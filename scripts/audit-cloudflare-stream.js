@@ -20,6 +20,10 @@ const shouldDelete = args.has("--delete");
 const asJson = args.has("--json");
 const includeOrphanReady = args.has("--include-orphan-ready");
 const deleteOrphanReady = args.has("--delete-orphan-ready");
+const orphanReadyMinAgeHours = Math.max(
+  0,
+  Number(process.env.CF_STREAM_ORPHAN_READY_MIN_AGE_HOURS ?? 24) || 24
+);
 
 const loadEnvFile = (filePath) => {
   const env = {};
@@ -38,8 +42,18 @@ const loadEnvFile = (filePath) => {
 
 const envFile = loadEnvFile(ENV_PATH);
 applyFileBackedSecrets(envFile, { forceOverride: false, baseDir: ROOT_DIR });
-const accountId = String(envFile.CLOUDFLARE_ACCOUNT_ID || "").trim();
-const mediaToken = String(envFile.CLOUDFLARE_MEDIA_API_TOKEN || envFile.CLOUDFLARE_API_TOKEN || envFile.CLOUDFLARE_TOKEN || "").trim();
+const accountId = String(
+  process.env.CLOUDFLARE_ACCOUNT_ID || envFile.CLOUDFLARE_ACCOUNT_ID || ""
+).trim();
+const mediaToken = String(
+  process.env.CLOUDFLARE_MEDIA_API_TOKEN ||
+    process.env.CLOUDFLARE_API_TOKEN ||
+    process.env.CLOUDFLARE_TOKEN ||
+    envFile.CLOUDFLARE_MEDIA_API_TOKEN ||
+    envFile.CLOUDFLARE_API_TOKEN ||
+    envFile.CLOUDFLARE_TOKEN ||
+    ""
+).trim();
 
 if (!accountId) {
   throw new Error("CLOUDFLARE_ACCOUNT_ID is not configured");
@@ -55,10 +69,6 @@ const mysqlConfig = {
   password: process.env.MYSQL_PASSWORD || envFile.DB_PASSWORD || "Minhoo@2026!",
   database: process.env.MYSQL_DATABASE || envFile.DB || "mnh_db",
 };
-
-if (deleteOrphanReady) {
-  SAFE_DELETE_STATES.add("ready");
-}
 
 const cloudflareHeaders = {
   Authorization: `Bearer ${mediaToken}`,
@@ -152,12 +162,18 @@ const deleteStreamAsset = async (uid) => {
     method: "DELETE",
   });
 
-  if (response.ok && payload?.success) {
+  // Cloudflare can return 200 with empty/no JSON body for successful deletes.
+  if (response.ok && (payload == null || payload?.success === true)) {
     return { deleted: true, notFound: false, payload };
   }
 
-  const firstCode = payload?.errors?.[0]?.code;
-  const firstError = payload?.errors?.[0]?.message || `Cloudflare stream delete failed (${response.status})`;
+  const errors = Array.isArray(payload?.errors) ? payload.errors : [];
+  if (response.ok && payload?.success === false && errors.length === 0) {
+    return { deleted: true, notFound: false, payload };
+  }
+
+  const firstCode = errors?.[0]?.code;
+  const firstError = errors?.[0]?.message || `Cloudflare stream delete failed (${response.status})`;
   if (Number(firstCode) === 10003) {
     return { deleted: false, notFound: true, payload };
   }
@@ -208,6 +224,15 @@ const incrementCounter = (bucket, key) => {
 };
 
 const toMb = (bytes) => Number((Number(bytes || 0) / (1024 * 1024)).toFixed(2));
+const toAgeHours = (createdAtRaw) => {
+  const createdAt = String(createdAtRaw || "").trim();
+  if (!createdAt) return null;
+  const createdMs = Date.parse(createdAt);
+  if (!Number.isFinite(createdMs)) return null;
+  const ageHours = (Date.now() - createdMs) / (1000 * 60 * 60);
+  if (!Number.isFinite(ageHours)) return null;
+  return Number(ageHours.toFixed(2));
+};
 
 const formatSummary = (assets, refs) => {
   const summary = {
@@ -234,6 +259,12 @@ const formatSummary = (assets, refs) => {
     const context = String(asset?.meta?.context || "unknown").trim().toLowerCase();
     const size = Number(asset?.size || 0);
     const references = refs.get(uid) || [];
+    const ageHours = toAgeHours(asset?.created || asset?.createdAt || null);
+    const readyDeletionEligible =
+      state === "ready" &&
+      deleteOrphanReady &&
+      ageHours !== null &&
+      ageHours >= orphanReadyMinAgeHours;
     const entry = {
       uid,
       state,
@@ -241,6 +272,8 @@ const formatSummary = (assets, refs) => {
       size,
       sizeMb: toMb(size),
       created: asset?.created || null,
+      ageHours,
+      readyDeletionEligible,
       refs: references,
     };
 
@@ -264,8 +297,17 @@ const formatSummary = (assets, refs) => {
       continue;
     }
 
-    if (includeOrphanReady) {
-      summary.orphanReady.push(entry);
+    if (state === "ready") {
+      if (readyDeletionEligible) {
+        summary.safeDeleteCandidates += 1;
+        safeDeleteBytes += size;
+        incrementCounter(summary.safeDeleteByState, state);
+        incrementCounter(summary.safeDeleteByContext, context);
+        summary.candidates.push(entry);
+      }
+      if (includeOrphanReady || deleteOrphanReady) {
+        summary.orphanReady.push(entry);
+      }
     }
   }
 
@@ -294,9 +336,13 @@ const printHumanSummary = (summary) => {
   }
 
   if (summary.orphanReady.length > 0) {
-    console.log("[cloudflare-stream] orphan ready assets:");
+    console.log(
+      `[cloudflare-stream] orphan ready assets (delete_ready=${deleteOrphanReady ? 1 : 0} min_age_hours=${orphanReadyMinAgeHours}):`
+    );
     for (const asset of summary.orphanReady) {
-      console.log(`- uid=${asset.uid} context=${asset.context} size_mb=${asset.sizeMb} created=${asset.created}`);
+      console.log(
+        `- uid=${asset.uid} context=${asset.context} size_mb=${asset.sizeMb} age_hours=${asset.ageHours} eligible=${asset.readyDeletionEligible ? 1 : 0} created=${asset.created}`
+      );
     }
   }
 };

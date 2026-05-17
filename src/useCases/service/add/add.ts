@@ -14,6 +14,7 @@ import {
   attachServiceRoutingFields,
   toServiceUpdatedSocketPayload,
 } from "../../../libs/service_client_bucket";
+import logger from "../../../libs/logger/logger";
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
 
@@ -344,7 +345,7 @@ export const add = async (req: Request, res: Response) => {
 
     return formatResponse({ res: res, success: true, body: { service: safeService } });
   } catch (error: any) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     // ojo: no devuelvas error crudo si tiene cosas no serializables
     return formatResponse({
       res: res,
@@ -466,7 +467,7 @@ export const sendTestNotification = async (req: Request, res: Response) => {
       body: { response: "ok" },
     });
   } catch (error: any) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({
       res: res,
       success: false,

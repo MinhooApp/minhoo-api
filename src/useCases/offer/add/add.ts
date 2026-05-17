@@ -13,6 +13,7 @@ import {
   resolveApplicantsCount,
 } from "../../../libs/applicants_status";
 import { toServiceUpdatedSocketPayload } from "../../../libs/service_client_bucket";
+import logger from "../../../libs/logger/logger";
 
 export const add = async (req: Request, res: Response) => {
   try {
@@ -115,7 +116,7 @@ export const add = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };

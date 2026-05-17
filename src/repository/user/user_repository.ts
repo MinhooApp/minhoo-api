@@ -942,6 +942,41 @@ export const update = async (id: any, body: any) => {
   return [user];
 };
 
+/**
+ * Atomic password reset: verifica el marcador VALIDATED y actualiza la clave en un solo UPDATE.
+ * Retorna true solo si el marcador existía y no había expirado (10 min). False si no actualizó.
+ * Elimina TOCTOU: dos requests simultáneos solo uno actualiza (el segundo encuentra temp_code=NULL).
+ */
+export const atomicRestorePassword = async (
+  userId: number,
+  newPasswordHash: string
+): Promise<boolean> => {
+  const dialect = String(sequelize.getDialect() ?? "").toLowerCase();
+  const intervalSql =
+    dialect === "postgres"
+      ? `NOW() - INTERVAL '10 minutes'`
+      : `DATE_SUB(NOW(), INTERVAL 10 MINUTE)`;
+
+  const [, affected] = await sequelize.query(
+    `UPDATE \`users\`
+     SET \`password\` = :hash,
+         \`temp_code\` = NULL,
+         \`created_temp_code\` = NULL
+     WHERE \`id\` = :userId
+       AND \`temp_code\` = 'VALIDATED'
+       AND \`created_temp_code\` >= ${intervalSql}`,
+    {
+      replacements: { userId, hash: newPasswordHash },
+      type: QueryTypes.UPDATE,
+    }
+  ) as [unknown, number];
+
+  void invalidateUserCache(userId);
+  void invalidateAuthUserCache(userId);
+
+  return affected > 0;
+};
+
 /* 🔹 Limpia uuid push token solo si coincide (evita borrar token nuevo por carrera) */
 export const clearUuidIfMatch = async (id: number, uuid: string) => {
   const userId = Number(id);

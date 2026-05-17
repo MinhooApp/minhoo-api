@@ -9,12 +9,14 @@ import {
   bcryptjs,
   multer,
 } from "../_module/module";
+import { randomInt } from "crypto";
 import { buildAuthSessionResponseBody } from "../../../libs/auth/auth_response_contract";
 import {
   resolveCloudflareDirectAvatarUrl,
   uploadImageBufferToCloudflare,
 } from "../../_utils/cloudflare_images";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
+import logger from "../../../libs/logger/logger";
 
 const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
 const uploadSignUpAvatar = multer({
@@ -25,8 +27,6 @@ const uploadSignUpAvatar = multer({
   { name: "image_profile", maxCount: 1 },
 ]);
 
-// signUp.ts
-const now: any = new Date(new Date().toUTCString());
 const parseNonNegativeInt = (value: any, fallback: number): number => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
@@ -463,7 +463,7 @@ export const validateEmail = async (req: Request, res: Response) => {
     const body = {
       code: cod,
       email: email,
-      created: now,
+      created: new Date(new Date().toUTCString()),
       locale_used: locale,
     };
     await repository.registerCode(body); //register code
@@ -536,7 +536,7 @@ export const validateEmail = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -546,13 +546,8 @@ export const verifyEmailCode = async (req: Request, res: Response) => {
     const response = await repository.verifyEmailCode(email, code);
     if (response) {
       const storedDate: any = new Date(response.created);
-      // Calcula la diferencia en milisegundos entre las dos fechas
-      const differenceInMs = now - storedDate;
-      // Convierte la diferencia de milisegundos a días
-      const differenceInDays = Math.floor(
-        differenceInMs / (1000 * 60 * 60 * 24)
-      );
-      if (differenceInDays > 1) {
+      const differenceInMs = Date.now() - storedDate.getTime();
+      if (differenceInMs > 24 * 60 * 60 * 1000) {
         return formatResponse({
           res: res,
           success: false,
@@ -580,23 +575,14 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
   try {
     const user = await repository.findByEmail(email);
     if (user === null || user === undefined) {
-      return formatResponse({
-        res: res,
-        success: false,
-        code: 404,
-        message: "user not found",
-      });
+      // No revelar si el email existe o no (evitar account enumeration)
+      return formatResponse({ res: res, success: true, body: { created_temp_code: now } });
     }
 
     const accountBlock = getLoginStyleAccountBlock(user);
     if (accountBlock.blocked) {
-      return formatResponse({
-        res,
-        success: false,
-        islogin: true,
-        ...(accountBlock.code ? { code: accountBlock.code } : {}),
-        message: accountBlock.message,
-      });
+      // Misma respuesta que para usuario inexistente (evitar enumeración por estados)
+      return formatResponse({ res: res, success: true, body: { created_temp_code: now } });
     }
 
     const code = generateTempPassword();
@@ -631,7 +617,7 @@ export const requestRestorePassword = async (req: Request, res: Response) => {
       body: { created_temp_code: now },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: "error" });
   }
 };
@@ -663,6 +649,12 @@ export const validateRestorePassword = async (req: Request, res: Response) => {
 
     const user = await repository.findByEmailAndCode(email, code);
     if (user) {
+      // Marca la sesión como validada: reemplaza el OTP con un centinela
+      // para que /restore pueda confirmar sin re-exponer el código al cliente.
+      await uRepository.update(Number((user as any)?.id), {
+        temp_code: "VALIDATED",
+        created_temp_code: new Date(),
+      });
       return formatResponse({
         res: res,
         success: true,
@@ -682,8 +674,6 @@ export const validateRestorePassword = async (req: Request, res: Response) => {
 };
 export const restorePassword = async (req: Request, res: Response) => {
   const { email, password, confirm_password } = req.body;
-  const hashPassword = generatePassword(password as string);
-  req.body.password = hashPassword;
   if (confirm_password != password) {
     return formatResponse({
       res: res,
@@ -693,8 +683,19 @@ export const restorePassword = async (req: Request, res: Response) => {
     });
   }
   try {
-    const userTemp = await repository.findByEmail(email);
-    const accountBlock = getLoginStyleAccountBlock(userTemp);
+    // Requiere que /restore/validate haya sido llamado exitosamente
+    // (marcador VALIDATED en DB, válido 10 minutos, single-use atómico).
+    const validatedUser = await repository.findValidatedRestoreSession(email);
+    if (!validatedUser) {
+      return formatResponse({
+        res: res,
+        success: false,
+        islogin: true,
+        message: "code not validated",
+      });
+    }
+
+    const accountBlock = getLoginStyleAccountBlock(validatedUser);
     if (accountBlock.blocked) {
       return formatResponse({
         res,
@@ -705,13 +706,27 @@ export const restorePassword = async (req: Request, res: Response) => {
       });
     }
 
-    const user = await uRepository.update(userTemp?.id, req.body);
+    const hashPassword = generatePassword(password as string);
+    // Atómico: verifica marcador VALIDATED + actualiza contraseña en un solo UPDATE.
+    // Elimina TOCTOU: si dos requests concurrentes llegan, solo el primero actualiza.
+    const updated = await uRepository.atomicRestorePassword(
+      Number((validatedUser as any)?.id),
+      hashPassword
+    );
+    if (!updated) {
+      return formatResponse({
+        res: res,
+        success: false,
+        islogin: true,
+        message: "code not validated",
+      });
+    }
 
     const emailParams = {
       subject: "reset password",
       email: email,
       htmlPath: "./src/public/html/email/successful_password_change_email.html",
-      replacements: [{ name: userTemp!.name }],
+      replacements: [{ name: (validatedUser as any)!.name }],
       from: "Minhoo App",
     };
 
@@ -763,7 +778,5 @@ export const validatePhone = async (req: Request, res: Response) => {
 };
 
 function generateTempPassword(): string {
-  // Genera un número aleatorio entre 100000 y 999999
-  const randomPassword = Math.floor(100000 + Math.random() * 900000);
-  return randomPassword.toString(); // Convierte el número a cadena
+  return randomInt(100_000, 1_000_000).toString();
 }

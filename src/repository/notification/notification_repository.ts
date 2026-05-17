@@ -70,15 +70,30 @@ const buildNotificationListCacheKey = (params: {
 const pruneNotificationCaches = () => {
   const now = Date.now();
 
+  // Track which userIds still have active list cache entries after pruning
+  const activeUserIds = new Set<number>();
+
   for (const [key, entry] of notificationListCache.entries()) {
     if (entry.expiresAtMs <= now) {
       notificationListCache.delete(key);
+    } else {
+      const uid = Number(key.split(":")[0]);
+      if (uid > 0) activeUserIds.add(uid);
     }
   }
 
   for (const [key, entry] of notificationCountCache.entries()) {
     if (entry.expiresAtMs <= now) {
       notificationCountCache.delete(key);
+    } else {
+      activeUserIds.add(key);
+    }
+  }
+
+  // Remove version entries for users with no remaining cache entries — prevents unbounded growth
+  for (const userId of notificationUserCacheVersion.keys()) {
+    if (!activeUserIds.has(userId)) {
+      notificationUserCacheVersion.delete(userId);
     }
   }
 
@@ -182,8 +197,6 @@ export const myNotifications = async (
   const limit = normalizeLimit(opts?.limit, 20, 20);
   const safeId = Number(id);
   if (!Number.isFinite(safeId) || safeId <= 0) return [];
-  const blockedUserIds = await BlockUserRepository.getAllBlockedIds(Math.trunc(safeId));
-  const hasBlockedUsers = Array.isArray(blockedUserIds) && blockedUserIds.length > 0;
 
   return withNotificationListCache({
     userId: Math.trunc(safeId),
@@ -191,6 +204,8 @@ export const myNotifications = async (
     limit,
     summary: false,
     loader: async () => {
+      const blockedUserIds = await BlockUserRepository.getAllBlockedIds(Math.trunc(safeId));
+      const hasBlockedUsers = Array.isArray(blockedUserIds) && blockedUserIds.length > 0;
       const notification = await Notification.findAll({
         where: {
           userId: safeId,
@@ -307,16 +322,16 @@ export const myNotificationsSummary = async (
   const limit = normalizeLimit(opts?.limit, 20, 20);
   const safeId = Number(id);
   if (!Number.isFinite(safeId) || safeId <= 0) return [];
-  const blockedUserIds = await BlockUserRepository.getAllBlockedIds(Math.trunc(safeId));
-  const hasBlockedUsers = Array.isArray(blockedUserIds) && blockedUserIds.length > 0;
 
   return withNotificationListCache({
     userId: Math.trunc(safeId),
     cursor: Number.isFinite(cursor) && cursor > 0 ? Math.floor(cursor) : null,
     limit,
     summary: true,
-    loader: async () =>
-      (await Notification.findAll({
+    loader: async () => {
+      const blockedUserIds = await BlockUserRepository.getAllBlockedIds(Math.trunc(safeId));
+      const hasBlockedUsers = Array.isArray(blockedUserIds) && blockedUserIds.length > 0;
+      return (await Notification.findAll({
         where: {
           userId: safeId,
           deleted: false,
@@ -369,7 +384,8 @@ export const myNotificationsSummary = async (
         ],
         order: [["id", "DESC"]],
         limit,
-      })) as any[],
+      })) as any[];
+    },
   });
 };
 export const get = async (id: any) => {
@@ -418,12 +434,12 @@ export const readAllByUser = async (userId: number) => {
 export const countUnreadByUser = async (userId: number) => {
   const safeUserId = Number(userId);
   if (!Number.isFinite(safeUserId) || safeUserId <= 0) return 0;
-  const blockedUserIds = await BlockUserRepository.getAllBlockedIds(Math.trunc(safeUserId));
-  const hasBlockedUsers = Array.isArray(blockedUserIds) && blockedUserIds.length > 0;
 
   return withNotificationCountCache({
     userId: safeUserId,
     loader: async () => {
+      const blockedUserIds = await BlockUserRepository.getAllBlockedIds(Math.trunc(safeUserId));
+      const hasBlockedUsers = Array.isArray(blockedUserIds) && blockedUserIds.length > 0;
       const unreadCount = await Notification.count({
         where: {
           userId: safeUserId,

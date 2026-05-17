@@ -1,0 +1,50 @@
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: 'minhoo-production'
+
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['localhost:9093']
+      timeout: 10s
+
+scrape_configs:
+
+  # ── Prometheus self-scrape ─────────────────────────────────────
+  - job_name: 'prometheus'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # ── Node Exporter (CPU, memoria, disco, red del host) ─────────
+  - job_name: 'node'
+    scrape_interval: 15s
+    static_configs:
+      - targets: ['localhost:9100']
+        labels:
+          host: 'minhoo-prod'
+
+  # ── Minhoo API — 3 instancias ─────────────────────────────────
+  - job_name: 'minhoo-api'
+    scrape_interval: 30s
+    scrape_timeout: 10s
+    metrics_path: '/api/v1/metrics'
+    static_configs:
+      - targets:
+          - '127.0.0.1:3000'
+          - '127.0.0.1:3001'
+          - '127.0.0.1:3002'
+        labels:
+          app: 'minhoo-api'
+          env: 'production'
+
+  # ── Alertmanager self-scrape ───────────────────────────────────
+  - job_name: 'alertmanager'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['localhost:9093']

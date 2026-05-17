@@ -1,0 +1,234 @@
+{
+  "title": "Minhoo API — Production",
+  "tags": ["minhoo", "production"],
+  "refresh": "30s",
+  "schemaVersion": 30,
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "templating": { "list": [] },
+  "annotations": { "list": [] },
+  "panels": [
+
+    { "id": 1, "type": "row", "title": "Latencia", "gridPos": {"h":1,"w":24,"x":0,"y":0} },
+
+    {
+      "id": 2, "type": "timeseries",
+      "title": "p95 Latencia por instancia (ms)",
+      "gridPos": {"h":8,"w":12,"x":0,"y":1},
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":300},{"color":"red","value":500}] } }
+      },
+      "targets": [
+        { "expr": "http_request_duration_ms{quantile=\"p95\"}", "legendFormat": "{{instance}} p95", "refId": "A" }
+      ],
+      "options": { "tooltip": {"mode":"multi"}, "legend": {"displayMode":"list","placement":"bottom"} }
+    },
+
+    {
+      "id": 3, "type": "timeseries",
+      "title": "p99 Latencia por instancia (ms)",
+      "gridPos": {"h":8,"w":12,"x":12,"y":1},
+      "fieldConfig": {
+        "defaults": { "unit": "ms", "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":1000},{"color":"red","value":2000}] } }
+      },
+      "targets": [
+        { "expr": "http_request_duration_ms{quantile=\"p99\"}", "legendFormat": "{{instance}} p99", "refId": "A" }
+      ],
+      "options": { "tooltip": {"mode":"multi"}, "legend": {"displayMode":"list","placement":"bottom"} }
+    },
+
+    { "id": 10, "type": "row", "title": "Throughput y Errores", "gridPos": {"h":1,"w":24,"x":0,"y":9} },
+
+    {
+      "id": 11, "type": "timeseries",
+      "title": "Requests en ventana (muestras)",
+      "gridPos": {"h":7,"w":8,"x":0,"y":10},
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "expr": "http_requests_sampled_total", "legendFormat": "{{instance}}", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 12, "type": "timeseries",
+      "title": "Error Rate 5xx (%)",
+      "gridPos": {"h":7,"w":8,"x":8,"y":10},
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":1},{"color":"red","value":5}] } }
+      },
+      "targets": [
+        { "expr": "http_error_rate_percent", "legendFormat": "{{instance}}", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 13, "type": "stat",
+      "title": "Uptime mínimo (s)",
+      "gridPos": {"h":7,"w":8,"x":16,"y":10},
+      "fieldConfig": { "defaults": { "unit": "s", "color": {"mode":"thresholds"}, "thresholds": { "mode": "absolute", "steps": [{"color":"red","value":null},{"color":"orange","value":60},{"color":"green","value":300}] } } },
+      "targets": [
+        { "expr": "min(process_uptime_seconds)", "legendFormat": "uptime min", "refId": "A" }
+      ],
+      "options": { "reduceOptions": {"calcs":["lastNotNull"]} }
+    },
+
+    { "id": 20, "type": "row", "title": "DB Pool", "gridPos": {"h":1,"w":24,"x":0,"y":17} },
+
+    {
+      "id": 21, "type": "timeseries",
+      "title": "DB Pool — Conexiones por estado",
+      "gridPos": {"h":8,"w":12,"x":0,"y":18},
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "expr": "db_pool_connections{state=\"active\"}", "legendFormat": "{{instance}} active", "refId": "A" },
+        { "expr": "db_pool_connections{state=\"pending\"}", "legendFormat": "{{instance}} pending", "refId": "B" },
+        { "expr": "db_pool_connections{state=\"idle\"}", "legendFormat": "{{instance}} idle", "refId": "C" }
+      ],
+      "options": { "tooltip": {"mode":"multi"} }
+    },
+
+    {
+      "id": 22, "type": "gauge",
+      "title": "DB Pool — Utilización promedio (%)",
+      "gridPos": {"h":8,"w":6,"x":12,"y":18},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent", "min": 0, "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":70},{"color":"red","value":90}] }
+        }
+      },
+      "targets": [
+        { "expr": "avg(db_pool_utilization_percent)", "legendFormat": "avg utilización", "refId": "A" }
+      ],
+      "options": { "reduceOptions": {"calcs":["lastNotNull"]}, "showThresholdLabels": true }
+    },
+
+    {
+      "id": 23, "type": "stat",
+      "title": "DB Pool — Pending ahora",
+      "gridPos": {"h":8,"w":6,"x":18,"y":18},
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short", "color": {"mode":"thresholds"},
+          "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":1},{"color":"red","value":5}] }
+        }
+      },
+      "targets": [
+        { "expr": "sum(db_pool_connections{state=\"pending\"})", "legendFormat": "pending total", "refId": "A" }
+      ],
+      "options": { "reduceOptions": {"calcs":["lastNotNull"]} }
+    },
+
+    { "id": 30, "type": "row", "title": "BullMQ & WebSockets", "gridPos": {"h":1,"w":24,"x":0,"y":26} },
+
+    {
+      "id": 31, "type": "timeseries",
+      "title": "BullMQ — Jobs por estado",
+      "gridPos": {"h":8,"w":12,"x":0,"y":27},
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "expr": "bullmq_jobs{queue=\"push-notifications\",state=\"waiting\"}", "legendFormat": "{{instance}} waiting", "refId": "A" },
+        { "expr": "bullmq_jobs{queue=\"push-notifications\",state=\"active\"}", "legendFormat": "{{instance}} active", "refId": "B" },
+        { "expr": "bullmq_jobs{queue=\"push-notifications\",state=\"failed\"}", "legendFormat": "{{instance}} failed", "refId": "C" },
+        { "expr": "bullmq_jobs{queue=\"push-notifications\",state=\"delayed\"}", "legendFormat": "{{instance}} delayed", "refId": "D" }
+      ],
+      "options": { "tooltip": {"mode":"multi"} }
+    },
+
+    {
+      "id": 32, "type": "timeseries",
+      "title": "WebSocket — Conexiones activas",
+      "gridPos": {"h":8,"w":12,"x":12,"y":27},
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "expr": "socket_connections_active", "legendFormat": "{{instance}}", "refId": "A" }
+      ]
+    },
+
+    { "id": 40, "type": "row", "title": "Memoria y Sistema", "gridPos": {"h":1,"w":24,"x":0,"y":35} },
+
+    {
+      "id": 41, "type": "timeseries",
+      "title": "Node.js — Memoria por instancia (MB)",
+      "gridPos": {"h":8,"w":12,"x":0,"y":36},
+      "fieldConfig": {
+        "defaults": { "unit": "decmbytes",
+          "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":400},{"color":"red","value":512}] }
+        }
+      },
+      "targets": [
+        { "expr": "process_heap_bytes{type=\"rss\"} / 1048576", "legendFormat": "{{instance}} RSS", "refId": "A" },
+        { "expr": "process_heap_bytes{type=\"used\"} / 1048576", "legendFormat": "{{instance}} heap_used", "refId": "B" }
+      ],
+      "options": { "tooltip": {"mode":"multi"} }
+    },
+
+    {
+      "id": 42, "type": "timeseries",
+      "title": "Sistema — Memoria total (%)",
+      "gridPos": {"h":8,"w":6,"x":12,"y":36},
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":70},{"color":"red","value":85}] }
+        }
+      },
+      "targets": [
+        { "expr": "(1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100", "legendFormat": "RAM usada %", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 43, "type": "timeseries",
+      "title": "Sistema — CPU (%)",
+      "gridPos": {"h":8,"w":6,"x":18,"y":36},
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":70},{"color":"red","value":85}] }
+        }
+      },
+      "targets": [
+        { "expr": "100 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m]) * 100)", "legendFormat": "CPU usada %", "refId": "A" }
+      ]
+    },
+
+    { "id": 50, "type": "row", "title": "Disco", "gridPos": {"h":1,"w":24,"x":0,"y":44} },
+
+    {
+      "id": 51, "type": "gauge",
+      "title": "Disco — Uso / (root)",
+      "gridPos": {"h":7,"w":8,"x":0,"y":45},
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100,
+          "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":80},{"color":"red","value":90}] }
+        }
+      },
+      "targets": [
+        { "expr": "(1 - node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|devtmpfs\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype!~\"tmpfs|devtmpfs\"}) * 100", "legendFormat": "disco / %", "refId": "A" }
+      ],
+      "options": { "reduceOptions": {"calcs":["lastNotNull"]}, "showThresholdLabels": true }
+    },
+
+    {
+      "id": 52, "type": "stat",
+      "title": "Disco — Libre en /",
+      "gridPos": {"h":7,"w":8,"x":8,"y":45},
+      "fieldConfig": { "defaults": { "unit": "decbytes", "color": {"mode":"thresholds"}, "thresholds": { "mode": "absolute", "steps": [{"color":"red","value":null},{"color":"orange","value":5368709120},{"color":"green","value":10737418240}] } } },
+      "targets": [
+        { "expr": "node_filesystem_avail_bytes{mountpoint=\"/\",fstype!~\"tmpfs|devtmpfs\"}", "legendFormat": "libre", "refId": "A" }
+      ],
+      "options": { "reduceOptions": {"calcs":["lastNotNull"]} }
+    },
+
+    {
+      "id": 53, "type": "stat",
+      "title": "RAM disponible",
+      "gridPos": {"h":7,"w":8,"x":16,"y":45},
+      "fieldConfig": { "defaults": { "unit": "decbytes", "color": {"mode":"thresholds"}, "thresholds": { "mode": "absolute", "steps": [{"color":"red","value":null},{"color":"orange","value":536870912},{"color":"green","value":1073741824}] } } },
+      "targets": [
+        { "expr": "node_memory_MemAvailable_bytes", "legendFormat": "RAM disponible", "refId": "A" }
+      ],
+      "options": { "reduceOptions": {"calcs":["lastNotNull"]} }
+    }
+
+  ]
+}

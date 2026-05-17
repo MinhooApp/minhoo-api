@@ -2012,11 +2012,11 @@ export const listFeed = async (
   profiler.rerankMs = nowMs() - rerankStartedAtMs;
   const pageRows = pageCandidates.map((candidate) => candidate.row);
 
-  await attachInteractionFlags(viewerId, pageRows, profiler);
-  await applyReelHashtags(pageRows);
-  if (!options.summary) {
-    await attachUserOrbitRing(pageRows, profiler);
-  }
+  await Promise.all([
+    attachInteractionFlags(viewerId, pageRows, profiler),
+    applyReelHashtags(pageRows),
+    options.summary ? Promise.resolve() : attachUserOrbitRing(pageRows, profiler),
+  ]);
   let sessionSaveBackend: "redis" | "memory" = "memory";
   if (useSessionState) {
     const sessionSaveStartedAtMs = nowMs();
@@ -2075,9 +2075,11 @@ export const listMine = async (userIdRaw: any, pageRaw: any, sizeRaw: any) => {
     offset: page * size,
   });
 
-  await attachInteractionFlags(userId, reels.rows);
-  await applyReelHashtags(reels.rows);
-  await attachUserOrbitRing(reels.rows);
+  await Promise.all([
+    attachInteractionFlags(userId, reels.rows),
+    applyReelHashtags(reels.rows),
+    attachUserOrbitRing(reels.rows),
+  ]);
 
   return {
     page,
@@ -2231,9 +2233,11 @@ export const listByUser = async (
     offset: page * size,
   });
 
-  await attachInteractionFlags(viewerId, reels.rows);
-  await applyReelHashtags(reels.rows);
-  await attachUserOrbitRing(reels.rows);
+  await Promise.all([
+    attachInteractionFlags(viewerId, reels.rows),
+    applyReelHashtags(reels.rows),
+    attachUserOrbitRing(reels.rows),
+  ]);
 
   return {
     page,
@@ -2278,9 +2282,11 @@ export const getById = async (idRaw: any, viewerIdRaw: any) => {
   }
 
   if (!reel) return null;
-  await attachInteractionFlags(viewerId, [reel]);
-  await applyReelHashtags([reel]);
-  await attachUserOrbitRing([reel]);
+  await Promise.all([
+    attachInteractionFlags(viewerId, [reel]),
+    applyReelHashtags([reel]),
+    attachUserOrbitRing([reel]),
+  ]);
   return withFlagAliases(reel);
 };
 
@@ -2432,9 +2438,11 @@ export const toggleStar = async (userIdRaw: any, idRaw: any) => {
 
   const likes_count = await recountLikes(reelId);
   const updatedReel = await Reel.findByPk(reelId, { include: [reelUserInclude] });
-  await attachInteractionFlags(userId, updatedReel ? [updatedReel] : []);
-  await applyReelHashtags(updatedReel ? [updatedReel] : []);
-  await attachUserOrbitRing(updatedReel ? [updatedReel] : []);
+  await Promise.all([
+    attachInteractionFlags(userId, updatedReel ? [updatedReel] : []),
+    applyReelHashtags(updatedReel ? [updatedReel] : []),
+    attachUserOrbitRing(updatedReel ? [updatedReel] : []),
+  ]);
 
   return { notFound: false, starred, likes_count, reel: withFlagAliases(updatedReel) };
 };
@@ -2457,9 +2465,11 @@ export const saveReel = async (userIdRaw: any, idRaw: any) => {
 
   const saves_count = await recountSaves(reelId);
   const updatedReel = await Reel.findByPk(reelId, { include: [reelUserInclude] });
-  await attachInteractionFlags(userId, updatedReel ? [updatedReel] : []);
-  await applyReelHashtags(updatedReel ? [updatedReel] : []);
-  await attachUserOrbitRing(updatedReel ? [updatedReel] : []);
+  await Promise.all([
+    attachInteractionFlags(userId, updatedReel ? [updatedReel] : []),
+    applyReelHashtags(updatedReel ? [updatedReel] : []),
+    attachUserOrbitRing(updatedReel ? [updatedReel] : []),
+  ]);
 
   return {
     notFound: false,
@@ -2486,9 +2496,11 @@ export const unsaveReel = async (userIdRaw: any, idRaw: any) => {
   const saves_count = await recountSaves(reelId);
 
   const updatedReel = await Reel.findByPk(reelId, { include: [reelUserInclude] });
-  await attachInteractionFlags(userId, updatedReel ? [updatedReel] : []);
-  await applyReelHashtags(updatedReel ? [updatedReel] : []);
-  await attachUserOrbitRing(updatedReel ? [updatedReel] : []);
+  await Promise.all([
+    attachInteractionFlags(userId, updatedReel ? [updatedReel] : []),
+    applyReelHashtags(updatedReel ? [updatedReel] : []),
+    attachUserOrbitRing(updatedReel ? [updatedReel] : []),
+  ]);
 
   return {
     notFound: false,
@@ -2532,9 +2544,11 @@ export const listSaved = async (userIdRaw: any, pageRaw: any, sizeRaw: any) => {
     .map((row: any) => row.reel)
     .filter((row: any) => !!row);
 
-  await attachInteractionFlags(userId, rows);
-  await applyReelHashtags(rows);
-  await attachUserOrbitRing(rows);
+  await Promise.all([
+    attachInteractionFlags(userId, rows),
+    applyReelHashtags(rows),
+    attachUserOrbitRing(rows),
+  ]);
   rows.forEach((row: any) => setInteractionFlags(row, { isStarred: Boolean((row as any)?.is_starred), isSaved: true }));
 
   return {
@@ -2690,9 +2704,11 @@ export const shareReel = async (idRaw: any, viewerIdRaw: any) => {
 
   await Reel.increment({ shares_count: 1 }, { where: { id: reelId } });
   const updated = await Reel.findByPk(reelId, { include: [reelUserInclude] });
-  await attachInteractionFlags(viewerIdRaw, updated ? [updated] : []);
-  await applyReelHashtags(updated ? [updated] : []);
-  await attachUserOrbitRing(updated ? [updated] : []);
+  await Promise.all([
+    attachInteractionFlags(viewerIdRaw, updated ? [updated] : []),
+    applyReelHashtags(updated ? [updated] : []),
+    attachUserOrbitRing(updated ? [updated] : []),
+  ]);
 
   return { found: true, reel: withFlagAliases(updated) };
 };

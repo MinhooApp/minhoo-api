@@ -178,20 +178,37 @@ import { Op } from "sequelize";
 //
 export const findByEmailAndCode = async (email: string, code: string) => {
   const now = new Date();
-  const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000); // Calcula la fecha/hora de hace 10 minutos
+  const tenMinutesAgo = new Date(now.getTime() - 10 * 60 * 1000);
 
   const user = await User.findOne({
     where: {
       email: email,
       temp_code: code,
       created_temp_code: {
-        [Op.gte]: tenMinutesAgo, // Verifica que created_temp_code sea mayor o igual a hace 10 minutos
+        [Op.gte]: tenMinutesAgo,
       },
     },
     include: userIncludes,
   });
 
   return user;
+};
+
+/**
+ * Busca un usuario que haya completado el paso /restore/validate exitosamente
+ * (temp_code = 'VALIDATED', created_temp_code dentro de los últimos 10 minutos).
+ * Solo retorna el mínimo de campos necesarios para el reset.
+ */
+export const findValidatedRestoreSession = async (email: string) => {
+  const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000);
+  return User.findOne({
+    where: {
+      email,
+      temp_code: "VALIDATED",
+      created_temp_code: { [Op.gte]: tenMinutesAgo },
+    },
+    attributes: ["id", "name", "email", "is_deleted", "disabled", "available"],
+  });
 };
 
 //

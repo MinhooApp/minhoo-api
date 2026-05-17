@@ -30,6 +30,7 @@ import ReelLike from "../../../_models/reel/reel_like";
 import ReelSave from "../../../_models/reel/reel_save";
 import ReelView from "../../../_models/reel/reel_view";
 import ReelReport from "../../../_models/reel/reel_report";
+import logger from "../../../libs/logger/logger";
 
 const parseBlockedId = (req: Request): number | null => {
   const raw = (req.params as any)?.blocked_id;
@@ -73,7 +74,7 @@ export const block_user = async (req: Request, res: Response) => {
       message: response,
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };
@@ -98,7 +99,7 @@ export const unblock_user = async (req: Request, res: Response) => {
       message: response,
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };
@@ -188,7 +189,7 @@ export const remove_follower = async (req: Request, res: Response) => {
       message: "removed",
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };
@@ -358,7 +359,7 @@ export const unfollow_by_id = async (req: Request, res: Response) => {
       message: "Dejaste de seguir a este usuario",
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -629,7 +630,7 @@ export const delete_account = async (req: Request, res: Response) => {
       body: { deleted: true },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };

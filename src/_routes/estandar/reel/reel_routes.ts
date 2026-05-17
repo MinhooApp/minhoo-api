@@ -28,6 +28,7 @@ import {
   buildCanonicalShareUrl,
   buildDisplayName,
   buildShortText,
+  buildSharePageCsp,
   renderShareLandingPage,
   resolveShareAssetUrl,
   resolveStoreFallback,
@@ -145,17 +146,7 @@ router.get("/share/:id", reelSharePageLimiter, async (req, res) => {
     });
     if (respondNotModifiedIfFresh(req, res, html)) return;
     res.setHeader("Content-Type", "text/html; charset=utf-8");
-    res.setHeader("Content-Security-Policy", [
-      "default-src 'none'",
-      "style-src 'unsafe-inline' https://fonts.googleapis.com",
-      "font-src https://fonts.gstatic.com",
-      "img-src 'self' https://imagedelivery.net data:",
-      "script-src 'unsafe-inline'",
-      "connect-src 'none'",
-      "frame-src 'none'",
-      "object-src 'none'",
-      "base-uri 'self'",
-    ].join("; "));
+    res.setHeader("Content-Security-Policy", buildSharePageCsp());
     res.send(html);
   } catch (error) {
     console.error("❌ Error rendering Orbit share page:", error);

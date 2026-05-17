@@ -1,6 +1,11 @@
-import { Router } from "express";
+import { Request, Router } from "express";
 import sequelize from "../_db/connection";
 import { getPushWorkerStatus } from "../libs/jobs/push_worker";
+import {
+  renderPrometheusMetrics,
+  getDbPoolSaturation,
+  getQueueDepthSnapshot,
+} from "../libs/metrics/prom_exporter";
 
 const router = Router();
 
@@ -23,6 +28,32 @@ const HEALTH_CHECK_CACHE_MS = Math.max(
   500,
   Math.trunc(Number(process.env.HEALTH_CHECK_CACHE_MS ?? 10_000) || 10_000)
 );
+
+// ------------------------------------------------------------------
+// Metrics IP allowlist
+// ------------------------------------------------------------------
+const METRICS_ENABLED = String(process.env.METRICS_ENABLED ?? "1").trim() !== "0";
+
+const resolveMetricsAllowedIps = (): Set<string> => {
+  const raw = String(process.env.METRICS_IP_ALLOWLIST ?? "127.0.0.1,::1").trim();
+  return new Set(
+    raw
+      .split(",")
+      .map((ip) => ip.trim())
+      .filter(Boolean)
+  );
+};
+const METRICS_IP_ALLOWLIST = resolveMetricsAllowedIps();
+
+const normalizeIp = (raw: any): string => {
+  const ip = String(raw ?? "").trim();
+  return ip.startsWith("::ffff:") ? ip.slice("::ffff:".length) : ip;
+};
+
+const isMetricsAllowed = (req: Request): boolean => {
+  const ip = normalizeIp((req as any).ip ?? (req.socket as any)?.remoteAddress);
+  return METRICS_IP_ALLOWLIST.has(ip) || METRICS_IP_ALLOWLIST.has("*");
+};
 
 // ------------------------------------------------------------------
 // Helpers
@@ -116,6 +147,8 @@ type ReadySnapshot = {
       db: { ok: boolean; latencyMs: number | null; error: string | null };
       redis: { ok: boolean; latencyMs: number | null; error: string | null };
       push_worker: { running: boolean };
+      db_pool: { active: number; pending: number; maxPool: number; saturated: boolean; critical: boolean };
+      queue: { waiting: number; active: number; failed: number; lagging: boolean };
     };
   };
 };
@@ -124,14 +157,18 @@ let cachedReadySnapshot: { expiresAt: number; data: ReadySnapshot } | null = nul
 let inFlightReadySnapshot: Promise<ReadySnapshot> | null = null;
 
 const buildReadySnapshot = async (): Promise<ReadySnapshot> => {
-  const [db, redis] = await Promise.all([
+  const [db, redis, queue] = await Promise.all([
     checkDb(READY_DB_TIMEOUT_MS),
     pingRedis(READY_REDIS_TIMEOUT_MS),
+    getQueueDepthSnapshot(),
   ]);
 
   const workerStatus = getPushWorkerStatus();
-  const allOk = db.ok;            // DB es crítico; Redis es degradado
-  const degraded = !redis.ok || !workerStatus.running;
+  const pool = getDbPoolSaturation();
+
+  const allOk = db.ok;
+  // Degraded: Redis down, worker stopped, pool saturated, or queue lagging
+  const degraded = !redis.ok || !workerStatus.running || pool.saturated || queue.lagging;
 
   return {
     statusCode: allOk ? 200 : 503,
@@ -144,6 +181,19 @@ const buildReadySnapshot = async (): Promise<ReadySnapshot> => {
         db,
         redis,
         push_worker: workerStatus,
+        db_pool: {
+          active: pool.active,
+          pending: pool.pending,
+          maxPool: pool.maxPool,
+          saturated: pool.saturated,
+          critical: pool.critical,
+        },
+        queue: {
+          waiting: queue.waiting,
+          active: queue.active,
+          failed: queue.failed,
+          lagging: queue.lagging,
+        },
       },
     },
   };
@@ -188,6 +238,8 @@ type HealthSnapshot = {
       db: { ok: boolean; latencyMs: number | null; error: string | null };
       redis: { ok: boolean; latencyMs: number | null; error: string | null };
       push_worker: { running: boolean };
+      db_pool: { active: number; pending: number; maxPool: number; saturated: boolean; critical: boolean };
+      queue: { waiting: number; active: number; failed: number; lagging: boolean };
     };
   };
 };
@@ -196,14 +248,16 @@ let cachedHealthSnapshot: { expiresAt: number; data: HealthSnapshot } | null = n
 let inFlightHealthSnapshot: Promise<HealthSnapshot> | null = null;
 
 const buildHealthSnapshot = async (): Promise<HealthSnapshot> => {
-  const [db, redis] = await Promise.all([
+  const [db, redis, queue] = await Promise.all([
     checkDb(READY_DB_TIMEOUT_MS),
     pingRedis(READY_REDIS_TIMEOUT_MS),
+    getQueueDepthSnapshot(),
   ]);
 
   const workerStatus = getPushWorkerStatus();
+  const pool = getDbPoolSaturation();
   const allOk = db.ok;
-  const degraded = !redis.ok || !workerStatus.running;
+  const degraded = !redis.ok || !workerStatus.running || pool.saturated || queue.lagging;
 
   return {
     statusCode: allOk ? 200 : 503,
@@ -218,6 +272,19 @@ const buildHealthSnapshot = async (): Promise<HealthSnapshot> => {
         db,
         redis,
         push_worker: workerStatus,
+        db_pool: {
+          active: pool.active,
+          pending: pool.pending,
+          maxPool: pool.maxPool,
+          saturated: pool.saturated,
+          critical: pool.critical,
+        },
+        queue: {
+          waiting: queue.waiting,
+          active: queue.active,
+          failed: queue.failed,
+          lagging: queue.lagging,
+        },
       },
     },
   };
@@ -317,6 +384,57 @@ router.get("/health", async (_req, res) => {
         db: { ok: false, latencyMs: null, error: String(error?.message ?? "health check failed") },
         redis: { ok: false, latencyMs: null, error: null },
         push_worker: { running: false },
+      },
+    });
+  }
+});
+
+/** Prometheus metrics — restricted to METRICS_IP_ALLOWLIST */
+router.get("/metrics", async (req, res) => {
+  if (!METRICS_ENABLED) {
+    return res.status(404).end();
+  }
+  if (!isMetricsAllowed(req)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  try {
+    const body = await renderPrometheusMetrics();
+    res.setHeader("Content-Type", "text/plain; version=0.0.4; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    return res.status(200).send(body);
+  } catch (err: any) {
+    return res.status(500).json({ error: String(err?.message ?? "metrics render failed") });
+  }
+});
+
+/** /health/live — alias de /live (liveness probe) */
+router.get("/health/live", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  res.json({
+    ok: true,
+    ts: Date.now(),
+    uptime_seconds: Math.round(process.uptime()),
+  });
+});
+
+/** /health/ready — alias de /ready (readiness probe) */
+router.get("/health/ready", async (_req, res) => {
+  res.setHeader("Cache-Control", "no-store");
+  try {
+    const snapshot = await getReadySnapshot();
+    return res.status(snapshot.statusCode).json(snapshot.payload);
+  } catch (error: any) {
+    return res.status(503).json({
+      ok: false,
+      degraded: false,
+      ts: Date.now(),
+      uptime_seconds: Math.round(process.uptime()),
+      checks: {
+        db: { ok: false, latencyMs: null, error: String(error?.message ?? "readiness check failed") },
+        redis: { ok: false, latencyMs: null, error: null },
+        push_worker: { running: false },
+        db_pool: { active: 0, pending: 0, maxPool: 0, saturated: false, critical: false },
+        queue: { waiting: 0, active: 0, failed: 0, lagging: false },
       },
     });
   }

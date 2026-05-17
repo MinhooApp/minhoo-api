@@ -1,0 +1,162 @@
+{
+  "title": "Minhoo — Business Metrics",
+  "tags": ["minhoo", "business"],
+  "refresh": "60s",
+  "schemaVersion": 30,
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+
+    { "id": 1, "type": "row", "title": "Actividad de usuarios", "gridPos": {"h":1,"w":24,"x":0,"y":0} },
+
+    {
+      "id": 2, "type": "timeseries",
+      "title": "Logins (requests en ventana)",
+      "description": "POST /api/v1/auth/login — proxy de DAU activa",
+      "gridPos": {"h":8,"w":8,"x":0,"y":1},
+      "fieldConfig": { "defaults": { "unit": "short", "color": {"mode":"palette-classic"} } },
+      "targets": [
+        { "expr": "sum(http_route_requests{method=\"POST\",route=~\".*/auth/login.*\"})", "legendFormat": "logins (ventana)", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 3, "type": "timeseries",
+      "title": "Mensajes enviados (chat)",
+      "description": "POST /api/v1/chat — mensajes en la ventana de métricas",
+      "gridPos": {"h":8,"w":8,"x":8,"y":1},
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "expr": "sum(http_route_requests{method=\"POST\",route=~\".*/chat.*\"})", "legendFormat": "chat POST (ventana)", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 4, "type": "timeseries",
+      "title": "Uploads de media",
+      "description": "POST a rutas /media/ — subidas de imágenes/vídeos",
+      "gridPos": {"h":8,"w":8,"x":16,"y":1},
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "expr": "sum(http_route_requests{method=\"POST\",route=~\".*/media/.*\"})", "legendFormat": "media uploads (ventana)", "refId": "A" }
+      ]
+    },
+
+    { "id": 10, "type": "row", "title": "Feed y contenido", "gridPos": {"h":1,"w":24,"x":0,"y":9} },
+
+    {
+      "id": 11, "type": "timeseries",
+      "title": "Peticiones de feed (posts + reels)",
+      "gridPos": {"h":8,"w":12,"x":0,"y":10},
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "expr": "sum(http_route_requests{method=\"GET\",route=~\".*/post.*\"})", "legendFormat": "posts", "refId": "A" },
+        { "expr": "sum(http_route_requests{method=\"GET\",route=~\".*/reel.*\"})", "legendFormat": "reels", "refId": "B" },
+        { "expr": "sum(http_route_requests{method=\"GET\",route=~\".*/bootstrap.*\"})", "legendFormat": "bootstrap/home", "refId": "C" }
+      ],
+      "options": { "tooltip": {"mode":"multi"} }
+    },
+
+    {
+      "id": 12, "type": "timeseries",
+      "title": "Notificaciones y perfil",
+      "gridPos": {"h":8,"w":12,"x":12,"y":10},
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "expr": "sum(http_route_requests{route=~\".*/notification.*\"})", "legendFormat": "notifications", "refId": "A" },
+        { "expr": "sum(http_route_requests{route=~\".*/profile.*\"})", "legendFormat": "profile", "refId": "B" },
+        { "expr": "sum(http_route_requests{route=~\".*/comment.*\"})", "legendFormat": "comments", "refId": "C" }
+      ],
+      "options": { "tooltip": {"mode":"multi"} }
+    },
+
+    { "id": 20, "type": "row", "title": "Error rate por endpoint", "gridPos": {"h":1,"w":24,"x":0,"y":18} },
+
+    {
+      "id": 21, "type": "timeseries",
+      "title": "Error rate global 5xx (%)",
+      "gridPos": {"h":8,"w":12,"x":0,"y":19},
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0,
+          "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":1},{"color":"red","value":5}] }
+        }
+      },
+      "targets": [
+        { "expr": "http_error_rate_percent", "legendFormat": "{{instance}}", "refId": "A" }
+      ]
+    },
+
+    {
+      "id": 22, "type": "table",
+      "title": "Top 10 rutas con más errores",
+      "gridPos": {"h":8,"w":12,"x":12,"y":19},
+      "fieldConfig": { "defaults": { "unit": "percent" } },
+      "targets": [
+        { "expr": "topk(10, http_route_error_rate_percent)", "legendFormat": "{{method}} {{route}}", "refId": "A", "instant": true }
+      ],
+      "transformations": [{ "id": "sortBy", "options": { "fields": [{"displayName":"Value","desc":true}] } }]
+    },
+
+    { "id": 30, "type": "row", "title": "Latencia por área de negocio", "gridPos": {"h":1,"w":24,"x":0,"y":27} },
+
+    {
+      "id": 31, "type": "table",
+      "title": "Top 15 rutas más lentas — p95 (ms)",
+      "gridPos": {"h":10,"w":24,"x":0,"y":28},
+      "fieldConfig": {
+        "defaults": { "unit": "ms" },
+        "overrides": [
+          { "matcher": {"id":"byName","options":"Value"}, "properties": [
+              {"id":"thresholds","value":{"mode":"absolute","steps":[{"color":"green","value":null},{"color":"orange","value":300},{"color":"red","value":500}]}},
+              {"id":"custom.displayMode","value":"color-background"}
+          ]}
+        ]
+      },
+      "targets": [
+        { "expr": "topk(15, http_route_duration_ms{quantile=\"p95\"})", "legendFormat": "{{method}} {{route}}", "refId": "A", "instant": true }
+      ],
+      "transformations": [{ "id": "sortBy", "options": { "fields": [{"displayName":"Value","desc":true}] } }]
+    },
+
+    { "id": 40, "type": "row", "title": "Auth y seguridad", "gridPos": {"h":1,"w":24,"x":0,"y":38} },
+
+    {
+      "id": 41, "type": "timeseries",
+      "title": "Auth — logins vs refreshes vs errores",
+      "gridPos": {"h":8,"w":12,"x":0,"y":39},
+      "fieldConfig": { "defaults": { "unit": "short" } },
+      "targets": [
+        { "expr": "sum(http_route_requests{method=\"POST\",route=~\".*/auth/login.*\"})", "legendFormat": "logins", "refId": "A" },
+        { "expr": "sum(http_route_requests{route=~\".*/auth/refresh.*\"})", "legendFormat": "refreshes", "refId": "B" },
+        { "expr": "sum(http_route_requests{route=~\".*/auth/logout.*\"})", "legendFormat": "logouts", "refId": "C" }
+      ],
+      "options": { "tooltip": {"mode":"multi"} }
+    },
+
+    {
+      "id": 42, "type": "stat",
+      "title": "Total requests en ventana",
+      "gridPos": {"h":8,"w":6,"x":12,"y":39},
+      "fieldConfig": { "defaults": { "unit": "short", "color": {"mode":"thresholds"}, "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null}] } } },
+      "targets": [
+        { "expr": "sum(http_requests_sampled_total)", "legendFormat": "total requests", "refId": "A" }
+      ],
+      "options": { "reduceOptions": {"calcs":["lastNotNull"]} }
+    },
+
+    {
+      "id": 43, "type": "stat",
+      "title": "Error rate actual (%)",
+      "gridPos": {"h":8,"w":6,"x":18,"y":39},
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "color": {"mode":"thresholds"},
+          "thresholds": { "mode": "absolute", "steps": [{"color":"green","value":null},{"color":"orange","value":1},{"color":"red","value":5}] }
+        }
+      },
+      "targets": [
+        { "expr": "avg(http_error_rate_percent)", "legendFormat": "error rate", "refId": "A" }
+      ],
+      "options": { "reduceOptions": {"calcs":["lastNotNull"]} }
+    }
+
+  ]
+}

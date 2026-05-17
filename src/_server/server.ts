@@ -12,6 +12,7 @@ import { socketController } from "../_sockets/socket_controller";
 import { setSocketInstance } from "../_sockets/socket_instance";
 import { responseMetricsMiddleware } from "./middleware/response_metrics";
 import { requestLoggerMiddleware } from "../libs/middlewares/request_logger";
+import logger from "../libs/logger/logger";
 const compression = require("compression");
 
 interface Options {
@@ -274,7 +275,7 @@ class Server {
       }
       console.log("✔️  Database Online !!!");
     } catch (error: any) {
-      console.log(error);
+      logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
       throw new Error("🚫 " + error);
     }
   }
@@ -317,6 +318,9 @@ class Server {
       res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
       res.setHeader("Timing-Allow-Origin", "*");
       res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+      // Safe fallback CSP for all routes. HTML share pages override this with
+      // their own richer policy via buildSharePageCsp() before calling res.send().
+      res.setHeader("Content-Security-Policy", "default-src 'none'");
 
       const forwardedProto = String(req.header("x-forwarded-proto") ?? "").trim().toLowerCase();
       const isHttps = req.secure || forwardedProto === "https";

@@ -17,6 +17,7 @@ import {
   emitChatsRefreshRealtime,
   emitUserUpdatedRealtime,
 } from "../../../libs/helper/realtime_dispatch";
+import logger from "../../../libs/logger/logger";
 
 const AVATAR_MAX_BYTES = 10 * 1024 * 1024;
 const PROFILE_DEFAULT =
@@ -904,7 +905,7 @@ export const visibleProfile = async (req: Request, res: Response) => {
 
     return formatResponse({ res: res, success: true, body: { worker } });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -916,7 +917,7 @@ export const deleteImageProfile = async (req: Request, res: Response) => {
     await emitProfileUpdatedRealtime(user, req.userId);
     return formatResponse({ res: res, success: true, body: {} });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };

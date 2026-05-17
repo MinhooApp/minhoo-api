@@ -7,6 +7,7 @@ import {
   sendNotification,
 } from "../_module/module";
 import { resolvePushActorLabel } from "../../../libs/push_actor_label";
+import logger from "../../../libs/logger/logger";
 
 const toCounter = (value: any): number => {
   const numeric = Number(value);
@@ -195,7 +196,7 @@ export const like = async (req: Request, res: Response) => {
     }
     return formatResponse({ res: res, success: true, body: { post: post } });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -249,7 +250,7 @@ export const share = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };

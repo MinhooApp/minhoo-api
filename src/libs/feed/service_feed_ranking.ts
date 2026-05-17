@@ -152,7 +152,7 @@ const isOnSiteService = (item: ServiceFeedItem) => {
 
 const passesOnSiteCityRule = (item: ServiceFeedItem, viewer: ServiceFeedViewerContext) => {
   if (!isOnSiteService(item)) return true;
-  if (!viewer.cityId) return true;
+  if (!viewer.cityId) return false;
   const provider = item?.client ?? null;
   const providerCityId = toPositiveInt(provider?.city_residence_id ?? provider?.cityId);
   if (!providerCityId) return false;

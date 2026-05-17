@@ -1,5 +1,6 @@
 import jsonwebtoken from "jsonwebtoken";
 import { randomBytes, randomUUID } from "crypto";
+import logger from "../logger/logger";
 interface JWTOptions {
 
     userId: number | null;
@@ -126,7 +127,7 @@ const generarJWT = ({
         signToken(payload, jwtSecret, effectiveExpiresIn)
             .then((token) => resolve(token))
             .catch((error) => {
-                console.log(error);
+                logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
                 reject(error);
             });
     });

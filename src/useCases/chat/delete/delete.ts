@@ -10,6 +10,7 @@ import {
     emitChatsRefreshRealtime,
 } from '../../../libs/helper/realtime_dispatch';
 import { invalidateChatSummaryCacheByUser } from "../get/get";
+import logger from "../../../libs/logger/logger";
 
 const toPositiveInt = (value: any): number | null => {
     const parsed = Number(value);
@@ -26,7 +27,7 @@ export const deleteChat = async (req: Request, res: Response) => {
         invalidateChatSummaryCacheByUser(req.userId);
         return formatResponse({ res: res, success: true, body: true });
     } catch (error) {
-        console.log(error);
+        logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
         return formatResponse({ res: res, success: false, message: error });
     }
 }
@@ -143,7 +144,7 @@ export const deleteMessage = async (req: Request, res: Response) => {
             },
         });
     } catch (error) {
-        console.log(error);
+        logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
         return formatResponse({ res, success: false, message: error });
     }
 };

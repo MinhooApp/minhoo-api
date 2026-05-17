@@ -118,6 +118,48 @@ export const buildShortText = (rawValue: any, fallback: string, max = 160) => {
   return truncateText(normalized || fallback, max);
 };
 
+/**
+ * Builds the Content-Security-Policy value for share landing pages.
+ *
+ * The share template uses:
+ *   - Inline <style> with @import from fonts.googleapis.com  → style-src 'unsafe-inline' + googleapis
+ *   - Actual font files from fonts.gstatic.com               → font-src
+ *   - OG images from Cloudflare Images / Stream / API origin → img-src
+ *   - Inline <script> for deep-link / app-store redirect     → script-src 'unsafe-inline'
+ *   - No XHR/fetch, no iframes, no plugins                   → connect/frame/object: 'none'
+ *
+ * Call once per share-page response; reads env at call time (fast — no I/O).
+ */
+export const buildSharePageCsp = (): string => {
+  const streamBase = normalizeWhitespace(
+    process.env.CLOUDFLARE_STREAM_PLAYBACK_BASE_URL ?? ""
+  ).replace(/\/+$/, "");
+
+  const imgSrcParts = [
+    "'self'",
+    "https://imagedelivery.net",
+    streamBase || null,
+    "data:",
+  ].filter(Boolean).join(" ");
+
+  const directives = [
+    "default-src 'none'",
+    "style-src 'unsafe-inline' https://fonts.googleapis.com",
+    "font-src https://fonts.gstatic.com",
+    `img-src ${imgSrcParts}`,
+    "script-src 'unsafe-inline'",
+    "connect-src 'none'",
+    "frame-src 'none'",
+    "object-src 'none'",
+    "base-uri 'self'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+    "upgrade-insecure-requests",
+  ];
+
+  return directives.join("; ");
+};
+
 export const renderShareLandingPage = async (data: ShareLandingPageData) => {
   const template = await getTemplate();
   const pageTitle = buildShortText(data.pageTitle, "Open in Minhoo", 90);

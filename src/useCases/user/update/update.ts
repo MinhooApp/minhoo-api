@@ -13,6 +13,7 @@ import {
   resolveCloudflareDirectAvatarUrl,
   uploadImageBufferToCloudflare,
 } from "../../_utils/cloudflare_images";
+import logger from "../../../libs/logger/logger";
 
 export const activeAlerts = async (req: Request, res: Response) => {
   try {
@@ -27,7 +28,7 @@ export const activeAlerts = async (req: Request, res: Response) => {
     const user = await repository.activeAlerts(req.userId);
     return formatResponse({ res: res, success: true, body: { user } });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -121,7 +122,7 @@ export const update_username = async (req: Request, res: Response) => {
       body: { username: updated?.username },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -187,7 +188,7 @@ export const delete_profile_image = async (req: Request, res: Response) => {
       body: { user: updated },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -640,7 +641,7 @@ export const update_profile = async (req: Request, res: Response) => {
         body: { user },
       });
     } catch (error) {
-      console.log(error);
+      logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
       return formatResponse({ res: res, success: false, message: error });
     }
   };
@@ -738,7 +739,7 @@ export const update_visibility = async (req: Request, res: Response) => {
       body: { user, worker },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };

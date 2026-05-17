@@ -12,6 +12,7 @@ import {
   hasRecentProfileRecommendationNotification,
   PROFILE_RECOMMENDATION_MESSAGE_PREFIX,
 } from "../../../repository/notification/notification_repository";
+import logger from "../../../libs/logger/logger";
 
 const setPrivateNoStore = (res: Response) => {
   res.set("Cache-Control", "private, no-store, no-cache, must-revalidate, proxy-revalidate");
@@ -272,7 +273,7 @@ export const workers = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -321,7 +322,7 @@ export const worker = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -338,7 +339,7 @@ export const ids = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };

@@ -1,0 +1,33 @@
+[Unit]
+Description=Alertmanager → Telegram Webhook Bridge
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/var/www/minhoo-api/minhoo_api/scripts
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/scripts/alertmanager-telegram-webhook.js
+
+# Secrets — set directly here (no .env file, process never runs as root)
+Environment=TELEGRAM_BOT_TOKEN=8332625497:AAHcYXDif102q6MCVDT7TohIbq3vBKU9dmE
+Environment=TELEGRAM_CHAT_ID=7519633595
+Environment=WEBHOOK_PORT=9094
+Environment=NODE_ENV=production
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=alertmanager-telegram-webhook
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/var/www/minhoo-api/minhoo_api/scripts
+
+[Install]
+WantedBy=multi-user.target

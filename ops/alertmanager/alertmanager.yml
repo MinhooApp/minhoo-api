@@ -1,0 +1,35 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'telegram-webhook'
+  group_by: ['alertname', 'instance']
+  group_wait:      30s
+  group_interval:  5m
+  repeat_interval: 4h
+
+  routes:
+    - receiver: 'telegram-webhook'
+      match:
+        severity: critical
+      group_wait:      10s
+      repeat_interval: 1h
+
+    - receiver: 'telegram-webhook'
+      match:
+        team: ops
+      repeat_interval: 2h
+
+receivers:
+  - name: 'telegram-webhook'
+    webhook_configs:
+      - url: 'http://localhost:9094/webhook'
+        send_resolved: true
+        max_alerts: 10
+
+inhibit_rules:
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['instance']

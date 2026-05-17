@@ -30,6 +30,7 @@ import {
   getHomeContentSectionVersions,
   getHomeNotificationsCacheVersion,
 } from "../../../libs/cache/bootstrap_home_cache_version";
+import logger from "../../../libs/logger/logger";
 
 const isTruthy = (value: any) => {
   const v = String(value ?? "").trim().toLowerCase();
@@ -564,6 +565,84 @@ const toHomeServiceResponseItem = (item: any) => {
   return rest;
 };
 
+const NEW_CONTENT_HOURS = 48;
+
+const getUnifiedFeedItemAge = (item: any): number => {
+  const raw = item?.createdAt ?? item?.created_at;
+  if (!raw) return 9999;
+  const ts = new Date(String(raw)).getTime();
+  return !Number.isFinite(ts) || ts <= 0 ? 9999 : (Date.now() - ts) / 3_600_000;
+};
+
+const getNewHighlightExpiresAt = (item: any): string | null => {
+  const raw = item?.createdAt ?? item?.created_at;
+  if (!raw) return null;
+  const ts = new Date(String(raw)).getTime();
+  if (!Number.isFinite(ts) || ts <= 0) return null;
+  return new Date(ts + NEW_CONTENT_HOURS * 3_600_000).toISOString();
+};
+
+const sortByCreatedAtDesc = (a: any, b: any): number => {
+  const tsA = new Date(String(a?.createdAt ?? a?.created_at ?? "")).getTime() || 0;
+  const tsB = new Date(String(b?.createdAt ?? b?.created_at ?? "")).getTime() || 0;
+  return tsB - tsA;
+};
+
+const buildUnifiedFeed = (sections: any): any[] => {
+  const reels: any[] = sections?.reels?.items ?? [];
+  const posts: any[] = sections?.posts?.items ?? [];
+  const services: any[] = sections?.services?.items ?? [];
+
+  const isNew = (item: any) => getUnifiedFeedItemAge(item) < NEW_CONTENT_HOURS;
+
+  // Tier 1 — contenido nuevo (<48h): reels + posts mezclados por createdAt DESC
+  const newContent = [
+    ...reels.filter(isNew).map((r) => ({
+      ...r,
+      feed_type: "reel",
+      feed_tier: "new_content",
+      isNewHighlighted: true,
+      newHighlightExpiresAt: getNewHighlightExpiresAt(r),
+    })),
+    ...posts.filter(isNew).map((p) => ({
+      ...p,
+      feed_type: "post",
+      feed_tier: "new_content",
+      isNewHighlighted: true,
+      newHighlightExpiresAt: getNewHighlightExpiresAt(p),
+    })),
+  ].sort(sortByCreatedAtDesc);
+
+  // Tier 2 — tarjetas de trabajo (ya filtradas por reglas de ubicación)
+  const jobCards = services.map((s) => ({
+    ...s,
+    feed_type: "service",
+    feed_tier: "job_card",
+    isNewHighlighted: false,
+    newHighlightExpiresAt: null,
+  }));
+
+  // Tier 3 — contenido viejo (>=48h): reels + posts mezclados por createdAt DESC
+  const oldContent = [
+    ...reels.filter((r) => !isNew(r)).map((r) => ({
+      ...r,
+      feed_type: "reel",
+      feed_tier: "ranked",
+      isNewHighlighted: false,
+      newHighlightExpiresAt: null,
+    })),
+    ...posts.filter((p) => !isNew(p)).map((p) => ({
+      ...p,
+      feed_type: "post",
+      feed_tier: "ranked",
+      isNewHighlighted: false,
+      newHighlightExpiresAt: null,
+    })),
+  ].sort(sortByCreatedAtDesc);
+
+  return [...newContent, ...jobCards, ...oldContent];
+};
+
 export const home = async (req: Request, res: Response) => {
   try {
     const include = parseIncludeSections((req.query as any)?.include);
@@ -796,6 +875,8 @@ export const home = async (req: Request, res: Response) => {
             },
           };
 
+          (freshPayload.sections as any).unified_feed = buildUnifiedFeed(freshPayload.sections);
+
           if (failedSections.size === 0) {
             await writeHomeSummaryCache(cacheKey, freshPayload);
           }
@@ -893,7 +974,7 @@ export const home = async (req: Request, res: Response) => {
       body: payload,
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };

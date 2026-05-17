@@ -1,0 +1,26 @@
+[Unit]
+Description=Minhoo API Metrics Threshold Monitor
+Documentation=https://github.com/minhoo-app/minhoo-api
+After=network-online.target minhoo-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=appuser
+Group=appuser
+WorkingDirectory=/var/www/minhoo-api/minhoo_api
+Environment=NODE_ENV=production
+EnvironmentFile=/var/www/minhoo-api/minhoo_api/.env
+ExecStart=/usr/bin/node /var/www/minhoo-api/minhoo_api/scripts/monitor-metrics-thresholds.js
+Restart=always
+RestartSec=15
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=minhoo-metrics-monitor
+
+LimitNOFILE=4096
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

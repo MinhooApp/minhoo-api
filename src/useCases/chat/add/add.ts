@@ -20,6 +20,7 @@ import {
 } from "../_shared/message_contract";
 import { createInMemoryRateLimiter } from "../../../libs/security/inmemory_rate_limiter";
 import { invalidateChatSummaryCacheByUser } from "../get/get";
+import logger from "../../../libs/logger/logger";
 
 type ChatMessageType =
   | "text"
@@ -1197,7 +1198,7 @@ export const sendMessage = async (req: Request, res: Response) => {
 
     return formatResponse({ res, success: true, body: payload });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error as any });
   }
 };

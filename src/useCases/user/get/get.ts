@@ -13,6 +13,7 @@ import { isSummaryMode, toFollowSummary } from "../../../libs/summary_response";
 import { attachActiveOrbitStateToUsers } from "../../../repository/reel/orbit_ring_projection";
 import { sendUnifiedSuccess } from "../../../libs/unified_response";
 import { getUserReputation } from "../../../repository/user/user_reputation_repository";
+import logger from "../../../libs/logger/logger";
 
 const setPrivateNoStore = (res: Response) => {
   res.set("Cache-Control", "private, no-store, no-cache, must-revalidate, proxy-revalidate");
@@ -1150,7 +1151,7 @@ export const check_username = async (req: Request, res: Response) => {
       body: { available: false, suggested },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -1193,7 +1194,7 @@ export const get_username = async (req: Request, res: Response) => {
       body: payload,
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -1376,7 +1377,7 @@ export const relationship = async (req: Request, res: Response) => {
 
     return formatResponse({ res, success: true, body: result });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -1405,7 +1406,7 @@ export const get_blocked_users = async (req: Request, res: Response) => {
       body: { users },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };

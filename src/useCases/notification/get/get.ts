@@ -6,6 +6,7 @@ import {
 } from "../_module/module";
 import { respondNotModifiedIfFresh, setCacheControl } from "../../../libs/http_cache";
 import { isSummaryMode, toNotificationSummary } from "../../../libs/summary_response";
+import logger from "../../../libs/logger/logger";
 
 export const myNotifications = async (req: Request, res: Response) => {
   try {
@@ -37,7 +38,7 @@ export const myNotifications = async (req: Request, res: Response) => {
 
     return formatResponse({ res: res, success: true, body: responseBody });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };

@@ -19,6 +19,7 @@ import * as followerRepo from "../../../repository/follower/follower_repository"
 import * as userRepository from "../../../repository/user/user_repository";
 import { AppLocale, resolveLocale } from "../../../libs/localization/locale";
 import { formatRelativeTime } from "../../../libs/localization/relative_time";
+import logger from "../../../libs/logger/logger";
 
 const setNoCacheHeaders = (res: Response) => {
   res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
@@ -824,7 +825,7 @@ export const myChats = async (req: Request, res: Response) => {
       body,
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };
@@ -869,7 +870,7 @@ export const starredChats = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };
@@ -1033,7 +1034,7 @@ export const messages = async (req: Request, res: Response) => {
 
     return formatResponse({ res, success: true, body: payload });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };
@@ -1100,7 +1101,7 @@ export const getUserByMessage = async (req: Request, res: Response) => {
       body: response,
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };

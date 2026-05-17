@@ -15,6 +15,7 @@ import {
   toServiceUpdatedSocketPayload,
 } from "../../../libs/service_client_bucket";
 import { bumpHomeContentSectionVersion } from "../../../libs/cache/bootstrap_home_cache_version";
+import logger from "../../../libs/logger/logger";
 
 export const update = async (_req: Request, _res: Response) => {};
 
@@ -311,7 +312,7 @@ export const finalizeSearch = async (req: Request, res: Response) => {
       }),
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({
       res,
       success: false,
@@ -508,7 +509,7 @@ export const moveToHistory = async (req: Request, res: Response) => {
       body: buildResponseBody({ service, offersCount, refreshLists }),
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({
       res,
       success: false,

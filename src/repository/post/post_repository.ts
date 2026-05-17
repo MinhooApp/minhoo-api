@@ -1695,6 +1695,13 @@ const fetchPostsByIdsOrdered = async (
   const postIdSet = new Set<number>(posts.map((post: any) => Number(post?.id)).filter((id) => id > 0));
   const selectedPostIds = Array.from(postIdSet.values());
 
+  // Compute viewerId before Promise.all so we can filter the Like query.
+  // Fetching ALL likes for all posts in a batch causes massive payload inflation
+  // (a popular post with 10K likes returns 10K rows just to set is_liked=true).
+  // Like count is already available in the denormalized likes_count column.
+  const viewerIdNum = Number(meId);
+  const validViewerId = Number.isFinite(viewerIdNum) && viewerIdNum > 0 ? viewerIdNum : null;
+
   const [users, mediaRows, likeRows, commentRows] = await Promise.all([
     userIds.length
       ? withPostDbProfile(profiler, "users.findAll(hydrate_users)", () =>
@@ -1725,12 +1732,14 @@ const fetchPostsByIdsOrdered = async (
         ],
       })
     ),
-    withPostDbProfile(profiler, "likes.findAll(hydrate_likes)", () =>
-      Like.findAll({
-        where: { postId: { [Op.in]: selectedPostIds } },
-        attributes: ["id", "userId", "postId"],
-      })
-    ),
+    validViewerId
+      ? withPostDbProfile(profiler, "likes.findAll(hydrate_viewer_like)", () =>
+          Like.findAll({
+            where: { postId: { [Op.in]: selectedPostIds }, userId: validViewerId },
+            attributes: ["id", "userId", "postId"],
+          })
+        )
+      : Promise.resolve([] as any[]),
     withPostDbProfile(profiler, "comments.findAll(hydrate_comments)", () =>
       Comment.findAll({
         where: {
@@ -1763,8 +1772,6 @@ const fetchPostsByIdsOrdered = async (
   ]);
 
   await Promise.all([applyPostHashtags(posts), applyCommentHashtags(commentRows as any[])]);
-  const viewerId = Number(meId);
-  const validViewerId = Number.isFinite(viewerId) && viewerId > 0 ? viewerId : null;
 
   const userById = new Map<number, any>();
   users.forEach((user: any) => {

@@ -1,4 +1,5 @@
 import { Request, Response, formatResponse, repository } from '../_module/module';
+import logger from "../../../libs/logger/logger";
 
 const enrichOfferUiFlags = (offerRaw: any) => {
     const offer = offerRaw ?? {};
@@ -61,7 +62,7 @@ export const getsByService = async (req: Request, res: Response) => {
             return formatResponse({ res: res, success: true, body: { "offers": offers } });
         }
     } catch (error) {
-        console.log(error)
+        logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
         return formatResponse({ res: res, success: false, message: error });
     }
 }

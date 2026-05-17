@@ -14,6 +14,7 @@ import {
   resolveApplicantsCount,
 } from "../../../libs/applicants_status";
 import { toServiceUpdatedSocketPayload } from "../../../libs/service_client_bucket";
+import logger from "../../../libs/logger/logger";
 
 export const removeOffer = async (req: Request, res: Response) => {
   const { offerId } = req.params;
@@ -182,7 +183,7 @@ export const removeOffer = async (req: Request, res: Response) => {
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };

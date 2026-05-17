@@ -27,6 +27,10 @@ import {
   revokeUserAuthSessionToken,
 } from "../../../libs/auth/user_auth_session";
 import { buildAuthSessionResponseBody } from "../../../libs/auth/auth_response_contract";
+import logger from "../../../libs/logger/logger";
+
+// Hash de costo 10 para dummy compare — evita timing oracle en "usuario no existe"
+const DUMMY_HASH = bcryptjs.hashSync("__minhoo_dummy_timing_guard__", 10);
 
 const normalizeDeviceToken = (raw: any): string => {
   const value = String(raw ?? "").trim();
@@ -423,7 +427,8 @@ export const login = async (req: Request, res: Response) => {
     const userTemp = await repository.findByEmailForLogin(email);
     const userLookupMs = Date.now() - userLookupStartedAt;
     if (!userTemp) {
-      console.log("🚫  User no found");
+      // Dummy compare para igualar tiempo de respuesta y evitar timing oracle
+      await bcryptjs.compare(inputPassword, DUMMY_HASH);
       return formatResponse({
         islogin: true,
         res: res,
@@ -589,7 +594,7 @@ export const login = async (req: Request, res: Response) => {
       });
     }
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res: res, success: false, message: error });
   }
 };
@@ -924,7 +929,7 @@ export const logout = async (req: Request, res: Response) => {
 
     return formatResponse({ res, success: true });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };
@@ -961,7 +966,7 @@ export const logoutDevice = async (req: Request, res: Response) => {
 
     return formatResponse({ res, success: true });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };
@@ -1003,7 +1008,7 @@ export const saveDeviceToken = async (req: Request, res: Response) => {
       body: { saved: true },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error });
   }
 };

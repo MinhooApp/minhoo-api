@@ -1,0 +1,164 @@
+groups:
+
+  # ── Minhoo API — Latencia ────────────────────────────────────────
+  - name: minhoo_latency
+    rules:
+      - alert: MinhooHighP95Latency
+        expr: http_request_duration_ms{quantile="p95"} > 500
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "p95 alta en {{ $labels.instance }}"
+          description: "p95={{ $value | printf \"%.0f\" }}ms (umbral=500ms). Revisar rutas lentas en /api/v1/metrics"
+
+      - alert: MinhooHighP99Latency
+        expr: http_request_duration_ms{quantile="p99"} > 2000
+        for: 3m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "p99 crítica en {{ $labels.instance }}"
+          description: "p99={{ $value | printf \"%.0f\" }}ms (umbral=2000ms)"
+
+  # ── Minhoo API — BullMQ ──────────────────────────────────────────
+  - name: minhoo_queue
+    rules:
+      - alert: MinhooQueueFailed
+        expr: bullmq_jobs{queue="push-notifications",state="failed"} > 10
+        for: 2m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "BullMQ: {{ $value | printf \"%.0f\" }} jobs fallidos en {{ $labels.instance }}"
+          description: "Cola push-notifications tiene más de 10 jobs en estado failed"
+
+      - alert: MinhooQueueLagging
+        expr: bullmq_jobs{queue="push-notifications",state="waiting"} > 50
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "BullMQ: cola atrasada — {{ $value | printf \"%.0f\" }} esperando en {{ $labels.instance }}"
+
+  # ── Minhoo API — DB Pool ─────────────────────────────────────────
+  - name: minhoo_db_pool
+    rules:
+      - alert: MinhooDBPoolPending
+        expr: db_pool_connections{state="pending"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "DB pool: conexiones en espera en {{ $labels.instance }}"
+          description: "{{ $value | printf \"%.0f\" }} conexiones pendientes — posible cuello de botella"
+
+      - alert: MinhooDBPoolCritical
+        expr: db_pool_utilization_percent > 90
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "DB pool crítico — {{ $value | printf \"%.0f\" }}% utilización en {{ $labels.instance }}"
+          description: "Umbral=90%. Revisar queries lentas: SHOW PROCESSLIST"
+
+  # ── Minhoo API — Memoria proceso ─────────────────────────────────
+  - name: minhoo_memory
+    rules:
+      - alert: MinhooHighRSS
+        expr: process_heap_bytes{type="rss"} > 512 * 1024 * 1024
+        for: 10m
+        labels:
+          severity: warning
+          team: backend
+        annotations:
+          summary: "RSS > 512MB en {{ $labels.instance }}"
+          description: "RSS={{ $value | humanize }}. Revisar posibles memory leaks"
+
+      - alert: MinhooVeryHighRSS
+        expr: process_heap_bytes{type="rss"} > 768 * 1024 * 1024
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "RSS > 768MB en {{ $labels.instance }} — reiniciar urgente"
+
+  # ── Minhoo API — Disponibilidad ─────────────────────────────────
+  - name: minhoo_availability
+    rules:
+      - alert: MinhooNodeDown
+        expr: up{job="minhoo-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Instancia API caída: {{ $labels.instance }}"
+          description: "Prometheus no puede alcanzar {{ $labels.instance }} desde hace 2m"
+
+      - alert: MinhooAllNodesDown
+        expr: count(up{job="minhoo-api"} == 1) < 1
+        for: 1m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "TODAS las instancias API están caídas"
+          description: "Ninguna instancia responde a scraping de Prometheus. El servicio está completamente inoperativo."
+
+  # ── Sistema (Node Exporter) ──────────────────────────────────────
+  - name: system
+    rules:
+      - alert: HighMemoryUsage
+        expr: (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100 > 85
+        for: 10m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Memoria del sistema > 85%"
+          description: "{{ $value | printf \"%.1f\" }}% usada"
+
+      - alert: HighDiskUsage
+        expr: >
+          (1 - node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|devtmpfs"}
+             / node_filesystem_size_bytes{mountpoint="/",fstype!~"tmpfs|devtmpfs"}) * 100 > 90
+        for: 5m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Disco > 90% en {{ $labels.mountpoint }}"
+          description: "{{ $value | printf \"%.1f\" }}% usado. Limpiar logs o backups"
+
+      - alert: DiskWillFillIn24h
+        expr: >
+          predict_linear(
+            node_filesystem_avail_bytes{mountpoint="/",fstype!~"tmpfs|devtmpfs"}[6h], 24*3600
+          ) < 0
+        for: 30m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "Disco lleno en < 24h según tendencia actual"
+
+      - alert: HighCPUUsage
+        expr: >
+          100 - avg by (instance) (
+            rate(node_cpu_seconds_total{mode="idle"}[5m]) * 100
+          ) > 85
+        for: 10m
+        labels:
+          severity: warning
+          team: ops
+        annotations:
+          summary: "CPU > 85% durante 10 minutos"
+          description: "{{ $value | printf \"%.1f\" }}% de uso sostenido"

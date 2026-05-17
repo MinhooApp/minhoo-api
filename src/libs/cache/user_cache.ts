@@ -33,7 +33,9 @@ const getClient = async (): Promise<ReturnType<typeof createClient> | null> => {
   _connecting = true;
   try {
     const c = createClient({ url: REDIS_URL });
-    c.on("error", () => {});
+    c.on("error", (err: any) => {
+      console.warn("[user_cache] Redis connection error:", String(err?.message ?? err));
+    });
     await c.connect();
     _client = c;
     return _client;

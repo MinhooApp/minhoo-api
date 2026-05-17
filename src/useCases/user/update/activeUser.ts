@@ -4,6 +4,7 @@ import {
   formatResponse,
   repository,
 } from "../_module/module";
+import logger from "../../../libs/logger/logger";
 
 export const activeUser = async (req: Request, res: Response) => {
   try {
@@ -25,7 +26,7 @@ export const activeUser = async (req: Request, res: Response) => {
       body: { user },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({
       res,
       success: false,

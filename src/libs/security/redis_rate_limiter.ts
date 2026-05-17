@@ -43,7 +43,9 @@ const getRedis = async (): Promise<MinimalRedis | null> => {
 
     try {
       const client: MinimalRedis = redisModule.createClient({ url });
-      client.on("error", () => {});
+      client.on("error", (err: any) => {
+        console.warn("[redis_rate_limiter] Redis connection error:", String(err?.message ?? err));
+      });
       await client.connect();
       return client;
     } catch (err) {

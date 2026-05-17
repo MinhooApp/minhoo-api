@@ -1,5 +1,6 @@
 import { Request, Response, formatResponse, repository } from "../_module/module";
 import { invalidateChatSummaryCacheByUser } from "../get/get";
+import logger from "../../../libs/logger/logger";
 
 const toBool = (v: any): boolean | null => {
   if (typeof v === "boolean") return v;
@@ -77,7 +78,7 @@ const updateChatStarState = async (
       },
     });
   } catch (error) {
-    console.log(error);
+    logger.error({ event: "error", error: String(error), stack: (error as Error)?.stack });
     return formatResponse({ res, success: false, message: error as any });
   }
 };
