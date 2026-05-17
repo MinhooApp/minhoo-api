@@ -18,6 +18,7 @@ import {
   save_reel,
   unsave_reel,
   record_reel_view,
+  record_reel_watch,
   share_reel,
   report,
   delete_reel,
@@ -156,6 +157,7 @@ router.get("/share/:id", reelSharePageLimiter, async (req, res) => {
 router.get("/:id", reelReadLimiter, TokenOptional(), reel_by_id);
 router.get("/:id/download", reelReadLimiter, TokenOptional(), reel_download);
 router.post("/:id/view", reelWriteLimiter, TokenOptional(), record_reel_view);
+router.post("/:id/watch", reelWriteLimiter, TokenOptional(), record_reel_watch);
 router.post("/:id/share", reelWriteLimiter, TokenValidation(), share_reel);
 router.post("/:id/report", reelWriteLimiter, TokenValidation(), report);
 router.put("/like/:id", reelWriteLimiter, TokenValidation(), toggle_reel_star);

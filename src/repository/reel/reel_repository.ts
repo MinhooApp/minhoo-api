@@ -1,4 +1,5 @@
 import { Op, Sequelize, UniqueConstraintError } from "sequelize";
+import sequelize from "../../_db/connection";
 import Reel from "../../_models/reel/reel";
 import ReelLike from "../../_models/reel/reel_like";
 import ReelSave from "../../_models/reel/reel_save";
@@ -63,12 +64,17 @@ const reelSummaryCandidateAttributes: string[] = [
   "video_uid",
   "createdAt",
   "status",
+  "duration_seconds",
   "likes_count",
   "comments_count",
   "saves_count",
   "views_count",
   "shares_count",
   "metadata",
+  "watch_time_total_ms",
+  "watch_count",
+  "completion_count",
+  "skip_count",
 ];
 
 const normalizeNumber = (value: any, fallback: number) => {
@@ -238,6 +244,7 @@ type OrbitCandidate = {
   finalScore: number;
   scoreBreakdown: {
     watchProxy: number;
+    retention: number;
     interest: number;
     freshness: number;
     saveShare: number;
@@ -1292,6 +1299,29 @@ const buildOrbitCandidate = ({
   const watchProxyScore = clamp01(
     Math.log1p(views + likes * 2 + comments * 3 + saves * 4 + shares * 5) / 10
   );
+
+  const watchCount = toEngagementCounter(row?.watch_count);
+  const retentionScore = (() => {
+    if (watchCount < 3) return watchProxyScore;
+    const avgWatchMs = watchCount > 0
+      ? Math.max(0, Number(row?.watch_time_total_ms ?? 0)) / watchCount
+      : 0;
+    const durationMs = Math.max(1, Number(row?.duration_seconds ?? 0) * 1000);
+    const retentionRatio = clamp01(avgWatchMs / durationMs);
+    const completionRate = clamp01(
+      toEngagementCounter(row?.completion_count) / watchCount
+    );
+    const skipRate = clamp01(
+      toEngagementCounter(row?.skip_count) / watchCount
+    );
+    const realScore = clamp01(
+      0.45 * retentionRatio + 0.35 * completionRate + 0.20 * (1 - skipRate)
+    );
+    // Blend: real signal gains full weight at ~50 watches.
+    const confidence = clamp01(watchCount / 50);
+    return confidence * realScore + (1 - confidence) * watchProxyScore;
+  })();
+
   const saveShareScore = clamp01(Math.log1p(saves * 2 + shares * 3) / 8);
   const socialScore = viewerContext.followedCreatorIds.has(creatorId) ? 1 : 0;
 
@@ -1326,10 +1356,10 @@ const buildOrbitCandidate = ({
     : 0;
   const fatiguePenalty = seenInSession ? 0.6 : recentlyViewed ? 0.35 : 0;
   const lowQualityPenalty =
-    ageHours > 72 && engagementVolume < 6 && watchProxyScore < 0.2 ? 0.18 : 0;
+    ageHours > 72 && engagementVolume < 6 && retentionScore < 0.2 ? 0.18 : 0;
 
   const weightedBase =
-    0.35 * watchProxyScore +
+    0.35 * retentionScore +
     0.2 * interestScore +
     0.15 * freshnessScore +
     0.1 * saveShareScore +
@@ -1372,6 +1402,7 @@ const buildOrbitCandidate = ({
     finalScore,
     scoreBreakdown: {
       watchProxy: watchProxyScore,
+      retention: retentionScore,
       interest: interestScore,
       freshness: freshnessScore,
       saveShare: saveShareScore,
@@ -2691,6 +2722,55 @@ export const recordView = async (
 
   const compactReel = buildCompactViewReelPayload(reel, reelId, viewsCount);
   return { found: true, counted: created, views_count: viewsCount, reel: compactReel };
+};
+
+export const recordWatch = async ({
+  reelIdRaw,
+  watchTimeMsRaw,
+  progressPercentRaw,
+  completedRaw,
+  skippedRaw,
+}: {
+  reelIdRaw: any;
+  watchTimeMsRaw: any;
+  progressPercentRaw: any;
+  completedRaw: any;
+  skippedRaw: any;
+}): Promise<{ found: boolean }> => {
+  const reelId = Number(reelIdRaw);
+  if (!Number.isFinite(reelId) || reelId <= 0) return { found: false };
+
+  const watchTimeMs = Math.max(0, Math.trunc(Number(watchTimeMsRaw ?? 0) || 0));
+  const completed = completedRaw === true || completedRaw === "true" || completedRaw === 1;
+  const skipped = skippedRaw === true || skippedRaw === "true" || skippedRaw === 1;
+
+  // Verify reel exists before writing (cheap pk lookup).
+  const exists = await Reel.findOne({
+    where: { id: reelId, is_delete: false },
+    attributes: ["id"],
+  });
+  if (!exists) return { found: false };
+
+  // Atomic increments — no read-modify-write race.
+  await sequelize.query(
+    `UPDATE reels
+     SET watch_count       = watch_count + 1,
+         watch_time_total_ms = watch_time_total_ms + :watchTimeMs,
+         completion_count  = completion_count + :completionInc,
+         skip_count        = skip_count + :skipInc
+     WHERE id = :reelId AND is_delete = 0`,
+    {
+      replacements: {
+        reelId,
+        watchTimeMs,
+        completionInc: completed ? 1 : 0,
+        skipInc: skipped ? 1 : 0,
+      },
+      type: "UPDATE" as any,
+    }
+  );
+
+  return { found: true };
 };
 
 export const shareReel = async (idRaw: any, viewerIdRaw: any) => {

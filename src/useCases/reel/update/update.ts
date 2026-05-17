@@ -463,6 +463,27 @@ export const record_reel_view = async (req: Request, res: Response) => {
   }
 };
 
+export const record_reel_watch = async (req: Request, res: Response) => {
+  // Respond immediately — watch writes are fire-and-forget.
+  res.status(200).json({ success: true });
+
+  setImmediate(async () => {
+    try {
+      const { id } = req.params;
+      const body = (req.body as any) ?? {};
+      await repository.recordWatch({
+        reelIdRaw: id,
+        watchTimeMsRaw: body.watch_time_ms ?? body.watchTimeMs,
+        progressPercentRaw: body.progress_percent ?? body.progressPercent,
+        completedRaw: body.completed,
+        skippedRaw: body.skipped,
+      });
+    } catch (err) {
+      console.error("[reel_watch] error:", (err as any)?.message ?? err);
+    }
+  });
+};
+
 export const share_reel = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;

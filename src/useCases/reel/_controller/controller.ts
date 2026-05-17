@@ -15,6 +15,7 @@ import {
   save_reel,
   unsave_reel,
   record_reel_view,
+  record_reel_watch,
   share_reel,
 } from "../update/update";
 import { delete_reel, delete_reel_comment } from "../delete/delete";
@@ -35,6 +36,7 @@ export {
   save_reel,
   unsave_reel,
   record_reel_view,
+  record_reel_watch,
   share_reel,
   delete_reel,
   delete_reel_comment,

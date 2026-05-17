@@ -80,6 +80,26 @@ Reel.init(
       allowNull: false,
       defaultValue: 0,
     },
+    watch_time_total_ms: {
+      type: DataTypes.BIGINT,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    watch_count: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    completion_count: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
+    skip_count: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+    },
     is_delete: {
       type: DataTypes.BOOLEAN,
       allowNull: false,
